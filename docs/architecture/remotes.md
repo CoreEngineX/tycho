@@ -41,6 +41,34 @@ glob in a configured path is resolved then - `GoogleDrive-*` matches whatever
 account directory exists on this machine - and the first match wins. If the glob
 matches nothing, an optional remote is behind and a required remote fails.
 
+## 2a. `RECOVERY.md` beside the repository
+
+Every run writes a `RECOVERY.md` into the remote folder, next to the bare repo:
+
+```text
+CoreEngineX-Backups/
+  coreenginex.git/
+  RECOVERY.md
+```
+
+It contains the exact commands to recover from this folder using nothing but git,
+with the profile's real paths and captured repository keys filled in, and the date
+of the run that wrote it.
+
+This is not documentation for its own sake. In an actual disaster the thing you
+still have is a folder in a cloud account, quite possibly opened on a borrowed
+machine, and every other copy of the instructions was on the disk that died. A
+backup that requires you to remember a procedure is a backup with an undocumented
+dependency on your memory.
+
+It is a plain file write into the folder, outside the bare repo and outside the
+push. A recovery guide stored *inside* the repository could only be read by
+somebody who already knew how to read the repository.
+
+It is also the one thing Tycho writes to a remote that is not a git object, so
+`doctor` treats an unexpected file in that folder as a sync artifact and `RECOVERY.md`
+as expected.
+
 ## 3. Verification
 
 A push that reports success has not proved anything until the remote agrees:

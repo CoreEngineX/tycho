@@ -119,7 +119,7 @@ Three things happen per repository.
 **History**, one fetch into the store's namespace:
 
 ```text
-git -C <store> fetch --prune <repo> "+refs/*:refs/tycho/<key>/*"
+git -C <store> fetch --prune --no-tags <repo> "+refs/*:refs/tycho/<key>/*"
 ```
 
 **The overlay**, which is the part git cannot restore from history:

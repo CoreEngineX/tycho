@@ -53,9 +53,11 @@ documents and source, and the wrong one for a media collection.
 | [`docs/decisions.md`](docs/decisions.md) | Why each choice, and what was rejected |
 | [`docs/background.md`](docs/background.md) | The incidents behind the requirements, and the system being replaced |
 | [`docs/git-primer.md`](docs/git-primer.md) | Objects, refs, refspecs and reachability - the git parts this design rests on |
+| [`docs/disaster-recovery.md`](docs/disaster-recovery.md) | Recovering onto a new machine from a cloud folder, using only git |
 
-Start with the git primer if refs and refspecs are unfamiliar territory. Everything
-in `store.md` assumes it.
+Start with the git primer if refs and refspecs are unfamiliar territory - everything
+in `store.md` assumes it. Read disaster recovery before trusting any of it, since a
+backup design is only worth what its restore path is.
 
 ## Development
 

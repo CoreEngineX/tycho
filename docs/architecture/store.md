@@ -41,13 +41,20 @@ the way out. Common paths pass through unchanged and stay readable in
 Capturing a repo is one fetch:
 
 ```text
-git -C <store> fetch --prune <repo-path> "+refs/*:refs/tycho/<key>/*"
+git -C <store> fetch --prune --no-tags <repo-path> "+refs/*:refs/tycho/<key>/*"
 ```
 
 `refs/*` deliberately includes remote-tracking refs and the stash. The stash is
 uncommitted work that exists on exactly one disk, which makes it precisely the
 thing a backup is for. `--prune` means a branch you delete locally stops being a
 ref here, while its objects stay reachable from older backup commits.
+
+**`--no-tags` is load-bearing, not tidiness.** Without it git auto-follows tags into
+the store's *own* `refs/tags/`, on top of the copy the explicit refspec already puts
+under `refs/tycho/<key>/tags/`. Two captured repositories that both tag `v1.0` would
+then fight over one `refs/tags/v1.0` in the store, and the winner would be whichever
+was fetched last. Verified live: without the flag a fetch produced both
+`refs/tags/v1.0` and `refs/tycho/mysrc/tags/v1.0`; with it, only the namespaced one.
 
 Nothing about this is an archive format. The store's object database is the same
 one git would build for those repositories, so a repo whose refs have not moved
@@ -254,13 +261,26 @@ A captured repository is restored as a repository, not a copy of files:
 
 ```text
 git init <dest>/<repo path>
-git -C <dest>/<repo path> fetch <store> "+refs/tycho/<key>/heads/*:refs/heads/*"
+git -C <dest>/<repo path> symbolic-ref HEAD refs/heads/__tycho_restore
+git -C <dest>/<repo path> fetch <store> \
+  "+refs/tycho/<key>/heads/*:refs/heads/*" \
+  "+refs/tycho/<key>/tags/*:refs/tags/*"
 git -C <dest>/<repo path> checkout <recorded branch or sha>
 ```
+
+The `symbolic-ref` line is required. `git init` leaves HEAD pointing at an unborn
+`refs/heads/main`, and git refuses to fetch into a checked-out branch:
+`fatal: refusing to fetch into branch 'refs/heads/main' checked out at ...`.
+Parking HEAD on a name that never gets created lets the fetch write every branch as
+a real local branch, which is what a restore should produce - not remote-tracking
+refs the user then has to convert.
 
 Then the overlay is copied over the checkout, restoring uncommitted edits,
 untracked files and gitignored files on top of the recovered history. `REPO.txt`
 records which head to check out, including the detached and unborn cases.
+
+This sequence is verified end to end in `../disaster-recovery.md`, where it is also
+written out as the manual procedure for recovering with no `tycho` binary at all.
 
 `tycho restore --bundle` writes `git bundle create --all` from the restored refs
 instead, for handing history to someone without the store.

@@ -103,7 +103,7 @@ is shorthand that git expands to:
 Take my local `main`, write it to their `main`. Tycho's fetch is the same mechanism
 with a different mapping:
 
-    git fetch <repo> "+refs/*:refs/tycho/handbook/*"
+    git fetch --no-tags <repo> "+refs/*:refs/tycho/handbook/*"
 
 Take every ref over there and write it here under that prefix instead.
 `refs/heads/main` arrives as `refs/tycho/handbook/heads/main`. `refs/tags/v1.0`
