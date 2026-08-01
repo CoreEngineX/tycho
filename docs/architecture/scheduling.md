@@ -23,8 +23,7 @@ of this argument and is revisited when Windows support lands.
 ## 2. Schedule configuration
 
 ```toml
-[profile.schedule]
-weekly = { day = "sunday", at = "12:00" }
+schedule = { weekly = { day = "sunday", at = "12:00" } }
 ```
 
 ```rust

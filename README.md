@@ -52,6 +52,10 @@ documents and source, and the wrong one for a media collection.
 | [`docs/architecture/scheduling.md`](docs/architecture/scheduling.md) | launchd integration and service lifecycle |
 | [`docs/decisions.md`](docs/decisions.md) | Why each choice, and what was rejected |
 | [`docs/background.md`](docs/background.md) | The incidents behind the requirements, and the system being replaced |
+| [`docs/git-primer.md`](docs/git-primer.md) | Objects, refs, refspecs and reachability - the git parts this design rests on |
+
+Start with the git primer if refs and refspecs are unfamiliar territory. Everything
+in `store.md` assumes it.
 
 ## Development
 

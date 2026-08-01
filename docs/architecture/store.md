@@ -180,6 +180,57 @@ that limit is stated in the README rather than hidden.
 `git gc --auto` runs after each successful push. All `refs/tycho/*` refs are
 reachability roots, so nothing captured is ever pruned.
 
+## 6a. Surgically rewriting history
+
+**Yes, it is possible, and Tycho will never do it for you.** The store is an
+ordinary git repository, so `git filter-repo` works on it exactly as it would on
+any other. That matters for one real situation: a secret or a large file that
+should never have been captured.
+
+Tycho offers no command for this on purpose. A backup tool that can rewrite its own
+history on request is a backup tool whose history you cannot trust, and the whole
+value of the store is that what it says happened is what happened. Doing it means
+picking up a different tool deliberately, with the store as its input.
+
+The procedure, for when you need it:
+
+```text
+tycho service uninstall <profile>                     stop scheduled runs first
+cp -R <store> <store>.before-rewrite                  keep an escape hatch
+git -C <store> filter-repo --invert-paths --path <the bad path>
+git -C <store> reflog expire --expire=now --all
+git -C <store> gc --prune=now --aggressive
+```
+
+Then every remote has to be rebuilt, because a rewrite is not a fast-forward and
+must never be forced onto a backup destination that other copies depend on:
+
+```text
+rm -rf <remote>/<profile>.git
+git -C <store> push <remote> "+refs/heads/*:refs/heads/*" "+refs/tycho/*:refs/tycho/*"
+```
+
+Four consequences to understand before starting:
+
+1. **Every commit hash changes.** Rewriting anything rewrites every commit after it,
+   so every backup identifier you have recorded, referenced or restored by is now
+   wrong. The history is semantically intact and identically unrecognisable.
+2. **`refs/tycho/*` is rewritten too.** `filter-repo` operates on all refs by
+   default, so captured repository history is rewritten alongside the store's own
+   commits. Confirm with `--refs` which ones you actually mean.
+3. **Other copies are now divergent forever.** Any store copy, any remote you did
+   not rebuild, still has the old objects and cannot be reconciled with the new
+   history except by being replaced.
+4. **For a leaked secret, erasure is not guaranteed.** The remotes live in synced
+   cloud folders. Google Drive and OneDrive keep their own version history of files
+   you delete, and you cannot purge a packfile from their retention. Treat a secret
+   that reached a cloud remote as compromised and rotate it. Rewriting the store
+   limits future exposure; it does not undo past exposure.
+
+The cheaper alternative, and usually the right one: start a fresh store, archive the
+old one offline, and accept a history discontinuity. `tycho status` will show the
+new store's backup count starting from one, which is honest about what happened.
+
 ## 7. Restore
 
 ```mermaid
