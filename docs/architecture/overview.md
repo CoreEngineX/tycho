@@ -43,7 +43,7 @@ flowchart LR
   end
   subgraph SCHED["scheduler"]
     direction TB
-    LD["launchd agent<br/>runs tycho on a calendar"]
+    LD["launchd agent<br/>calendar trigger"]
   end
   SCHED --> TY
   SRC --> TY

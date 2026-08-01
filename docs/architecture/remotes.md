@@ -61,16 +61,29 @@ its object database.
 
 ```mermaid
 stateDiagram-v2
+  direction LR
   [*] --> Unseen
-  Unseen --> Synced: first push creates the bare repo
-  Synced --> Synced: push succeeds and the head matches
-  Synced --> Behind: unreachable, remote is optional
-  Behind --> Synced: reachable again, catch-up push
-  Synced --> Failed: push rejected, or the head does not match
-  Unseen --> Failed: required remote unreachable
-  Behind --> Failed: optional remote behind past its tolerance
-  Failed --> Synced: cause fixed, next run pushes
+  Unseen --> Synced: T1
+  Unseen --> Failed: T2
+  Synced --> Behind: T3
+  Behind --> Synced: T4
+  Synced --> Failed: T5
+  Behind --> Failed: T6
+  Failed --> Synced: T7
 ```
+
+| | Transition | Trigger |
+|---|---|---|
+| T1 | Unseen to Synced | First push succeeds and creates the bare repo |
+| T2 | Unseen to Failed | A required remote was unreachable on its first run |
+| T3 | Synced to Behind | Unreachable, and the remote is marked optional |
+| T4 | Behind to Synced | Reachable again. The next push carries everything missed |
+| T5 | Synced to Failed | Push rejected, or the remote head does not match after a reported success |
+| T6 | Behind to Failed | An optional remote has been behind past its tolerance |
+| T7 | Failed to Synced | The cause was fixed and the next run pushed cleanly |
+
+A `Synced` remote that pushes successfully again stays `Synced`; that self-transition
+is omitted from the diagram because it is the unremarkable case.
 
 ```rust
 enum RemoteState {
@@ -91,14 +104,14 @@ does not have. An external drive plugged in after a month gets the month.
 
 ## 5. Failure modes
 
-| Situation | Behaviour |
-|---|---|
-| Optional remote unreachable | `Behind`, run exits 0, status shows the lag in yellow |
-| Required remote unreachable | `Failed`, run exits non-zero, notification fires |
-| Path exists but is not a git repository | `Failed`. Tycho never initialises over a directory holding other content |
-| Non-fast-forward rejection | `Failed`. Means another machine pushed to this remote with the same profile. Never force-pushed |
-| Head mismatch after a successful push | `Failed`. The push reported success and the remote disagrees, which is the case worth being loudest about |
-| Sync conflict artifacts in the folder | `doctor` reports them. Files matching `*conflict*` or `* (1).*` next to a bare repo mean the sync client is fighting something |
+| Situation                               | Behaviour                                                                                                                      |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Optional remote unreachable             | `Behind`, run exits 0, status shows the lag in yellow                                                                          |
+| Required remote unreachable             | `Failed`, run exits non-zero, notification fires                                                                               |
+| Path exists but is not a git repository | `Failed`. Tycho never initialises over a directory holding other content                                                       |
+| Non-fast-forward rejection              | `Failed`. Means another machine pushed to this remote with the same profile. Never force-pushed                                |
+| Head mismatch after a successful push   | `Failed`. The push reported success and the remote disagrees, which is the case worth being loudest about                      |
+| Sync conflict artifacts in the folder   | `doctor` reports them. Files matching `*conflict*` or `* (1).*` next to a bare repo mean the sync client is fighting something |
 
 One machine per profile per remote. Two machines pushing the same profile name to
 one folder will diverge and the second will be rejected rather than merged, because

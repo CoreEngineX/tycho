@@ -18,17 +18,17 @@ tycho doctor
 tycho log [PROFILE] [-f]
 ```
 
-| Command | Does |
-|---|---|
-| `run` | Capture, commit, push. `--all` covers every profile and is what launchd invokes. `--dry-run` prints the plan and stops before touching the store |
-| `status` | Per profile: next scheduled run, store size and backup count, one line per remote. `--check` exits non-zero on any yellow or red |
-| `history` | The store's commits, rendered. Equivalent to reading `git log` in the store, which also works |
-| `restore` | Recover to a destination directory. See section 4 |
-| `watch` / `ignore` | Rule management with redundancy detection, editing the config in place |
-| `config` | Validate, locate, or create the config file |
-| `service` | launchd agent lifecycle. See `scheduling.md` |
-| `doctor` | Environment, service, remotes, and object database health in one command |
-| `log` | Tail the log file without needing to know where it lives |
+| Command            | Does                                                                                                                                             |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `run`              | Capture, commit, push. `--all` covers every profile and is what launchd invokes. `--dry-run` prints the plan and stops before touching the store |
+| `status`           | Per profile: next scheduled run, store size and backup count, one line per remote. `--check` exits non-zero on any yellow or red                 |
+| `history`          | The store's commits, rendered. Equivalent to reading `git log` in the store, which also works                                                    |
+| `restore`          | Recover to a destination directory. See section 4                                                                                                |
+| `watch` / `ignore` | Rule management with redundancy detection, editing the config in place                                                                           |
+| `config`           | Validate, locate, or create the config file                                                                                                      |
+| `service`          | launchd agent lifecycle. See `scheduling.md`                                                                                                     |
+| `doctor`           | Environment, service, remotes, and object database health in one command                                                                         |
+| `log`              | Tail the log file without needing to know where it lives                                                                                         |
 
 ## 2. Status output
 
@@ -59,11 +59,11 @@ somebody runs it.
 
 ## 3. Exit codes
 
-| Code | Meaning |
-|---|---|
-| 0 | Success. Includes a run where an optional remote is behind |
-| 1 | Failure: a run failed, a required remote is unreachable, config has errors, or `status --check` found yellow or red |
-| 2 | Usage error, which clap emits |
+| Code | Meaning                                                                                                             |
+| ---- | ------------------------------------------------------------------------------------------------------------------- |
+| 0    | Success. Includes a run where an optional remote is behind                                                          |
+| 1    | Failure: a run failed, a required remote is unreachable, config has errors, or `status --check` found yellow or red |
+| 2    | Usage error, which clap emits                                                                                       |
 
 `status --check` is the shape a monitoring hook wants: no output parsing, just an
 exit code.

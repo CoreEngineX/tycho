@@ -82,16 +82,17 @@ launchd runs the agent in a context macOS TCC restricts. A profile watching path
 outside the ordinary home directories needs `~/.cargo/bin/tycho` added to Full Disk
 Access in System Settings, exactly as `a sibling daemon` in this same repository does.
 `tycho doctor` checks for the symptom - readable by hand, unreadable under the agent
+
 - and says so, rather than leaving a daemon that runs and quietly captures nothing.
 
 ## 4. Service commands
 
-| Command | Does |
-|---|---|
-| `service install` | Generate the plist, `launchctl bootstrap gui/$UID`, report the next fire time |
-| `service status` | Whether the agent is loaded, its last exit status, and the next scheduled run |
-| `service restart` | `bootout` then `bootstrap`, for after a config change |
-| `service uninstall` | `bootout` and remove the plist. Never touches the store or any backup |
+| Command             | Does                                                                          |
+| ------------------- | ----------------------------------------------------------------------------- |
+| `service install`   | Generate the plist, `launchctl bootstrap gui/$UID`, report the next fire time |
+| `service status`    | Whether the agent is loaded, its last exit status, and the next scheduled run |
+| `service restart`   | `bootout` then `bootstrap`, for after a config change                         |
+| `service uninstall` | `bootout` and remove the plist. Never touches the store or any backup         |
 
 `service status` surfacing the last exit status matters: `launchctl list` showing a
 non-zero exit for the old job was the evidence that revealed a year of silent

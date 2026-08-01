@@ -7,10 +7,10 @@ and `git log`, `git show` and `git clone` all work on it directly.
 
 Default location, overridable per profile with `store_path`:
 
-| Platform | Path |
-|---|---|
-| macOS | `~/Library/Application Support/tycho/store/<profile>.git` |
-| Windows | `%LOCALAPPDATA%\tycho\store\<profile>.git` |
+| Platform | Path                                                      |
+| -------- | --------------------------------------------------------- |
+| macOS    | `~/Library/Application Support/tycho/store/<profile>.git` |
+| Windows  | `%LOCALAPPDATA%\tycho\store\<profile>.git`                |
 
 ## 1. Why bare
 
@@ -82,23 +82,27 @@ handle every file rather than two processes per file.
 
 ```mermaid
 sequenceDiagram
-  participant P as plan
-  participant H as git hash-object
-  participant I as git update-index
-  participant T as git write-tree
-  participant C as git commit-tree
-  participant R as git update-ref
-  P->>H: every file path on stdin, batched
-  H-->>P: one blob sha per line, in order
-  P->>I: mode, sha and store path per line
-  I-->>P: temporary index populated
-  P->>T: write the index out as a tree
-  T-->>P: tree sha
-  P->>C: tree sha, parent commit, message
+  participant P as tycho
+  participant H as hash-object
+  participant I as update-index
+  participant W as write-tree
+  participant C as commit-tree
+  participant R as update-ref
+  P->>H: file paths, batched
+  H-->>P: blob shas
+  P->>I: mode, sha, path
+  I-->>P: index built
+  P->>W: write index as tree
+  W-->>P: tree sha
+  P->>C: tree, parent, message
   C-->>P: commit sha
-  P->>R: move refs/heads/main to the commit
-  R-->>P: the store has advanced
+  P->>R: move refs/heads/main
+  R-->>P: store advanced
 ```
+
+Each arrow is one process invocation, not one per file. `hash-object` reads every
+path from stdin and returns shas in the same order; `update-index` reads every
+entry from stdin in one go.
 
 Concretely:
 
@@ -183,13 +187,13 @@ sequenceDiagram
   participant U as tycho restore
   participant S as store
   participant D as destination
-  U->>S: rev-list to find the newest commit at or before the requested time
+  U->>S: newest commit at or before the time
   S-->>U: commit sha
-  U->>S: archive that commit, optionally limited to given paths
-  S-->>D: plain files and overlay, extracted
-  U->>S: for each captured repo, init and fetch from refs/tycho/key
-  S-->>D: a real git repo with full history
-  U->>D: check out the recorded head, then apply overlay files over it
+  U->>S: archive tree, optionally scoped to paths
+  S-->>D: plain files and overlay
+  U->>S: fetch refs for each captured repo
+  S-->>D: repo with full history
+  U->>D: checkout head, apply overlay on top
 ```
 
 Plain files are extracted with `git archive`, which streams a tree without needing

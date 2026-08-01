@@ -74,11 +74,11 @@ behaviour that lost `CLAUDE.md`.
 
 Each directory entry is classified:
 
-| Entry | Detected by | Result |
-|---|---|---|
+| Entry           | Detected by                                                  | Result                               |
+| --------------- | ------------------------------------------------------------ | ------------------------------------ |
 | Repository root | `.git` directory, or `.git` file for a submodule or worktree | `Entry::Repo`, walk does not descend |
-| Excluded | the deepest matching rule is an ignore | skipped, walk does not descend |
-| Plain file | anything else that survives the rule tree | `Entry::Plain` |
+| Excluded        | the deepest matching rule is an ignore                       | skipped, walk does not descend       |
+| Plain file      | anything else that survives the rule tree                    | `Entry::Plain`                       |
 
 Both forms of `.git` matter here. Every platform repository under
 `~/Developer/CoreEngineX/products` is a submodule, so its `.git` is a file
@@ -187,11 +187,11 @@ is not append-only is the final `update-ref`.
 
 ## 8. Test strategy
 
-| Layer | How |
-|---|---|
-| Rule tree | Table-driven unit tests on plain values, no filesystem |
-| Plan | Temporary directory trees, asserting classification and non-descent |
-| Repo capture | Real git repositories built in a temporary directory with dirty, untracked, gitignored and submodule cases |
-| Overlay filtering | A repo with a gitignored `node_modules` and a gitignored `CLAUDE.md`, asserting the first is excluded and the second captured |
-| Store | Round-trip: run, restore, compare bytes |
-| Regression | `git bundle verify` invoked with the working directory set to a non-repository, which is the failure that started this project |
+| Layer             | How                                                                                                                            |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Rule tree         | Table-driven unit tests on plain values, no filesystem                                                                         |
+| Plan              | Temporary directory trees, asserting classification and non-descent                                                            |
+| Repo capture      | Real git repositories built in a temporary directory with dirty, untracked, gitignored and submodule cases                     |
+| Overlay filtering | A repo with a gitignored `node_modules` and a gitignored `CLAUDE.md`, asserting the first is excluded and the second captured  |
+| Store             | Round-trip: run, restore, compare bytes                                                                                        |
+| Regression        | `git bundle verify` invoked with the working directory set to a non-repository, which is the failure that started this project |
