@@ -133,6 +133,11 @@ coreenginex
   onedrive                ok        reachable, head matches, fsck clean
   t7                      warn      not mounted, behind 3, optional
 
+volumes
+--------------------------------------------------------------------------
+  /                       ok        84 GB free
+  /Volumes/T7             warn      12 GB free, 2 profiles, 41 GB stored
+
 second-company
 --------------------------------------------------------------------------
   service                 ok        loaded, last exit 1, next today 18:00
@@ -147,6 +152,11 @@ One check per row, one verdict word per check, and the evidence beside it. The
 `launchctl list` was the evidence that revealed a year of silent failure in the old
 system, and nobody had a reason to go looking for it. Here it is on screen without
 being asked for.
+
+`volumes` is grouped by disk rather than by profile because that is how the
+constraint actually works. Several profiles can share one destination drive, and
+since the store keeps full history forever the drive fills eventually. Reporting
+free space before a push fails with no room left is the whole point of the row.
 
 ## 6. Exit codes
 

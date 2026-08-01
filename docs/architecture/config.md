@@ -127,6 +127,12 @@ A second profile is worth adding only when one of these is true:
 If none of those apply, a second profile is two stores, two schedules, two launchd
 agents and two things to check, for no benefit. Add roots to the profile you have.
 
+**Two profiles can share a destination.** Pointing both at `/Volumes/T7/tycho` gives
+that folder `coreenginex.git` and `personal.git` side by side, fully independent -
+separate objects, refs, locks and schedules. The only shared resource is disk space,
+which `tycho doctor` reports per volume. So "different destinations" as a reason for
+a second profile means a different *account or drive*, not a different folder.
+
 The schema keeps profiles as an array so that adding a second later is an edit
 rather than a migration, and `tycho run` with no argument is unambiguous while
 there is only one.

@@ -41,19 +41,49 @@ glob in a configured path is resolved then - `GoogleDrive-*` matches whatever
 account directory exists on this machine - and the first match wins. If the glob
 matches nothing, an optional remote is behind and a required remote fails.
 
-## 2a. `RECOVERY.md` beside the repository
+## 2a. Several profiles can share one destination
 
-Every run writes a `RECOVERY.md` into the remote folder, next to the bare repo:
+The bare repository is named after the profile, so a folder holds as many profiles
+as you point at it and they never interact:
 
 ```text
-CoreEngineX-Backups/
-  coreenginex.git/
-  RECOVERY.md
+/Volumes/T7/tycho/
+  coreenginex.git/          one profile's complete history
+  personal.git/             another's, entirely separate objects and refs
+  RECOVERY.md               covers both
 ```
 
+Nothing is shared: separate object databases, separate refs, separate locks,
+separate schedules. Pushing one cannot affect the other, and losing one does not
+touch the other. Two profiles may even both call their remote `t7` - remote names
+are unique within a profile, not across them.
+
+The only genuinely shared resource is **disk space**, and it matters here because
+the store keeps full history forever. Two profiles on one drive fill it twice as
+fast, so `tycho doctor` reports free space on each remote's volume rather than
+waiting for a push to fail with no room left.
+
+This is a different situation from the one in section 5. Two *profiles* sharing a
+folder is fine because they are two repositories. Two *machines* pushing the *same
+profile name* into one folder is not, because that is one repository receiving two
+divergent histories.
+
+## 2b. `RECOVERY.md` beside the repositories
+
+Every run writes a `RECOVERY.md` into the remote folder, alongside the bare repos.
 It contains the exact commands to recover from this folder using nothing but git,
-with the profile's real paths and captured repository keys filled in, and the date
-of the run that wrote it.
+with real paths and captured repository keys filled in, and the date it was written.
+
+**It describes the folder, not the profile that wrote it.** The writer scans the
+folder for `*.git` directories and documents every one it finds, so a folder holding
+two profiles gets one file covering both. Writing a per-profile file instead would
+mean whichever profile ran last silently overwrote the other's instructions, or a
+directory full of near-identical files that a person in a crisis has to choose
+between.
+
+Both profiles therefore produce identical content once both repositories exist, so a
+race between two simultaneous runs converges rather than corrupting. The write is a
+temporary file plus a rename, so a reader never sees a partial one.
 
 This is not documentation for its own sake. In an actual disaster the thing you
 still have is a folder in a cloud account, quite possibly opened on a borrowed
@@ -195,10 +225,14 @@ bytes that were already committed.
 | Head mismatch after a successful push   | `Failed`. The push reported success and the remote disagrees, which is the case worth being loudest about                      |
 | Sync conflict artifacts in the folder   | `doctor` reports them. Files matching `*conflict*` or `* (1).*` next to a bare repo mean the sync client is fighting something |
 
-One machine per profile per remote. Two machines pushing the same profile name to
-one folder will diverge and the second will be rejected rather than merged, because
-silently merging two machines' backup histories would produce a history that
-describes neither machine. Two machines mean two profile names.
+**One machine per profile name.** Two machines pushing the same profile name into
+one folder are two histories arriving at one repository. They diverge, and the
+second is rejected rather than merged, because a merged history would describe
+neither machine. Give the second machine a different profile name and it gets its
+own repository in the same folder, per section 2a.
+
+Note this constrains the *profile name*, not the folder. One folder holding several
+profiles is supported and expected.
 
 ## 6. What a remote costs
 

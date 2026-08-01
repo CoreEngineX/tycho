@@ -20,8 +20,12 @@ CoreEngineX-Backups/
       heads/main      the backup history, one commit per run
       tycho/...       each captured repository's branches and tags
     HEAD  config  ...
-  RECOVERY.md         these instructions, written by every run
+  personal.git/       a second profile, if one points here - fully independent
+  RECOVERY.md         these instructions, covering every repo in the folder
 ```
+
+A folder may hold more than one profile. Each `*.git` directory is a separate,
+complete recovery source, so recover the one you need and ignore the rest.
 
 There is no separate index, manifest or catalogue held anywhere else. One folder is
 a complete, self-sufficient recovery source, which is the property that makes the
