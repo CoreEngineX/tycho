@@ -75,6 +75,42 @@ schedule means, and the wake-up catch-up already covers a missed run.
 The absolute path to the binary is written at install time from the resolved
 location, so the plist never depends on a `PATH` that launchd does not have.
 
+### The catch-up agent
+
+`service install` writes a second, separate agent whose only job is
+`tycho push --all`. It never captures.
+
+Label: `com.coreenginex.tycho.catchup`.
+
+```xml
+<key>ProgramArguments</key>
+<array>
+  <string>/Users/…/.cargo/bin/tycho</string>
+  <string>push</string>
+  <string>--all</string>
+</array>
+<key>StartOnMount</key>
+<true/>
+<key>StartInterval</key>
+<integer>3600</integer>
+<key>RunAtLoad</key>
+<true/>
+```
+
+`StartOnMount` fires on every filesystem mount, so plugging in the external drive
+triggers the catch-up push within seconds rather than at the next weekly backup.
+The hourly interval covers the other reachability failures - a signed-out cloud
+account, a sync client that was not running. `RunAtLoad` is true here, unlike the
+backup agent, because pushing what already exists at login is free and occasionally
+exactly what is needed.
+
+With nothing pending the process reads the state file and exits, so an hourly
+trigger and a mount-storm both cost nothing worth measuring.
+
+The split is deliberate: **capture happens on the backup schedule and nowhere
+else.** A trigger that fired a full backup on every mount would make the contents of
+a backup depend on when you happened to plug in a drive.
+
 ### Full Disk Access
 
 launchd runs the agent in a context macOS TCC restricts. A profile watching paths

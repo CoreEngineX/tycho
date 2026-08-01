@@ -11,11 +11,11 @@ never had a reason to care what a ref is, start here.
 
 An object is content, addressed by the hash of its own bytes. Three kinds matter:
 
-| Object | Holds | Does not hold |
-|---|---|---|
-| **blob** | a file's bytes | its name, its path, its permissions |
-| **tree** | a directory listing: names, modes, and the blob or tree each points to | file contents |
-| **commit** | one tree, zero or more parent commits, author, date, message | files |
+| Object     | Holds                                                                  | Does not hold                       |
+| ---------- | ---------------------------------------------------------------------- | ----------------------------------- |
+| **blob**   | a file's bytes                                                         | its name, its path, its permissions |
+| **tree**   | a directory listing: names, modes, and the blob or tree each points to | file contents                       |
+| **commit** | one tree, zero or more parent commits, author, date, message           | files                               |
 
 A commit does not contain your files. It points at a tree, which points at blobs
 and other trees. Reading a commit means walking that chain.
@@ -41,7 +41,7 @@ flowchart LR
   NAMES --> DB
 ```
 
-Because an object's name *is* the hash of its content, **identical content is stored
+Because an object's name _is_ the hash of its content, **identical content is stored
 once**. Two files with the same bytes are one blob. A file unchanged between two
 commits is the same blob in both trees, stored once, referenced twice.
 
@@ -57,13 +57,13 @@ object.
 
 Everything you already use is a ref in some namespace:
 
-| What you call it | What it is |
-|---|---|
-| branch `main` | `refs/heads/main` |
-| tag `v1.0` | `refs/tags/v1.0` |
-| `origin/main` | `refs/remotes/origin/main` |
-| the stash | `refs/stash` |
-| `HEAD` | a ref that points at another ref |
+| What you call it | What it is                       |
+| ---------------- | -------------------------------- |
+| branch `main`    | `refs/heads/main`                |
+| tag `v1.0`       | `refs/tags/v1.0`                 |
+| `origin/main`    | `refs/remotes/origin/main`       |
+| the stash        | `refs/stash`                     |
+| `HEAD`           | a ref that points at another ref |
 
 Git does not treat these namespaces specially in storage - only in commands.
 `git branch` lists `refs/heads/*` because that is what it was written to list.
@@ -122,29 +122,29 @@ silently never leave the machine. Tycho always names both refspecs explicitly.
 A bare repo has no working tree - the contents of `.git` sit directly in the
 directory. Nothing else differs; the object database and refs are identical.
 
-It is what you push *to*, because pushing into a repository with a checked-out
+It is what you push _to_, because pushing into a repository with a checked-out
 branch would leave that repository's working tree disagreeing with its own HEAD.
 Both Tycho's store and every remote are bare.
 
 ## 5. Porcelain and plumbing
 
-`git commit` is *porcelain* - a convenience wrapper over the real operations.
+`git commit` is _porcelain_ - a convenience wrapper over the real operations.
 Underneath, making a commit is four steps:
 
-| Step | Plumbing command | Produces |
-|---|---|---|
-| Store file contents | `git hash-object -w` | a blob hash per file |
-| Assemble a directory listing | `git update-index` then `git write-tree` | a tree hash |
-| Record it as a commit | `git commit-tree` | a commit hash |
-| Move the branch | `git update-ref` | the branch now points at it |
+| Step                         | Plumbing command                         | Produces                    |
+| ---------------------------- | ---------------------------------------- | --------------------------- |
+| Store file contents          | `git hash-object -w`                     | a blob hash per file        |
+| Assemble a directory listing | `git update-index` then `git write-tree` | a tree hash                 |
+| Record it as a commit        | `git commit-tree`                        | a commit hash               |
+| Move the branch              | `git update-ref`                         | the branch now points at it |
 
 Tycho calls those four directly. That is why its store needs no working tree: a
-working tree exists so *you* can edit files, and nothing about writing a commit
+working tree exists so _you_ can edit files, and nothing about writing a commit
 requires one.
 
 It is also why a run is atomic. The first three steps only add new objects, which
 are invisible to anyone until something points at them. The single step that
-changes what the store *means* is the last one, and it is one file write.
+changes what the store _means_ is the last one, and it is one file write.
 
 ## 6. Packs and delta compression
 
@@ -165,11 +165,11 @@ Storing the same history as objects lets git delta it the way it was designed to
 
 Every design choice in the architecture docs traces back to something above:
 
-| Choice | The git fact behind it |
-|---|---|
-| Capture history by fetching refs | Content addressing deduplicates automatically |
-| Store captured refs under `refs/tycho/*` | Refs are reachability roots, so nothing is collected |
-| Never use `--all` when pushing | `--all` means `refs/heads/*` only |
-| A bare store with no working tree | A working tree exists for editing, and nothing here edits |
-| Build commits with plumbing | Only `update-ref` changes meaning, so runs are atomic |
-| Remotes are bare repos in folders | Pushing to a checked-out repo corrupts its working tree |
+| Choice                                   | The git fact behind it                                    |
+| ---------------------------------------- | --------------------------------------------------------- |
+| Capture history by fetching refs         | Content addressing deduplicates automatically             |
+| Store captured refs under `refs/tycho/*` | Refs are reachability roots, so nothing is collected      |
+| Never use `--all` when pushing           | `--all` means `refs/heads/*` only                         |
+| A bare store with no working tree        | A working tree exists for editing, and nothing here edits |
+| Build commits with plumbing              | Only `update-ref` changes meaning, so runs are atomic     |
+| Remotes are bare repos in folders        | Pushing to a checked-out repo corrupts its working tree   |

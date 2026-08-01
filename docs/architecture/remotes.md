@@ -130,6 +130,60 @@ Catch-up needs no special code. A remote that comes back reachable receives the
 full history it missed on the next push, because git pushes everything the remote
 does not have. An external drive plugged in after a month gets the month.
 
+## 4a. What "unreachable" actually means, and no internet is usually not it
+
+A folder remote on a sync client behaves differently from what people expect,
+because **the push is a local filesystem write**. `~/Library/CloudStorage/GoogleDrive-…`
+is a mounted path on your disk. Pushing to it does not touch the network.
+
+| Situation | What happens |
+|---|---|
+| **No internet, Drive folder mounted** | The push succeeds immediately. The Drive client queues the upload and sends it when connectivity returns. Tycho does not wait, retry, or report a problem, because from its side nothing went wrong |
+| **Drive app not running, or signed out** | The path does not exist. The remote is unreachable, so `Behind` if optional and `Failed` if required |
+| **External drive not plugged in** | Same. The path does not exist |
+| **Folder exists but the disk is full** | The push fails. `Failed`, loudly |
+
+So the answer to "what if there is no internet when it backs up" is normally
+**nothing waits** - the data lands in the Drive folder on local disk at backup time
+and Google receives it whenever the machine is next online. That is the sync
+client's job, and duplicating it inside Tycho would mean maintaining a second,
+worse upload queue.
+
+**The honest limitation this creates.** Post-push verification compares
+`git ls-remote` against the folder, which proves the *folder* has the commit. It
+does not prove Google's servers have it, and there is no reliable public API on
+macOS to ask a file provider whether an upload finished. A remote reading `verified`
+means the bytes are written and handed to the sync client, not that they are in the
+cloud.
+
+Two things make that acceptable rather than hand-waved. Multiple remotes fail
+independently, so one stalled sync client is not a lost backup. And the external
+drive is directly verifiable - there is no client between Tycho and the disk, which
+is a large part of what makes an unglamorous USB drive worth having in the list.
+
+## 4b. Catch-up without waiting for the next backup
+
+A remote that was genuinely unreachable - unplugged drive, signed-out account -
+would otherwise stay behind until the next scheduled run, which on a weekly
+schedule means up to a week with one destination stale while the others are fine.
+
+`tycho push [PROFILE]` closes that. It pushes whatever the store already has to any
+remote that is behind, and does no capture at all. With nothing pending it reads the
+state file and exits, which costs nothing worth measuring, so it can be triggered
+often.
+
+Two triggers, both from `scheduling.md`:
+
+- **`StartOnMount`** - launchd starts the job every time a filesystem is mounted, so
+  plugging the T7 in causes the catch-up push within seconds. This is the exact case
+  the key exists for.
+- **A low-frequency `StartInterval`** - hourly by default, which covers a signed-out
+  account that gets signed back in, or a Drive app that was not running.
+
+Neither ever captures. Capture happens on the backup schedule and nowhere else, so
+these cannot produce a surprise backup at an unexpected moment - they only move
+bytes that were already committed.
+
 ## 5. Failure modes
 
 | Situation                               | Behaviour                                                                                                                      |

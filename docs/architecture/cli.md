@@ -7,8 +7,9 @@ nothing that stops being useful when piped into a log file.
 
 ```text
 tycho run [PROFILE] [--all] [--dry-run]
+tycho push [PROFILE] [--all]
 tycho status [PROFILE] [--check]
-tycho history [PROFILE] [-n N]
+tycho history [PROFILE] [-n N] [--path PATH]
 tycho restore PROFILE [--at TIME] [--bundle] [PATH ...] DEST
 tycho watch add|rm|list [PROFILE] [PATH]
 tycho ignore add|rm|list [PROFILE] [PATTERN]
@@ -18,17 +19,21 @@ tycho doctor
 tycho log [PROFILE] [-f]
 ```
 
-| Command            | Does                                                                                                                                             |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `run`              | Capture, commit, push. `--all` covers every profile and is what launchd invokes. `--dry-run` prints the plan and stops before touching the store |
-| `status`           | Per profile: next scheduled run, store size and backup count, one line per remote. `--check` exits non-zero on any yellow or red                 |
-| `history`          | The store's commits, rendered. Equivalent to reading `git log` in the store, which also works                                                    |
-| `restore`          | Recover to a destination directory. See section 4                                                                                                |
-| `watch` / `ignore` | Rule management with redundancy detection, editing the config in place                                                                           |
-| `config`           | Validate, locate, or create the config file                                                                                                      |
-| `service`          | launchd agent lifecycle. See `scheduling.md`                                                                                                     |
-| `doctor`           | Environment, service, remotes, and object database health in one command                                                                         |
-| `log`              | Tail the log file without needing to know where it lives                                                                                         |
+| Command | Does |
+| --- | --- |
+| `run` | Capture, commit, push. `--all` covers every profile and is what launchd invokes. `--dry-run` prints the plan and stops before touching the store |
+| `push` | Push what the store already holds to any remote that is behind. Never captures. Exits immediately with nothing pending, so it is cheap enough to trigger on every mount and hourly |
+| `status` | Per profile: next scheduled run, store size and backup count, one line per remote. `--check` exits non-zero on any yellow or red |
+| `history` | The store's commits, rendered. `--path` limits it to backups that touched one file, which is how you find the backup to restore from |
+| `restore` | Recover to a destination directory. See section 7 |
+| `watch` / `ignore` | Rule management with redundancy detection, editing the config in place |
+| `config` | Validate, locate, or create the config file |
+| `service` | launchd agent lifecycle for both the backup agent and the catch-up agent. See `scheduling.md` |
+| `doctor` | Environment, service, remotes, and object database health in one command |
+| `log` | Tail the log file without needing to know where it lives |
+
+`run` and `push` are the only commands that write anything outside the config file,
+and `push` writes only to remotes.
 
 ## 2. Output rules
 
@@ -158,8 +163,9 @@ exit code.
 
 ```text
 tycho restore coreenginex --at "2026-07-22 18:00" ~/recovered
-tycho restore coreenginex --at "3 days ago" org/handbook ~/recovered
-tycho restore coreenginex --bundle org/handbook ~/recovered
+tycho restore coreenginex --at "3 days ago" CoreEngineX/org/handbook ~/recovered
+tycho restore coreenginex --bundle CoreEngineX/org/handbook ~/recovered
+tycho restore coreenginex --store <path to a remote> ~/recovered
 ```
 
 `--at` accepts an absolute timestamp or a relative expression and selects the
@@ -171,9 +177,18 @@ paths as shown by `history` and `status`. Without them the whole profile comes b
 `--bundle` writes a git bundle per captured repository instead of a checkout, for
 handing history to another machine.
 
-Restore never writes into an existing non-empty destination without `--force`.
-Recovering a backup on top of live data is how a recovery turns into a second
-incident.
+`--store` reads a remote directly instead of the local store, which is the disaster
+case: on a replacement machine there is no local store, only a folder in a cloud
+account. It accepts the same glob a remote path does.
+
+**Restore never writes into your live tree, and never into an existing non-empty
+destination without `--force`.** It puts files somewhere you name and you do the
+copy yourself. A restore that overwrote in place would be one typo away from turning
+a one-file problem into a directory-sized one, which is how a recovery becomes the
+second incident.
+
+`docs/walkthrough.md` shows the single-file recovery and the whole-machine recovery
+as complete sessions.
 
 ## 8. Dry run
 

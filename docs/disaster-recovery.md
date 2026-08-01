@@ -36,12 +36,12 @@ verify in advance.
 
 Stated honestly, because these are the things that fail in a real disaster:
 
-| Dependency | Risk |
-|---|---|
-| Access to the cloud account | If the password or its 2FA lived only on the destroyed machine, nothing below runs. Keep recovery credentials somewhere the machine's loss does not take with it |
-| `git` installed | Trivial on any new machine, and the only software required |
-| The folder having synced completely | A cloud client that was mid-upload when the machine died may hold a partial push. This is why there is more than one remote |
-| Knowing this procedure exists | Which is why `RECOVERY.md` is written into the remote folder itself, next to the repository it describes |
+| Dependency                          | Risk                                                                                                                                                             |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Access to the cloud account         | If the password or its 2FA lived only on the destroyed machine, nothing below runs. Keep recovery credentials somewhere the machine's loss does not take with it |
+| `git` installed                     | Trivial on any new machine, and the only software required                                                                                                       |
+| The folder having synced completely | A cloud client that was mid-upload when the machine died may hold a partial push. This is why there is more than one remote                                      |
+| Knowing this procedure exists       | Which is why `RECOVERY.md` is written into the remote folder itself, next to the repository it describes                                                         |
 
 The T7 external drive is the answer to the first and third rows: it depends on no
 account and no network.
