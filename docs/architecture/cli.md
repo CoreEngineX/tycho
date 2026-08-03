@@ -173,9 +173,9 @@ coreenginex
   agent schedule          ok        matches config
   store                   ok        1.2 GB, 14 backups, HEAD resolves
   refs                    ok        3,412 refs, packed
-  gdrive                  ok        all refs present, connectivity clean
-  onedrive                ok        all refs present, connectivity clean
-  t7                      warn      not mounted, behind 3 of 4, optional
+  gdrive                  ok        all refs present, verified
+  onedrive                ok        all refs present, verified
+  t7                      warn      behind 3 of 4, optional
 
 second-company
 --------------------------------------------------------------------------
@@ -204,7 +204,19 @@ history, so free space is what they contend for.
 
 Two rows say `use --deep` rather than guessing. Full Disk Access cannot be measured
 from an interactive process, and notification delivery cannot be measured without
-sending one; `scheduling.md` sections 7 and 8 describe both probes.
+sending one; `scheduling.md` sections 7 and 8 describe both probes. `--deep` also
+upgrades the object check from `fsck --connectivity-only` to a full one.
+
+The `schedule` row is the overdue check from `scheduling.md` section 1, and it is red
+on its own: a backup that did not happen is worse than one that happened and could
+not be pushed. A profile that has never run successfully is overdue from the moment
+it is configured.
+
+**Colour is emphasis, never meaning.** Every verdict is the word `ok`, `warn` or
+`fail` before it is a colour, so the report reads identically through a pipe, in a
+log file, and to somebody who cannot distinguish the two. `--no-color`, `NO_COLOR`
+and a stdout that is not a terminal each turn it off - and under launchd stdout is a
+file, so an agent's log never contains an escape sequence.
 
 ## 6. Exit codes
 

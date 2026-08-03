@@ -89,6 +89,14 @@ their own agents with no interaction.
 never hand-written, because a hand-written plist that had drifted from what the
 script needed is a large part of how the old system failed unnoticed.
 
+**When `install` was given `--config`, that path is written into `ProgramArguments`
+as an absolute path.** Found by installing a scratch agent and letting launchd fire
+it: without this the agent reads the default config location instead, so on any
+machine whose config lives elsewhere it fails on every single firing with a
+file-not-found - loudly in its own `.err.log`, and completely invisibly to anyone not
+reading that file. launchd also runs the agent from `/`, so a relative path would
+resolve against a directory nobody chose.
+
 At `~/Library/LaunchAgents/com.coreenginex.tycho.profile.<profile>.plist`:
 
 ```xml
@@ -178,6 +186,12 @@ load, as belt and braces.
 non-zero exit for the old job was the evidence that revealed a year of silent
 failure, and nobody had reason to look. `tycho status` shows it without being asked.
 
+**`launchctl list` reports `LastExitStatus` as a raw `wait(2)` status, not an exit
+code.** An ordinary failure comes back as `256`, and a job killed by a signal comes
+back as the signal number - so printing the field verbatim showed `exit 256`, a
+number no shell ever produced and nobody could look up. It is decoded the way the
+shell decodes it, and an exit is distinguished from a signal.
+
 **`doctor` compares each installed agent's schedule against the config's.** Drift
 between what the config says and what is actually installed is precisely what killed
 the old system, and it is a cheap comparison.
@@ -236,3 +250,25 @@ argument for the OS scheduler rests on wake-up catch-up behaviour that has to be
 verified rather than assumed - and on Windows, as on macOS, the overdue check in
 section 1 is what makes the answer not matter very much. Until then the `Schedule`
 type stays the same and only its translation changes.
+
+**Notifications port by the same pattern, and the pattern is the interesting part.**
+A CLI has no notification identity of its own on either platform: macOS wants an
+installed app bundle, Windows wants a registered `AppUserModelID`, and a binary in
+`~/.cargo/bin` has neither. The answer on both is to shell out to the platform's
+scripting host and borrow its identity - `osascript` here, `powershell` raising a
+`Windows.UI.Notifications` toast under PowerShell's own AUMID there. So the macOS
+banner is attributed to Script Editor and the Windows one will be attributed to
+PowerShell, and `doctor` says so rather than hiding it.
+
+A crate does not remove that. `notify-rust` hits the identical AUMID requirement on
+Windows and binds the deprecated `NSUserNotification` on macOS; it moves the caveat
+behind a dependency and an audit surface instead of solving it.
+
+**The Windows arm is deliberately not written yet.** It would compile, nothing would
+exercise it, and unverified code that compiles is the exact shape of thing this
+project keeps discovering was wrong - `disaster-recovery.md` has now been wrong twice
+that way. `platform::notify` is a `#[cfg]`-selected free function whose non-macOS arm
+returns a typed `Unsupported`, so a future port finds a failing call rather than a
+lie. A free function rather than a trait object because the implementation is chosen
+at compile time and never swapped at run time: a `dyn` would buy indirection and
+nothing else.

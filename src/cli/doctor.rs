@@ -135,6 +135,12 @@ fn probe_through_launchd(config: &crate::config::Config) -> Option<doctor::Check
     let found = wait_for(&out);
     let _ = launchd::bootout(&agent);
     let _ = std::fs::remove_file(&out);
+    // The plist goes too, not just the loaded job. Booting out leaves the file, and a
+    // health check that litters ~/Library/LaunchAgents with a job nobody installed is
+    // one people learn to distrust.
+    if let Ok(plist) = agent.plist_path() {
+        let _ = std::fs::remove_file(plist);
+    }
 
     Some(match found {
         Some(text) => {
