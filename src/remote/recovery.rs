@@ -56,9 +56,19 @@ pub fn scan(folder: &Path) -> Vec<Source> {
         .collect()
 }
 
+/// A remote is a bare repository Tycho did not create with its own permissions, so
+/// this reads it through the plain runner rather than through `Store`, which refuses
+/// anything not mode `0700`.
 fn keys_in(repo: &Path) -> Vec<String> {
-    let Ok(out) = Git::at(repo).run(
-        &["ls-tree", "-r", "--name-only", "-z", "HEAD"],
+    let git = Git::at(repo);
+    let Ok(out) = git.run(&["rev-parse", "HEAD"], Timeout::QUICK) else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let Ok(out) = git.run(
+        &["ls-tree", "-r", "-z", "--name-only", "--full-tree", "HEAD"],
         Timeout::WORK,
     ) else {
         return Vec::new();
@@ -69,7 +79,7 @@ fn keys_in(repo: &Path) -> Vec<String> {
     let mut keys: Vec<String> = String::from_utf8_lossy(&out.stdout)
         .split('\0')
         .filter_map(|path| {
-            path.strip_prefix(".tycho/repos/")?
+            path.strip_prefix(crate::store::REPOS_PREFIX)?
                 .strip_suffix("/REPO.txt")
                 .map(str::to_owned)
         })

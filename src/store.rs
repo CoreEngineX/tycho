@@ -24,6 +24,9 @@ pub type Item = (
 /// The one ref a backup lives on.
 pub const BACKUP_REF: &str = "refs/heads/main";
 
+/// Where a captured repository's provenance and overlay sit in the tree.
+pub const REPOS_PREFIX: &str = ".tycho/repos/";
+
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     #[error(transparent)]
@@ -329,6 +332,63 @@ impl Store {
             }
         }
         Ok(total)
+    }
+
+    /// The newest backup at or before `when`, or the newest of all when `when` is
+    /// `None`.
+    ///
+    /// `--before` compares against the **committer** date, which is the run's own
+    /// clock - the same value `history` prints - so "the backup from before I broke
+    /// it" means what the person typing it means.
+    ///
+    /// # Errors
+    ///
+    /// If git fails. A store with no commit at or before that moment is `None`.
+    pub fn at(&self, when: Option<&jiff::Timestamp>) -> Result<Option<Oid>, StoreError> {
+        let mut args = vec!["rev-list", "-n", "1"];
+        let before;
+        if let Some(when) = when {
+            before = format!("--before={}", when.as_second());
+            args.push(&before);
+        }
+        args.push(BACKUP_REF);
+
+        let out = self.repo.git().run(&args, Timeout::WORK)?;
+        if !out.status.success() {
+            return Ok(None);
+        }
+        let text = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        if text.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Oid::parse(&text).map_err(RepoError::from)?))
+    }
+
+    /// Every captured repository key in a backup.
+    ///
+    /// Derived from `.tycho/repos/<key>/REPO.txt` tree paths, never from ref names:
+    /// `refs/tycho/<key>/...` also holds `remotes/...` and `stashes/...`, so a rule
+    /// that stripped `/heads/` and `/tags/` emits several wrong keys for every real
+    /// one.
+    ///
+    /// # Errors
+    ///
+    /// If git fails.
+    pub fn keys(&self, commit: Oid) -> Result<Vec<String>, StoreError> {
+        let mut keys: Vec<String> = self
+            .repo
+            .ls_tree(commit)?
+            .iter()
+            .filter_map(|path| {
+                let text = path.as_path().to_str()?;
+                text.strip_prefix(REPOS_PREFIX)?
+                    .strip_suffix("/REPO.txt")
+                    .map(str::to_owned)
+            })
+            .collect();
+        keys.sort();
+        keys.dedup();
+        Ok(keys)
     }
 
     /// How many backups there are and when the first and last landed.

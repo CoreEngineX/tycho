@@ -114,4 +114,128 @@ impl Repo {
         }
         Ok(changes)
     }
+
+    /// Every path in a commit's tree.
+    ///
+    /// `-z`, because a path is bytes: without it git C-quotes anything non-ASCII and
+    /// the caller gets a name that does not exist.
+    ///
+    /// # Errors
+    ///
+    /// If git fails or prints a path this cannot parse.
+    pub fn ls_tree(&self, commit: Oid) -> Result<Vec<TreePath>, RepoError> {
+        let out = self.git().run(
+            &[
+                "ls-tree",
+                "-r",
+                "-z",
+                "--name-only",
+                "--full-tree",
+                &commit.to_string(),
+            ],
+            Timeout::WORK,
+        )?;
+        if !out.status.success() {
+            return Ok(Vec::new());
+        }
+        out.stdout
+            .split(|&byte| byte == 0)
+            .filter(|field| !field.is_empty())
+            .map(|field| {
+                TreePath::parse(Path::new(OsStr::from_bytes(field)))
+                    .map_err(|error| RepoError::Unparsable(error.to_string()))
+            })
+            .collect()
+    }
+
+    /// One file's bytes out of a commit, by path rather than by object id.
+    ///
+    /// # Errors
+    ///
+    /// If the path is not in that commit, or git fails.
+    pub fn blob_at(&self, commit: Oid, path: &Path) -> Result<Vec<u8>, RepoError> {
+        let mut spec = std::ffi::OsString::from(commit.to_string());
+        spec.push(":");
+        spec.push(path.as_os_str());
+        let spec = spec.to_string_lossy().into_owned();
+        let out = self
+            .git()
+            .checked(&["cat-file", "blob", &spec], Timeout::WORK)?;
+        Ok(out.stdout)
+    }
+
+    /// The commits under `refs` that touched `path`, newest first.
+    ///
+    /// This is how a **tracked and clean** file is found: it has no path in the store
+    /// tree at all, because its content lives in a captured repository's own history
+    /// under `refs/tycho/<key>/*`. That is the normal case, not an edge case.
+    ///
+    /// # Errors
+    ///
+    /// If git fails.
+    pub fn commits_touching(
+        &self,
+        refs: &str,
+        path: &Path,
+        limit: usize,
+    ) -> Result<Vec<Commit>, RepoError> {
+        let count = limit.to_string();
+        let path = path.to_string_lossy().into_owned();
+        let out = self.git().run(
+            &[
+                "log",
+                "-n",
+                &count,
+                "--format=%H%x1f%cI%x1f%s%x1e",
+                "--all-match",
+                &format!("--glob={refs}"),
+                "--",
+                &path,
+            ],
+            Timeout::WORK,
+        )?;
+        if !out.status.success() {
+            return Ok(Vec::new());
+        }
+
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut commits = Vec::new();
+        for record in text.split('\u{1e}').filter(|item| !item.trim().is_empty()) {
+            let mut fields = record.trim_start().splitn(3, '\u{1f}');
+            let (Some(oid), Some(when), Some(subject)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            commits.push(Commit {
+                oid: Oid::parse(oid.trim())?,
+                when: when.trim().to_owned(),
+                subject: subject.trim().to_owned(),
+            });
+        }
+        Ok(commits)
+    }
+
+    /// Writes a bundle of `refs`, for handing history to someone without the store.
+    ///
+    /// # Errors
+    ///
+    /// If git fails, including when no ref matches - a bundle of nothing is an error
+    /// in git and stays one here.
+    pub fn bundle(&self, out: &Path, refs: &[String]) -> Result<(), RepoError> {
+        let destination = out.display().to_string();
+        let mut args = vec!["bundle", "create", &destination];
+        args.extend(refs.iter().map(String::as_str));
+        self.git().checked(&args, Timeout::WORK)?;
+        Ok(())
+    }
+}
+
+/// One commit of a captured repository's own history, for `history --path`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Commit {
+    pub oid: Oid,
+    /// RFC 3339, as git prints it with `%cI`.
+    pub when: String,
+    pub subject: String,
 }

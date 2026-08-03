@@ -154,6 +154,30 @@ impl Repo {
     }
 }
 
+/// Fetches into a repository Tycho does not own - the one a restore just created.
+///
+/// A free function for the same reason as [`list_refs`]: [`Repo::open`] refuses
+/// anything not mode `0700`, which is right for the store and wrong for a working
+/// copy somebody is about to use.
+///
+/// **Every refspec passed here should be a glob.** A refspec naming one exact ref
+/// that is absent makes git abort the whole fetch with `couldn't find remote ref` and
+/// write nothing at all - not the branches, not the tags. A glob that matches nothing
+/// is skipped silently. Verified: this is what made an earlier `disaster-recovery.md`
+/// recover nothing from every repository that had no stash.
+///
+/// # Errors
+///
+/// If git fails.
+pub fn fetch_from(into: &Path, from: &Path, specs: &[Refspec]) -> Result<(), RepoError> {
+    let rendered: Vec<String> = specs.iter().map(ToString::to_string).collect();
+    let source = from.display().to_string();
+    let mut args = vec!["fetch", "--no-tags", "--quiet", &source];
+    args.extend(rendered.iter().map(String::as_str));
+    crate::sys::process::Git::at(into).checked(&args, Timeout::WORK)?;
+    Ok(())
+}
+
 /// Every ref in a repository Tycho does not own.
 ///
 /// A free function rather than a method, because [`Repo::open`] refuses anything not
