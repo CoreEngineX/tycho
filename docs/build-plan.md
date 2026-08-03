@@ -21,6 +21,13 @@ produced them. The architecture docs are the contract; this is the order of work
 - Sum types over optionals and flags, so illegal states do not compile.
 - Comments only for what the code cannot say. No history narration.
 - Commit and **push** at every meaningful step.
+- **A dependency lands in the slice that first uses it**, in its own commit, so
+  `cargo audit` watches only what is linked. Three are excluded permanently:
+  `ignore`, because it implements the gitignore semantics D9 forbids from affecting
+  capture; `directories`/`dirs`, because `std::env::home_dir()` carries no
+  deprecation on 1.97 and every path needed is a join from home; and any git library,
+  per D7.
+- **`#[ignore]` is not an escape hatch.** The gate runs `--run-ignored=all`.
 
 ## Decided, do not relitigate
 
@@ -197,6 +204,10 @@ matching an lfs `clean` pattern, an `ident` file, an `export-subst` file and an
 `export-ignore`d file, under a maximally hostile `GIT_CONFIG_GLOBAL`, and `cmp` each
 against the original. The design as originally written failed all five.
 
+Set that variable with `Command::env` on the git child, never `std::env::set_var`.
+nextest gives each test its own process so either works under the gate, but plain
+`cargo test` runs them on threads of one process and the mutation would leak.
+
 ---
 
 ## Layer 3 - domain core, pure
@@ -272,13 +283,17 @@ The renderer's golden fixture is the fixed scenario in `cli.md` section 2 - Mond
 2026-11-02 09:14, `coreenginex` weekly since 2026-08-02. Every example in the docs
 derives from it, so the docs and the tests cannot drift.
 
+That scenario's banner reads `tycho 1.0.0`. The fixture must interpolate
+`env!("CARGO_PKG_VERSION")` rather than carry the literal, or it breaks on the first
+version bump.
+
 ---
 
 ## Order of work
 
 | # | Slice | Done when |
 |---|---|---|
-| 1 | Crate skeleton, deps, error types, `--version` | `ci-check.sh` green |
+| 1 | Crate skeleton, module tree, the command set, the exit contract | `ci-check.sh` green |
 | 2 | Layer 0 | Newtypes, three encoders, collision detection, hostile-name vectors passing |
 | 3 | Layer 1 | Runner with pinned config and timeout; streaming helper passing a 5,000-item test; lock; atomic write |
 | 4 | Layer 2 | Plumbing typed; the five-case byte-exactness round-trip passing under a hostile global config |

@@ -11,7 +11,9 @@ that history alone cannot restore. The store is then pushed to bare repositories
 synced cloud folders and on external drives, so every destination holds identical
 history and going back is `git log` and a checkout.
 
-**Design stage. No code yet.** The architecture is documented in full under `docs/`.
+**In build.** The architecture is documented in full under `docs/`, and
+`docs/build-plan.md` carries the order of work. The crate skeleton is in place; no
+command does anything yet.
 
 ## Why
 
