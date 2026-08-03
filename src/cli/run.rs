@@ -6,10 +6,11 @@ use crate::config::{Config, Parsed, Profile};
 use crate::plan::Plan;
 use crate::platform;
 use crate::remote::state::RemoteState;
+use crate::restore::resolve;
 use crate::state::State;
 use crate::store::{self, Store};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub fn run(args: &RunArgs) -> Exit {
     let Some((parsed, config_text)) = load(args.config.clone()) else {
@@ -157,6 +158,9 @@ pub fn history(args: &crate::cli::HistoryArgs) -> Exit {
             return Exit::Failure;
         }
     };
+    if let Some(path) = &args.path {
+        return path_history(&store, path, args.count);
+    }
     match store.history(args.count) {
         Ok(backups) => {
             print!("{}", render::history(&backups));
@@ -165,6 +169,56 @@ pub fn history(args: &crate::cli::HistoryArgs) -> Exit {
         Err(error) => {
             eprintln!("tycho: {error}");
             Exit::Failure
+        }
+    }
+}
+
+/// `history --path`, which has two answer shapes and says which it is showing.
+///
+/// A plain file or an overlay entry answers from the store's own commits - backup
+/// runs. A tracked file answers from its repository's commits, which is what you
+/// want: "the version before I broke it" is a commit in your repo, not a Sunday.
+fn path_history(store: &Store, path: &Path, count: usize) -> Exit {
+    let Some(backup) = newest(store) else {
+        return Exit::Failure;
+    };
+    let resolved = match resolve::resolve(store, &backup, path) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            eprintln!("tycho: {error}");
+            return Exit::Failure;
+        }
+    };
+    match resolve::history(store, &resolved, count) {
+        Ok(commits) => {
+            print!("{}", render::path_history(path, &resolved, &commits));
+            Exit::Ok
+        }
+        Err(error) => {
+            eprintln!("tycho: {error}");
+            Exit::Failure
+        }
+    }
+}
+
+/// The newest backup, read once.
+fn newest(store: &Store) -> Option<resolve::Backup> {
+    let commit = match store.at(None) {
+        Ok(Some(commit)) => commit,
+        Ok(None) => {
+            eprintln!("tycho: this store holds no backups yet");
+            return None;
+        }
+        Err(error) => {
+            eprintln!("tycho: {error}");
+            return None;
+        }
+    };
+    match resolve::Backup::read(store, commit) {
+        Ok(backup) => Some(backup),
+        Err(error) => {
+            eprintln!("tycho: {error}");
+            None
         }
     }
 }

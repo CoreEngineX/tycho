@@ -88,6 +88,9 @@ pub struct StatusArgs {
 pub struct HistoryArgs {
     /// Which profile's store to read
     pub profile: Option<String>,
+    /// One path's history instead of the backup list
+    #[arg(long, value_name = "PATH")]
+    pub path: Option<PathBuf>,
     /// How many backups to list
     #[arg(short = 'n', default_value_t = 20)]
     pub count: usize,

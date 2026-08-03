@@ -443,6 +443,60 @@ fn repo_txt(git: &Git<'_>, inspection: &Inspection, source: &Path) -> String {
     )
 }
 
+/// What a captured repository's `REPO.txt` records, read back.
+///
+/// **This is the only record of which branch was checked out that survives reaching a
+/// remote.** The obvious alternative - a symref under `refs/tycho/<key>/` - does not
+/// work, because push and fetch carry a symref's resolved value and drop its symbolic
+/// nature, so the branch *name* would never leave the machine. A restore reads from a
+/// remote, so it reads this.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Recorded {
+    /// What to check out. `None` for a repository that had no commits.
+    pub head: Option<String>,
+    pub stashes: usize,
+    pub origin: Option<String>,
+    pub path: Option<String>,
+}
+
+/// Reads what `repo_txt` wrote.
+///
+/// Writer and reader are pinned to each other by a round-trip test rather than by the
+/// format holding still on its own.
+#[must_use]
+pub fn parse_repo_txt(text: &str) -> Recorded {
+    let mut found = Recorded::default();
+    for line in text.lines() {
+        let Some((field, value)) = line.split_once(char::is_whitespace) else {
+            continue;
+        };
+        let value = value.trim();
+        match field {
+            // `main @ de4c69c`, `detached @ de4c69c`, or `unborn`. The short sha is
+            // enough: git resolves an unambiguous prefix, and a branch name is what a
+            // restore wants anyway.
+            "head" => {
+                found.head = match value.split_once(" @ ") {
+                    Some(("detached", sha)) => Some(sha.trim().to_owned()),
+                    Some((branch, _)) => Some(branch.trim().to_owned()),
+                    None => None,
+                };
+            }
+            "stash" => {
+                found.stashes = value
+                    .split_whitespace()
+                    .next()
+                    .and_then(|count| count.parse().ok())
+                    .unwrap_or_default();
+            }
+            "origin" if value != "none" => found.origin = Some(value.to_owned()),
+            "path" => found.path = Some(value.to_owned()),
+            _ => {}
+        }
+    }
+    found
+}
+
 fn tree_path(text: &str) -> Result<TreePath, CaptureError> {
     TreePath::parse(Path::new(text)).map_err(|error| CaptureError::NotStorable {
         path: text.to_owned(),
@@ -479,4 +533,76 @@ fn object_bytes(git: &Git<'_>) -> Result<u64, RunError> {
         }
     }
     Ok(total)
+}
+
+#[cfg(test)]
+mod repo_txt_tests {
+    use super::{Inspection, parse_repo_txt, repo_txt};
+    use crate::plan::RepoHead;
+    use crate::primitives::names::BranchName;
+    use crate::primitives::oid::Oid;
+    use crate::sys::process::{Git, Timeout};
+    use std::path::Path;
+
+    fn sha() -> Oid {
+        Oid::parse("de4c69c206bebbb88fab211f6378462444d3c8ae").expect("a sha")
+    }
+
+    fn inspection(head: RepoHead) -> Inspection {
+        Inspection {
+            head,
+            modified: 0,
+            untracked: 0,
+            objects: 0,
+        }
+    }
+
+    /// Writer and reader pinned to each other. `REPO.txt` is the only record of which
+    /// branch was checked out that survives reaching a remote, so a format drift that
+    /// only the reader noticed would be a restore checking out the wrong thing.
+    fn round_trip(head: RepoHead) -> super::Recorded {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = Git::at(dir.path());
+        let _ = git.run(&["init", "-q"], Timeout::QUICK);
+        let text = repo_txt(&git, &inspection(head), Path::new("/somewhere/proj"));
+        parse_repo_txt(&text)
+    }
+
+    #[test]
+    fn a_branch_head_reads_back_as_its_branch_name() {
+        let head = RepoHead::Branch {
+            name: BranchName::parse("main").expect("a branch"),
+            sha: sha(),
+        };
+        assert_eq!(round_trip(head).head.as_deref(), Some("main"));
+    }
+
+    /// A detached HEAD has no branch to check out, so the sha is what comes back.
+    #[test]
+    fn a_detached_head_reads_back_as_its_sha() {
+        let recorded = round_trip(RepoHead::Detached { sha: sha() });
+        assert_eq!(recorded.head.as_deref(), Some(sha().short().as_str()));
+    }
+
+    /// A repository with no commits has nothing to check out, and that is not an
+    /// error - it is a repository somebody had just created.
+    #[test]
+    fn an_unborn_head_reads_back_as_nothing_to_check_out() {
+        assert_eq!(round_trip(RepoHead::Unborn).head, None);
+    }
+
+    #[test]
+    fn the_other_fields_survive_the_round_trip() {
+        let recorded = round_trip(RepoHead::Unborn);
+        assert_eq!(recorded.path.as_deref(), Some("/somewhere/proj"));
+        assert_eq!(recorded.stashes, 0);
+        assert_eq!(recorded.origin, None, "'none' is absence, not a URL");
+    }
+
+    #[test]
+    fn a_recorded_stash_count_is_read_as_a_number() {
+        let recorded = parse_repo_txt("head      main @ abc1234\nstash     3 entries\n");
+        assert_eq!(recorded.stashes, 3);
+        assert_eq!(recorded.head.as_deref(), Some("main"));
+    }
 }

@@ -418,6 +418,35 @@ pub fn upcoming(next: &jiff::Zoned) -> String {
     format!("{label}, in {}", until(seconds))
 }
 
+/// `history --path`. The header names which half of the store answered, because a
+/// list of commits is meaningless without knowing whether they are backup runs or a
+/// repository's own history.
+#[must_use]
+pub fn path_history(
+    path: &std::path::Path,
+    resolved: &crate::restore::resolve::Resolved,
+    commits: &[crate::git::read::Commit],
+) -> String {
+    let mut out = format!(
+        "resolved  {}\n",
+        fit(&path.display().to_string(), WIDTH - 10)
+    );
+    let _ = writeln!(out, "          {}\n", resolved.source());
+
+    let _ = writeln!(out, "{:<20}{:<10}summary", "when", "commit");
+    rule(&mut out);
+    for commit in commits {
+        let _ = writeln!(
+            out,
+            "  {:<18}{:<10}{}",
+            when(&commit.when),
+            commit.oid.short(),
+            fit(&commit.subject, WIDTH - 30)
+        );
+    }
+    out
+}
+
 /// Only the non-zero parts, so a run that only changed files reads `2 changed`
 /// rather than `2 changed, 0 added, 0 deleted`.
 #[must_use]

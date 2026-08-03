@@ -164,7 +164,7 @@ impl Repo {
         Ok(out.stdout)
     }
 
-    /// The commits under `refs` that touched `path`, newest first.
+    /// The commits in `scope` that touched `path`, newest first.
     ///
     /// This is how a **tracked and clean** file is found: it has no path in the store
     /// tree at all, because its content lives in a captured repository's own history
@@ -175,20 +175,20 @@ impl Repo {
     /// If git fails.
     pub fn commits_touching(
         &self,
-        refs: &str,
+        scope: &Scope<'_>,
         path: &Path,
         limit: usize,
     ) -> Result<Vec<Commit>, RepoError> {
         let count = limit.to_string();
         let path = path.to_string_lossy().into_owned();
+        let scope = scope.render();
         let out = self.git().run(
             &[
                 "log",
                 "-n",
                 &count,
                 "--format=%H%x1f%cI%x1f%s%x1e",
-                "--all-match",
-                &format!("--glob={refs}"),
+                &scope,
                 "--",
                 &path,
             ],
@@ -228,6 +228,27 @@ impl Repo {
         args.extend(refs.iter().map(String::as_str));
         self.git().checked(&args, Timeout::WORK)?;
         Ok(())
+    }
+}
+
+/// Which refs a log covers.
+///
+/// A sum type because git spells the two cases differently and confusing them is
+/// silent: `--glob` appends `/*` to a pattern containing no wildcard, so passing one
+/// exact ref through it yields `refs/heads/main/*`, which matches nothing and returns
+/// an empty history rather than an error.
+#[derive(Clone, Copy, Debug)]
+pub enum Scope<'a> {
+    Ref(&'a str),
+    Glob(&'a str),
+}
+
+impl Scope<'_> {
+    fn render(&self) -> String {
+        match self {
+            Self::Ref(name) => (*name).to_owned(),
+            Self::Glob(pattern) => format!("--glob={pattern}"),
+        }
     }
 }
 
