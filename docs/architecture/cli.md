@@ -6,115 +6,153 @@ nothing that stops being useful when piped into a log file.
 ## 1. Commands
 
 ```text
-tycho run [PROFILE] [--all] [--dry-run]
+tycho run [PROFILE] [--all] [--dry-run] [--quick] [--allow-shrink]
 tycho push [PROFILE] [--all]
-tycho status [PROFILE] [--check]
+tycho status [PROFILE] [--check] [--strict]
 tycho history [PROFILE] [-n N] [--path PATH]
-tycho restore PROFILE [--at TIME] [--bundle] [PATH ...] DEST
-tycho watch add|rm|list [PROFILE] [PATH]
-tycho ignore add|rm|list [PROFILE] [PATTERN]
-tycho config check|path|init
+tycho restore [PROFILE] [--store PATH] [--at TIME] [--bundle] [--force] [-- PATH ...] --into DEST
+tycho watch add|rm|list [-p PROFILE] [PATH]
+tycho ignore add|rm|list [-p PROFILE] [PATTERN]
+tycho reinclude add|rm|list [-p PROFILE] [PATH]
+tycho config check|path|init [--force]
 tycho service install|uninstall|status|restart [PROFILE]
-tycho doctor
+tycho doctor [--deep] [--remote NAME]
+tycho probe-access PATH...
 tycho log [PROFILE] [-f]
+
+global: --no-color
 ```
 
 | Command | Does |
 | --- | --- |
-| `run` | Capture, commit, push. `--all` covers every profile and is what launchd invokes. `--dry-run` prints the plan and stops before touching the store |
-| `push` | Push what the store already holds to any remote that is behind. Never captures. Exits immediately with nothing pending, so it is cheap enough to trigger on every mount and hourly |
-| `status` | Per profile: next scheduled run, store size and backup count, one line per remote. `--check` exits non-zero on any yellow or red |
-| `history` | The store's commits, rendered. `--path` limits it to backups that touched one file, which is how you find the backup to restore from |
+| `run` | Capture, commit, push. `--dry-run` prints the plan and stops before touching the store. `--quick` omits the repository table, the expensive half. `--allow-shrink` accepts a large drop in entry count |
+| `push` | Push what the store already holds to any remote that is behind. Never captures. Exits 0 immediately if the profile lock is held |
+| `status` | Per profile: next scheduled run, store size and backup count, one line per remote. `--check` for monitoring |
+| `history` | The store's commits, rendered. `--path` limits it to backups that touched one path |
 | `restore` | Recover to a destination directory. See section 7 |
-| `watch` / `ignore` | Rule management with redundancy detection, editing the config in place |
+| `watch` / `ignore` / `reinclude` | Rule management, editing the config in place |
 | `config` | Validate, locate, or create the config file |
-| `service` | launchd agent lifecycle for both the backup agent and the catch-up agent. See `scheduling.md` |
-| `doctor` | Environment, service, remotes, and object database health in one command |
+| `service` | launchd lifecycle for the per-profile backup agents and the shared catch-up agent |
+| `doctor` | Environment, service, remotes, volumes and object-database health |
+| `probe-access` | Internal. Run by `doctor --deep` through launchd to measure the agent's own Full Disk Access grant. Not for direct use |
 | `log` | Tail the log file without needing to know where it lives |
 
-`run` and `push` are the only commands that write anything outside the config file,
-and `push` writes only to remotes.
+`--all` conflicts with an explicit PROFILE. **`--all` is the manual and scripted
+form; the installed agents run `tycho run <profile>` one per profile**, per
+`scheduling.md`.
+
+`-p/--profile` is a flag on `watch`, `ignore` and `reinclude` rather than a
+positional, because `tycho watch add PATH` and `tycho watch add PROFILE PATH` are
+otherwise indistinguishable to a parser and to a reader.
+
+### What each command writes
+
+| Command | Writes to |
+| --- | --- |
+| `run` | store, state file, remotes, log |
+| `push` | remotes, state file, and the store, since `gc --auto` runs |
+| `restore` | the destination directory only |
+| `config init`, `watch`, `ignore`, `reinclude` | the config file |
+| `service` | `~/Library/LaunchAgents`, and the log directory on install |
+| `status`, `history`, `doctor`, `log`, `config check|path` | nothing |
+
+`push` touching the store is why it takes the same profile lock as `run`.
 
 ## 2. Output rules
 
-Every command that prints more than one row uses the same column model, so the
-whole tool reads as one thing rather than a pile of ad-hoc formatters.
+Every command that prints more than one row uses the same column model, so the tool
+reads as one thing rather than a pile of ad-hoc formatters.
 
-- **A fixed column spec per table.** Widths are declared once and shared by the
-  header, the separator rule and every row - a header label sits directly over its
-  own column, never approximately over it.
-- **Text left, numbers right.** Sizes and counts right-align so digits line up on
-  their ones place and are comparable by eye down the column.
-- **Rows indent two spaces, section headers do not.** The indent is what makes a
-  section scannable without any box drawing.
-- **A rule spans exactly the table's width**, so the table's right edge is visible
-  and consistent across sections.
-- **Total width 76 columns**, which fits an 80-column terminal with room for a
-  wrapped prompt.
-- **State words are lowercase and short**: `ok`, `behind 3`, `failed`, `warn`,
-  `fail`. Shouting is what colour is for.
+- **A fixed column spec per table**, shared by header, rule and rows, so a header
+  label sits directly over its own column.
+- **Text left, numbers right**, so digits line up on their ones place.
+- **Rows indent two spaces, section headers do not.**
+- **A rule spans exactly the table's width.**
+- **Total width 76 columns**, which fits an 80-column terminal.
+- **State words are lowercase and short.** Shouting is what colour is for.
 - **Meaning never depends on colour.** Green, yellow and red add emphasis to a word
-  that already says the same thing, because the output is read in log files and
-  through pipes as often as in a terminal.
+  that already says the same thing, because this output is read through pipes and in
+  log files as often as in a terminal.
 
-Colour switches off automatically when stdout is not a terminal, and both
-`NO_COLOR` and `--no-color` are honoured.
+Colour switches off automatically when stdout is not a terminal, and both `NO_COLOR`
+and `--no-color` are honoured.
+
+The examples below all come from one fixed scenario - Monday 2026-11-02 09:14 local,
+`coreenginex` on a weekly Sunday-12:00 schedule since 2026-08-02, `second-company`
+daily at 18:00 since 2026-09-21. **That scenario is the renderer's golden-test
+fixture**, so the documentation and the tests cannot drift apart.
 
 ## 3. `tycho status`
 
 ```text
 tycho 1.0.0
 
-coreenginex                                    next run  Sun 12:00, in 2d 4h
-  214 backups since 2026-08-02, newest today 06:00, store 1.2 GB
+coreenginex                                    next run  Sun 12:00, in 6d 2h
+  14 backups since 2026-08-02, newest yesterday 12:00, store 1.2 GB
 
-  gdrive     ok          pushed today 06:00                         verified
-  onedrive   ok          pushed today 06:00                         verified
-  t7         behind 3    last seen 2026-07-29        optional, on next mount
+  gdrive     ok             pushed yesterday 12:00                  verified
+  onedrive   ok             pushed yesterday 12:00                  verified
+  t7         behind 3 of 4  last seen 2026-10-11     optional, on next mount
 
-second-company                              next run  today 18:00, in 5h 12m
-  12 backups since 2026-07-20, newest today 06:00, store 84 MB
+second-company                              next run  today 18:00, in 8h 46m
+  6 backups since 2026-09-21, newest yesterday 18:00, store 84 MB
 
-  onedrive   failed      push rejected today 06:00
-                         tycho log second-company
+  onedrive   failed         push rejected yesterday 18:00
+                            tycho log second-company
 ```
 
-The profile name and its next run sit on one line, pushed to opposite edges, so a
-glance down the left edge lists your profiles and a glance down the right edge
-tells you when each next fires. The store summary is a subtitle underneath rather
-than a row, because it describes the profile rather than being one destination
-among several.
+Profile name and next run sit on one line at opposite edges, so a glance down the
+left lists your profiles and a glance down the right says when each fires. The store
+summary is a subtitle rather than a row, because it describes the profile rather
+than being one destination among several.
 
-Remotes are the aligned table: name, state, what happened and when, then a
-right-aligned annotation. `verified` appears only when a post-push head comparison
-actually passed - never as decoration - which is what distinguishes it from `ok`,
-meaning the push command returned success.
+`behind 3 of 4` shows the lag against that remote's `behind_tolerance`, so the
+distance to failure is visible rather than implied.
 
-A failed remote's follow-up command sits under the detail column rather than in
-the annotation, because it is a thing to type, not a thing to read.
+`verified` appears only when the full ref-set comparison in `remotes.md` section 3
+actually passed - never as decoration. It is what distinguishes a verified push from
+`ok`, which means the push command returned success.
 
-**`status` must render when everything else is broken.** It reads the state file
-and the store directly, so a corrupt config, a missing remote or an uninstalled
-service cannot stop it printing. That is precisely the moment somebody runs it.
+**The store size is the value recorded in the state file at the end of the last
+run**, not a live measurement. Walking the object database on a command people run
+casually would make `status` slow in proportion to the size of the backup, and on a
+remote it would materialise dataless files. `doctor` computes the live figure.
+
+**`status` must render when everything else is broken**, so its degraded modes are
+specified rather than hoped for. With an unreadable config it prints a
+`config unreadable` banner, omits the next-run column, and shows remotes from the
+last run record labelled `as of <timestamp>`. The state file is an observation log,
+never a competing definition of what should exist.
 
 ## 4. `tycho history`
 
 ```text
 when                commit    summary                              written
 --------------------------------------------------------------------------
-  today 06:00       8f2a10c   4 changed, 1 added, 2 repos moved      38 MB
-  yesterday 06:00   1c93bb7   no changes                               0 B
-  2026-07-31 06:00  aa7d4e1   112 changed, 9 added, 1 deleted       204 MB
-  2026-07-30 06:00  4e10f92   2 changed                             1.1 MB
+  yesterday 12:00   8f2a10c   14 changed, 2 added, 3 repos moved     41 MB
+  2026-10-26 12:00  1c93bb7   no changes                               0 B
+  2026-10-19 12:00  aa7d4e1   112 changed, 9 added, 1 deleted       204 MB
+  2026-10-12 12:00  4e10f92   2 changed                             1.1 MB
 --------------------------------------------------------------------------
-                              214 backups since 2026-08-02          1.2 GB
+                              14 backups since 2026-08-02           1.2 GB
 ```
 
-`written` is new objects for that run, not the size of everything backed up, which
-is what makes the `no changes` row read as `0 B` and immediately obvious.
+`written` is new objects for that run, rounded to the displayed unit - so the
+`no changes` row reads `0 B` honestly even though the run did write a commit object
+of a couple of hundred bytes.
 
-Recent timestamps render as `today` and `yesterday` and older ones as dates, since
-the recent ones are what you scan for and the old ones are what you cite.
+Recent timestamps render as `today` and `yesterday`, older ones as dates.
+
+`history --path` has **two answer shapes** and says which it is showing, because a
+path can live in either half of the store:
+
+- a **store path** - a plain file, or an overlay entry - answers from the store's own
+  commits, as above
+- a path **inside a captured repository** answers from that repository's history
+  under `refs/tycho/<key>/*`, showing that repository's commits rather than backup
+  runs, with a header naming the repository
+
+Section 7 specifies how a path is resolved to one or the other.
 
 ## 5. `tycho doctor`
 
@@ -123,82 +161,152 @@ environment
 --------------------------------------------------------------------------
   git                     ok        2.55.0
   config                  ok        2 profiles, no errors
-  full disk access        warn      unverified, run doctor --deep
+  log directory           ok        ~/Library/Logs/tycho, writable
+  notifications           warn      authorised, delivery not tested, use --deep
+  full disk access        warn      not measured, use --deep
 
 coreenginex
 --------------------------------------------------------------------------
-  service                 ok        loaded, last exit 0, next Sun 12:00
-  store                   ok        fsck clean, 1.2 GB, 214 backups
-  gdrive                  ok        reachable, head matches, fsck clean
-  onedrive                ok        reachable, head matches, fsck clean
-  t7                      warn      not mounted, behind 3, optional
+  agent                   ok        loaded, last exit 0, next Sun 12:00
+  agent schedule          ok        matches config
+  store                   ok        1.2 GB, 14 backups, HEAD resolves
+  refs                    ok        3,412 refs, packed
+  gdrive                  ok        all refs present, connectivity clean
+  onedrive                ok        all refs present, connectivity clean
+  t7                      warn      not mounted, behind 3 of 4, optional
+
+second-company
+--------------------------------------------------------------------------
+  agent                   fail      loaded, last exit 1, next today 18:00
+  onedrive                fail      push rejected, remote ahead by 2
+  sync artifacts          fail      onedrive: pack file 'main (1).pack'
 
 volumes
 --------------------------------------------------------------------------
   /                       ok        84 GB free
   /Volumes/T7             warn      12 GB free, 2 profiles, 41 GB stored
 
-second-company
---------------------------------------------------------------------------
-  service                 ok        loaded, last exit 1, next today 18:00
-  onedrive                fail      push rejected, remote ahead by 2
-  sync artifacts          fail      found 'main (1).pack' beside the repo
-
-2 failures, 2 warnings
+3 failures, 4 warnings
 ```
 
-One check per row, one verdict word per check, and the evidence beside it. The
-`service` row carrying `last exit 1` is deliberate: a non-zero last exit shown by
+One check per row, one verdict word, evidence beside it.
+
+The `agent` row carrying `last exit 1` is deliberate: a non-zero last exit shown by
 `launchctl list` was the evidence that revealed a year of silent failure in the old
-system, and nobody had a reason to go looking for it. Here it is on screen without
-being asked for.
+system, and nobody had reason to look. **`agent schedule`** compares the installed
+plist against the config, because drift between them is what killed that system.
 
 `volumes` is grouped by disk rather than by profile because that is how the
-constraint actually works. Several profiles can share one destination drive, and
-since the store keeps full history forever the drive fills eventually. Reporting
-free space before a push fails with no room left is the whole point of the row.
+constraint works - several profiles can share a drive, and the store keeps full
+history, so free space is what they contend for.
+
+Two rows say `use --deep` rather than guessing. Full Disk Access cannot be measured
+from an interactive process, and notification delivery cannot be measured without
+sending one; `scheduling.md` sections 7 and 8 describe both probes.
 
 ## 6. Exit codes
 
 | Code | Meaning |
 | --- | --- |
-| 0 | Success. Includes a run where an optional remote is behind |
-| 1 | Failure: a run failed, a required remote is unreachable, config has errors, or `status --check` found yellow or red |
+| 0 | Success, including a run where an optional remote is merely unplugged |
+| 1 | Failure: a run failed, a required remote is unreachable, the config has errors, or `status --check` / `doctor` found red |
+| 3 | Yellow only, from `status --check` and `doctor` |
 | 2 | Usage error, which clap emits |
 
-`status --check` is the shape a monitoring hook wants: no output to parse, just an
-exit code.
+`status --check` exits non-zero on **red only** by default; `--strict` makes yellow
+non-zero too. This is what makes `run` and `status --check` agree: an optional remote
+merely unplugged is yellow and exits 0 in both, while an optional remote past its
+`behind_tolerance` is red in both. Without that alignment a weekly monitor cries wolf
+every time a drive is unplugged, and a monitor that cries wolf is a monitor people
+turn off.
+
+`doctor` follows the same policy, so the one command that aggregates health cannot
+report a failure while exiting 0.
 
 ## 7. Restore
 
 ```text
-tycho restore coreenginex --at "2026-07-22 18:00" ~/recovered
-tycho restore coreenginex --at "3 days ago" CoreEngineX/org/handbook ~/recovered
-tycho restore coreenginex --bundle CoreEngineX/org/handbook ~/recovered
-tycho restore coreenginex --store <path to a remote> ~/recovered
+tycho restore coreenginex --at "2026-10-19 12:00" --into ~/recovered
+tycho restore coreenginex --at "3 days ago" -- CoreEngineX/org/notes.md --into ~/rescue
+tycho restore coreenginex --bundle -- CoreEngineX/org/handbook --into ~/rescue
+tycho restore --store "…/CoreEngineX-Backups/coreenginex.git" --into ~/recovered
 ```
 
-`--at` accepts an absolute timestamp or a relative expression and selects the
-newest backup at or before that moment. Without it, the latest backup is used.
+The destination is the named flag `--into`, and paths come after `--`. A trailing
+positional destination cannot be parsed unambiguously against a variable-length path
+list, and a restore that guessed which argument was the destination would be a
+restore that could write to the wrong place.
 
-Positional paths before the destination limit what is restored, using store-relative
-paths as shown by `history` and `status`. Without them the whole profile comes back.
+`--into` is required. There is no default and no fallback.
 
-`--bundle` writes a git bundle per captured repository instead of a checkout, for
-handing history to another machine.
+**`--store` reads no config file at all.** It points at a store or a remote directly,
+and PROFILE becomes optional because the store names itself. That is the disaster
+case: on a replacement machine there is no config, no state file and no local store,
+and a restore that required a profile from a config would be unusable exactly when it
+is needed. `disaster-recovery.md` exercises this form.
 
-`--store` reads a remote directly instead of the local store, which is the disaster
-case: on a replacement machine there is no local store, only a folder in a cloud
-account. It accepts the same glob a remote path does.
+`--at` accepts an absolute timestamp or a relative expression, **interpreted in local
+time unless it carries an explicit offset**, and selects the newest backup at or
+before that moment. Restore echoes the resolved backup in both zones before
+extracting anything:
+
+```text
+using  8f2a10c  backup of 2026-11-01 12:00 -0300  (2026-11-01 15:00 UTC)
+```
+
+### Resolving a path
+
+A path given to `restore` or `history --path` can name three different things, and
+the rule is mechanical:
+
+1. **Find the longest prefix that is a captured repository key**, by looking for
+   `.tycho/repos/<prefix>/REPO.txt` in the store tree. If there is no such prefix,
+   the path is a plain file: extract it from the store tree and stop.
+2. **If a prefix matched, try the overlay first**:
+   `.tycho/repos/<key>/overlay/<rest>`. That is where an uncommitted, untracked or
+   gitignored file lives, and it is the version that was on disk at backup time.
+3. **Otherwise the file is tracked and clean**, so it has no path in the store tree
+   at all - its content is in the object database under `refs/tycho/<key>/*`. Find it
+   with `git log` over that repository's captured refs and extract it with
+   `git cat-file blob <commit>:<rest>`.
+
+Step 3 is not an edge case. A clean tracked file inside a captured repository is the
+**normal** case, and on this machine nearly every watched path is inside one. An
+earlier version of this document had no such rule, which meant the single-file
+restore in the walkthrough could not work at all.
+
+Restore reports which of the three answered, since "recovered from the overlay" and
+"recovered from repository history" mean different things about how current the
+content is.
+
+### What restore does and does not give back
 
 **Restore never writes into your live tree, and never into an existing non-empty
-destination without `--force`.** It puts files somewhere you name and you do the
-copy yourself. A restore that overwrote in place would be one typo away from turning
-a one-file problem into a directory-sized one, which is how a recovery becomes the
-second incident.
+destination without `--force`.** It puts files somewhere you name and you do the copy
+yourself. A restore that overwrote in place would be one typo away from turning a
+one-file problem into a directory-sized one.
 
-`docs/walkthrough.md` shows the single-file recovery and the whole-machine recovery
-as complete sessions.
+Contents are byte-exact. **Metadata is not restored**: permissions beyond the
+execute bit, ownership, timestamps, extended attributes, Finder tags and ACLs are all
+lost, because git does not store them. A file that was `0600` comes back `0644`.
+`store.md` section 7 has the full list, and it matters most for anything
+secret-bearing - a restored private key is world-readable until you fix it.
+
+The overlay is applied with a copy that **does not follow symlinks and refuses type
+mismatches**, reporting each conflict. A plain recursive copy writes through a
+symlink in the checkout to its target, fabricating a file that never existed on the
+source machine.
+
+### Cross-platform restore
+
+Windows cannot represent reserved device names (`CON`, `AUX`, `NUL`, `COM1`-`COM9`,
+`LPT1`-`LPT9`), trailing dots and spaces, the characters `<>:"|?*`, or paths beyond
+260 characters without the extended-length prefix.
+
+The store holds them all faithfully. On Windows, `restore` **reports a per-file skip
+list and continues** rather than aborting or failing silently. `doctor` warns when a
+watched tree contains such names, which is knowable years before anyone needs the
+restore.
 
 ## 8. Dry run
 
@@ -213,48 +321,62 @@ repositories                        head          state
   CoreEngineX/org                   main aef686f  1 untracked
   CoreEngineX/org/handbook      main 1930b99  clean
   CoreEngineX/products/a sibling project   dev  41c8ee2  3 modified
+                                                  and 9 more
 
 excluded                                          reason
 ----------------------------------------------------------------------
   ~/Developer/CoreEngineX/scratch                 ignore rule
   **/node_modules                                 default junk
   **/target                                       default junk
+  ~/Developer/CoreEngineX/scrach                  matched nothing
 
 ----------------------------------------------------------------------
-  would write   12 repositories                       8,538    1.53 GB
+  to read      8,538 files in 12 repositories        1.53 GB
+  to write     estimated new objects                  412 MB
 ```
 
 Three tables, because the three questions are separate: how much is coming, what
-repositories were found and what state they are in, and what the rules threw away.
-The totals row reuses the `roots` column spec so its numbers land in the same
-columns as the per-root numbers above them.
+repositories were found and in what state, and what the rules threw away.
 
-The `excluded` table is the one that earns this command. The store keeps history
-forever, so an ignore rule that should have been there and was not cannot be fixed
-after the fact, only going forward. This is where you find that out.
+**`matched nothing` is the row that earns this command.** A typo'd ignore path is
+otherwise a silent no-op that commits gigabytes into permanent history, so every rule
+that matched nothing is listed.
+
+The totals separate **what will be read** from **what will be written**, because they
+are different quantities and conflating them made the earlier version's arithmetic
+meaningless. The write estimate includes the repositories' object sizes on a first
+run, from `git count-objects -vH` per repository.
+
+The repository table truncates with `and 9 more` so the count and the rows agree.
+
+`--dry-run` is not free: it is a full stat walk plus two git invocations per
+repository. `--quick` omits the repository table, which is the expensive half, when
+you only want the exclusion list.
 
 ## 9. `tycho config check`
 
 ```text
-coreenginex       2 roots, 2 ignores, 3 remotes, weekly Sun 12:00
-second-company    1 root, 0 ignores, 1 remote, daily 18:00
+coreenginex       2 roots, 2 ignores, 1 reinclude, 3 remotes, weekly Sun 12:00
+second-company    1 root, 0 ignores, 0 reincludes, 1 remote, daily 18:00
 
 ok, no errors
 ```
 
-The echo is the point. Reading your own config back in summarised form is how a
+The echo is the point: reading your own config back in summarised form is how a
 remote attached to the wrong profile, or a schedule you thought you set, becomes
-visible. On failure every problem is reported at once rather than stopping at the
-first:
+visible.
+
+On failure every problem is reported at once rather than stopping at the first:
 
 ```text
 coreenginex
   error   alias collision: ~/work/docs and ~/personal/docs both resolve to 'docs'
           give one an explicit name: { path = "~/work/docs", name = "work-docs" }
   error   unknown key 'wacth' in profile table
+  error   profile has no remotes; set local_only = true to confirm this is intended
   warn    watched root does not exist: ~/Archive
-  warn    redundant watch: ~/Developer/CoreEngineX/org is already covered
-          by ~/Developer/CoreEngineX
+  warn    ignore path matched nothing: ~/Developer/CoreEngineX/scrach
+  warn    alias 'Books' was in the last backup and is not in the config
 
-2 errors, 2 warnings
+3 errors, 3 warnings
 ```
