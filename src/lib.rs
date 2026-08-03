@@ -27,6 +27,7 @@ pub mod capture;
 pub mod cli;
 pub mod config;
 pub mod config_edit;
+pub mod doctor;
 pub mod git;
 pub mod plan;
 pub mod platform;

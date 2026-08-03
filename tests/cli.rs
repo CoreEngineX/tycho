@@ -55,14 +55,26 @@ fn help_is_pure_ascii() {
     );
 }
 
+/// `probe-access` is internal and hidden, and it still has to run: `doctor --deep`
+/// invokes it through launchd, where a usage error would be invisible.
 #[test]
 fn a_hidden_command_still_runs() {
-    assert_eq!(tycho(&["probe-access"]).code, 1);
+    let dir = std::env::temp_dir().join("tycho-probe-test");
+    let run = tycho(&[
+        "probe-access",
+        "--out",
+        dir.to_str().expect("utf-8"),
+        "/tmp",
+    ]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let report = std::fs::read_to_string(&dir).expect("the probe wrote its answer");
+    assert!(report.contains("/tmp"), "{report}");
+    let _ = std::fs::remove_file(&dir);
 }
 
 #[test]
 fn an_unimplemented_command_fails_loudly() {
-    let run = tycho(&["doctor"]);
+    let run = tycho(&["watch"]);
     assert_eq!(run.code, 1);
     assert!(run.stderr.contains("not implemented"), "{}", run.stderr);
 }

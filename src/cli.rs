@@ -1,5 +1,6 @@
 //! Layer 5. The clap surface, the exit-code contract, and rendering.
 
+pub mod doctor;
 pub mod render;
 pub mod run;
 pub mod service;
@@ -141,6 +142,31 @@ impl RestoreArgs {
 }
 
 #[derive(Clone, Debug, Args)]
+pub struct DoctorArgs {
+    /// Limit the report to one profile
+    pub profile: Option<String>,
+    /// Measure what cannot be read: the agent's Full Disk Access grant through
+    /// launchd, notification delivery, and a full fsck
+    #[arg(long)]
+    pub deep: bool,
+    /// Limit the remote checks to one name
+    #[arg(long, value_name = "NAME")]
+    pub remote: Option<String>,
+    /// Read this config file instead of the default location
+    #[arg(long, value_name = "PATH")]
+    pub config: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct ProbeArgs {
+    /// Where to write what was found
+    #[arg(long, value_name = "PATH")]
+    pub out: PathBuf,
+    /// Roots to try reading
+    pub roots: Vec<PathBuf>,
+}
+
+#[derive(Clone, Debug, Args)]
 pub struct LogArgs {
     /// Which profile's log
     pub profile: Option<String>,
@@ -234,10 +260,10 @@ pub enum Command {
     /// launchd lifecycle for the backup agents
     Service(ServiceArgs),
     /// Environment, service, remote and volume health
-    Doctor,
+    Doctor(DoctorArgs),
     /// Measure the agent's own Full Disk Access grant
     #[command(hide = true)]
-    ProbeAccess,
+    ProbeAccess(ProbeArgs),
     /// Tail the log file
     Log(LogArgs),
 }
@@ -277,8 +303,8 @@ impl Command {
             Self::Reinclude => "reinclude",
             Self::Config(_) => "config",
             Self::Service(_) => "service",
-            Self::Doctor => "doctor",
-            Self::ProbeAccess => "probe-access",
+            Self::Doctor(_) => "doctor",
+            Self::ProbeAccess(_) => "probe-access",
             Self::Log(_) => "log",
         }
     }
@@ -321,6 +347,8 @@ pub fn dispatch(command: Command) -> Exit {
         Command::Restore(args) => run::restore(&args),
         Command::Service(args) => service::dispatch(&args),
         Command::Log(args) => run::log(&args),
+        Command::Doctor(args) => doctor::dispatch(&args),
+        Command::ProbeAccess(args) => doctor::probe_access(&args),
         other => {
             eprintln!("tycho: {} is not implemented yet", other.name());
             Exit::Failure

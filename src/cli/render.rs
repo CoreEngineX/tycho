@@ -79,6 +79,20 @@ fn fit(text: &str, width: usize) -> String {
     format!("~{kept}")
 }
 
+/// Keeps prose inside its column, losing the **end** rather than the start.
+///
+/// The opposite of [`fit`], and both are right: a path's tail is its name, while a
+/// sentence's head is its subject. Truncating "available, delivery not tested" from
+/// the left produced "~able, delivery not tested", which reads as a different word.
+fn clip(text: &str, width: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= width {
+        return text.to_owned();
+    }
+    let kept: String = chars[..width.saturating_sub(1)].iter().collect();
+    format!("{kept}~")
+}
+
 /// Paths render with `~` rather than the home directory spelled out, which is what
 /// keeps a column model possible and what `cli.md`'s examples show.
 fn abbreviate(path: &str) -> String {
@@ -457,6 +471,38 @@ pub fn upcoming(next: &jiff::Zoned) -> String {
     };
     let seconds = (next.timestamp().as_second()) - jiff::Timestamp::now().as_second();
     format!("{label}, in {}", until(seconds))
+}
+
+/// `doctor`. One check per row, one verdict word, evidence beside it.
+#[must_use]
+pub fn doctor(report: &crate::doctor::Report) -> String {
+    let mut out = String::new();
+    for section in &report.sections {
+        if section.checks.is_empty() {
+            continue;
+        }
+        let _ = writeln!(out, "{}", section.title);
+        rule(&mut out);
+        for check in &section.checks {
+            let _ = writeln!(
+                out,
+                "  {:<22}{:<8}{}",
+                clip(&check.name, 21),
+                check.verdict,
+                clip(&check.evidence, WIDTH - 32)
+            );
+        }
+        out.push('\n');
+    }
+
+    let (failures, warnings) = report.counts();
+    let _ = writeln!(
+        out,
+        "{}, {}",
+        plural(failures, "failure"),
+        plural(warnings, "warning")
+    );
+    out
 }
 
 /// What `service install` put where. The binary path is echoed because it is written
