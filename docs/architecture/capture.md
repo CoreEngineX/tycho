@@ -113,7 +113,8 @@ gitlink pointers with no history at all.
 
 | Entry | Detected by | Result |
 |---|---|---|
-| Repository root | `.git` directory, or `.git` **file** for a submodule or worktree | `Entry::Repo`; content walk stops, discovery continues |
+| Repository root | a `.git` directory or **file** that git will actually open | `Entry::Repo`; content walk stops, discovery continues |
+| A `.git` marker git refuses | a stale worktree pointer, or a submodule whose gitdir is gone | **not** a repository: a warning, and its contents are treated as ordinary files |
 | Excluded | the deepest matching rule is an ignore | skipped |
 | Socket, FIFO, device | `st_mode` | skipped with a warning - see `store.md` section 7 |
 | Plain file | anything else surviving the rule tree | `Entry::Plain` |
@@ -209,7 +210,7 @@ build output. This filter is why the overlay does not swallow it, and it is why
 `traditional` is required - a collapsed directory entry cannot be filtered per file.
 
 **A status entry ending in `/` is a directory that Tycho expands with its own walk,
-never copies.** Git reports an untracked nested repository as one collapsed entry;
+never copies, stopping at any repository root the plan already found.** Git reports an untracked nested repository as one collapsed entry;
 copying it wholesale would put that repository's `.git` into the store tree as loose
 files, which this design explicitly forbids. The expansion classifies any nested
 `.git` marker as `Entry::Repo`, feeding the recursive discovery above, so a nested

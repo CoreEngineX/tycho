@@ -298,6 +298,11 @@ First layer that knows what a backup is. Composes layers 2 and 3.
 | `remote` | push, first-contact classification, verification | Verification compares the **full ref set**, not just heads |
 | `state` | run records | Atomic rename, never a partial write |
 
+A symlink is hashed from its **link target**, never by path: `hash-object` follows a
+link, so hashing by path stores a copy of what it points at under mode `120000`,
+which fabricates a file on restore that never existed. A dangling link fails the
+batch outright.
+
 Two walks, not one: **content** stops at a repository boundary, **discovery**
 continues through it. Getting this wrong silently reduces every submodule to a
 gitlink, and on this machine nearly everything is a submodule.

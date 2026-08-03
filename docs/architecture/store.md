@@ -92,7 +92,8 @@ refs/heads/main                        the backup history, one commit per run
 refs/tycho/<key>/heads/<branch>        a captured repo's branches
 refs/tycho/<key>/tags/<tag>            its tags
 refs/tycho/<key>/remotes/<remote>/...  its remote-tracking refs
-refs/tycho/<key>/stash/<n>             its stash entries, one ref each
+refs/tycho/<key>/stash                 its top stash entry
+refs/tycho/<key>/stashes/<n>           the whole stash stack, one ref each
 ```
 
 `<key>` identifies a captured repository: the root alias, then the repo's path
@@ -131,11 +132,25 @@ That tail is the only place normalisation folding can fire.
 git -C <store> fetch --no-tags <repo-path> "+refs/*:refs/tycho/<key>/*"
 ```
 
-`refs/*` deliberately includes remote-tracking refs. The stash needs separate
-handling: `refs/stash` is only the top entry, and the rest of the stack lives in a
-reflog that fetch never transfers, so each entry is enumerated with
-`git -C <repo> rev-parse 'stash@{N}'` and fetched into `refs/tycho/<key>/stash/<n>`.
-`HEAD`'s reflog and `ORIG_HEAD` are likewise not transferred, and section 8 says so.
+`refs/*` deliberately includes remote-tracking refs, and it also carries `refs/stash`
+onto `refs/tycho/<key>/stash`, which is the top entry for free.
+
+The rest of the stack needs separate handling, because it lives in a reflog that
+fetch never transfers. Each entry is enumerated with
+`git -C <repo> rev-parse 'stash@{N}'` and fetched by object id into
+`refs/tycho/<key>/stashes/<n>`.
+
+**`stashes/`, not `stash/`, and the difference is load-bearing.** The wildcard has
+already made `refs/tycho/<key>/stash` a *leaf* ref, and git's ref store refuses to
+hold a leaf and a directory of the same name - so writing `stash/0` beneath it fails
+with "unable to update local ref". An earlier version of this document specified both
+and could not have worked.
+
+Fetching those entries does work despite nothing referencing them: over local
+transport git reads the source's object database directly, so an unreachable stash
+commit transfers without `uploadpack.allowAnySHA1InWant`. Verified.
+
+`HEAD`'s reflog and `ORIG_HEAD` are not transferred, and section 8 says so.
 
 **`--no-tags` is load-bearing, not tidiness.** Without it git auto-follows tags into
 the store's *own* `refs/tags/`, on top of the copy the explicit refspec already
@@ -450,9 +465,10 @@ The `symbolic-ref` line is required. `git init` leaves `HEAD` pointing at an unb
 on a name that never gets created lets the fetch write every branch as a real local
 branch, which is what a restore should produce.
 
-Only `stash/0` becomes `refs/stash`; deeper stash entries are restored as ordinary
-refs under `refs/tycho-stash/<n>` because git's stash stack is a reflog and cannot
-be reconstructed from refs alone. `REPO.txt` records how many there were.
+Only the top entry becomes `refs/stash`; the rest are restored as ordinary refs under
+`refs/tycho-stash/<n>` from `refs/tycho/<key>/stashes/*`, because git's stash stack is
+a reflog and cannot be reconstructed from refs alone. `REPO.txt` records how many
+there were.
 
 Then the overlay is applied over the checkout, restoring uncommitted edits,
 untracked files and gitignored files. **The overlay copy does not follow symlinks
