@@ -115,6 +115,70 @@ impl fmt::Display for AbsPath {
     }
 }
 
+/// A path inside the store's tree: relative, with no `.git` component. Invariant 8
+/// says such a path is never written into the tree "asserted rather than assumed",
+/// so the assertion lives in this constructor and nowhere else.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TreePath(PathBuf);
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum TreePathError {
+    #[error("a tree path cannot be empty")]
+    Empty,
+    #[error("'{0}' is absolute; a tree path is relative to the tree root")]
+    Absolute(String),
+    #[error("'{0}' contains a '.' or '..' component")]
+    DotComponent(String),
+    #[error("'{0}' contains a '.git' component, which must never reach the tree")]
+    GitComponent(String),
+}
+
+impl TreePath {
+    /// # Errors
+    ///
+    /// If the path is empty, absolute, contains `.` or `..`, or contains a `.git`
+    /// component in any case.
+    pub fn parse(path: &Path) -> Result<Self, TreePathError> {
+        let shown = || path.display().to_string();
+        if path.as_os_str().is_empty() {
+            return Err(TreePathError::Empty);
+        }
+        if path.is_absolute() {
+            return Err(TreePathError::Absolute(shown()));
+        }
+        if has_git_component(path) {
+            return Err(TreePathError::GitComponent(shown()));
+        }
+        let mut components = 0;
+        for component in path.components() {
+            match component {
+                Component::Normal(_) => components += 1,
+                Component::CurDir | Component::ParentDir => {
+                    return Err(TreePathError::DotComponent(shown()));
+                }
+                Component::RootDir | Component::Prefix(_) => {
+                    return Err(TreePathError::Absolute(shown()));
+                }
+            }
+        }
+        if components == 0 {
+            return Err(TreePathError::Empty);
+        }
+        Ok(Self(path.components().collect()))
+    }
+
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl fmt::Display for TreePath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0.display())
+    }
+}
+
 /// Whether any component is a `.git` marker, which must never reach the store tree.
 #[must_use]
 pub fn has_git_component(path: &Path) -> bool {
@@ -168,7 +232,9 @@ fn expand_vars(input: &str, var: &impl Fn(&str) -> Option<String>) -> Result<Str
 
 #[cfg(test)]
 mod tests {
-    use super::{AbsPath, PathError, has_git_component};
+    use super::{AbsPath, PathError, TreePath, TreePathError, has_git_component};
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
     use std::path::Path;
 
     fn env(name: &str) -> Option<String> {
@@ -268,6 +334,42 @@ mod tests {
             AbsPath::from_absolute(Path::new("b")),
             Err(PathError::Relative("b".to_owned()))
         );
+    }
+
+    #[test]
+    fn a_tree_path_is_relative_and_carries_no_git_component() {
+        for good in [
+            "a.md",
+            "CoreEngineX/org/notes.md",
+            ".tycho/repos/x/REPO.txt",
+        ] {
+            assert!(TreePath::parse(Path::new(good)).is_ok(), "{good}");
+        }
+        assert_eq!(TreePath::parse(Path::new("")), Err(TreePathError::Empty));
+        assert!(matches!(
+            TreePath::parse(Path::new("/a/b")),
+            Err(TreePathError::Absolute(_))
+        ));
+        assert!(matches!(
+            TreePath::parse(Path::new("a/../b")),
+            Err(TreePathError::DotComponent(_))
+        ));
+        for bad in [".git", "a/.git/b", "a/.GIT", ".Git/config"] {
+            assert!(
+                matches!(
+                    TreePath::parse(Path::new(bad)),
+                    Err(TreePathError::GitComponent(_))
+                ),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tree_path_keeps_hostile_bytes_intact() {
+        let raw = OsStr::from_bytes(b"a\nb/c\td.md");
+        let path = TreePath::parse(Path::new(raw)).expect("valid");
+        assert_eq!(path.as_path().as_os_str(), raw);
     }
 
     #[test]

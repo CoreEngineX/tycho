@@ -31,11 +31,11 @@ const PINNED: [&str; 13] = [
     "user.email=tycho@localhost",
 ];
 
-/// Variables that point git at a repository other than the one `-C` names. `-C`
-/// only changes directory; `GIT_DIR` overrides discovery outright, so one inherited
-/// from a git hook would write the store's objects into the hook's repository at
-/// exit 0.
-const HIJACKING: [&str; 10] = [
+/// Variables that redirect git away from what the arguments say. `-C` only changes
+/// directory, so an inherited `GIT_DIR` would write the store's objects into a git
+/// hook's repository at exit 0; and the identity variables outrank `-c user.name`,
+/// so an inherited one would author a backup as whoever the hook was running for.
+const HIJACKING: [&str; 16] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
@@ -46,6 +46,12 @@ const HIJACKING: [&str; 10] = [
     "GIT_CEILING_DIRECTORIES",
     "GIT_CONFIG",
     "GIT_CONFIG_COUNT",
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_COMMITTER_DATE",
 ];
 
 /// How long a child may run before it is killed and the run fails loudly.

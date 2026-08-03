@@ -30,6 +30,51 @@ fn has_object(repo: &Path, oid: &str) -> bool {
         .success()
 }
 
+/// The identity variables outrank `-c user.name` and `-c user.email`, so an
+/// inherited pair would author a backup commit as whoever the surrounding hook was
+/// running for rather than as tycho.
+#[test]
+fn the_identity_variables_outrank_the_config_pins() {
+    let store = bare_repo();
+    let tree = Command::new("git")
+        .current_dir(store.path())
+        .args(["hash-object", "-w", "-t", "tree", "--stdin"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("git ran");
+    let tree = String::from_utf8_lossy(&tree.stdout).trim().to_owned();
+
+    let commit = |extra: &[(&str, &str)]| {
+        let mut command = Command::new("git");
+        command
+            .current_dir(store.path())
+            .args(["-c", "user.name=tycho", "-c", "user.email=tycho@localhost"])
+            .args(["commit-tree", &tree, "-m", "x"]);
+        for (key, value) in extra {
+            command.env(key, value);
+        }
+        let out = command.output().expect("git ran");
+        assert!(out.status.success(), "commit-tree: {out:?}");
+        let oid = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        let shown = Command::new("git")
+            .current_dir(store.path())
+            .args(["log", "-1", "--format=%an <%ae>", &oid])
+            .output()
+            .expect("git ran");
+        String::from_utf8_lossy(&shown.stdout).trim().to_owned()
+    };
+
+    assert_eq!(commit(&[]), "tycho <tycho@localhost>");
+    assert_eq!(
+        commit(&[
+            ("GIT_AUTHOR_NAME", "hooked"),
+            ("GIT_AUTHOR_EMAIL", "hooked@example.com"),
+        ]),
+        "hooked <hooked@example.com>",
+        "the pins won, so stripping the identity variables guards nothing"
+    );
+}
+
 /// `-C` changes directory; `GIT_DIR` overrides repository discovery. An inherited
 /// one therefore silently redirects a write to the wrong repository, at exit 0.
 #[test]
