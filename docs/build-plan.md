@@ -239,9 +239,22 @@ No IO. This is the layer whose testability the whole module split defends.
 
 ### 3.1 Config
 
-serde with `deny_unknown_fields`, `version` checked first so a newer config says so
-rather than naming a key. Full validation table in `config.md` section 8 - every row
-is a test.
+`version` is checked first, on its own, so a newer config says so rather than naming
+a key. Full validation table in `config.md` section 8 - every row is a test.
+
+**Parsing is lenient and validation is a separate pass**, because that section also
+requires every problem reported at once and serde stops at the first error. Unknown
+keys are collected into a flattened table and reported as errors rather than being
+rejected by `deny_unknown_fields`, which would abort at the first one. The intent is
+unchanged - an unrecognised key is a hard error, since a silently ignored `wacth =`
+is the config-file form of the bug that made this project necessary.
+
+**Layer 3 makes only the checks decidable from the config text**, which is most of
+the table, since every containment check is a prefix comparison. Deferred to the
+slice that has a filesystem: does a watched root exist, does an ignore path exist,
+is the store's parent present and its volume mounted, is `store_path` on the boot
+volume, does a remote glob match anything, and the alias-rename warning that needs
+the last backup's tree.
 
 ### 3.2 The rule tree
 

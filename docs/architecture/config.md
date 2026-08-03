@@ -108,6 +108,7 @@ coreenginex    2 roots, 2 ignores, 1 reinclude, 3 remotes, weekly Sun 12:00
 | `profile.reinclude` | array | `[]` | Paths re-included beneath an ignore. See section 5 |
 | `profile.remotes` | array | `[]` | Destinations. See `remotes.md` |
 | `profile.schedule` | table | none | Exactly one of `daily`, `weekly`, `every`. See `scheduling.md` |
+| `profile.schedule.every` | string | - | A whole number and one of `s`, `m`, `h`, `d` - `"6h"`. Becomes launchd's `StartInterval` in seconds |
 | `profile.use_default_ignores` | bool | `true` | Apply the built-in junk list |
 | `profile.store_path` | path | state dir | **Directory** into which `<profile>.git` is created. See section 6 |
 | `profile.local_only` | bool | `false` | Acknowledges a profile with no remotes. See section 3 |
@@ -340,6 +341,13 @@ These are the test vectors, and `capture.md`'s test matrix implements them.
 Case 8 is the one people get wrong. A glob matching the filename matches at the
 file's own depth, which is deeper than any directory rule above it. To keep
 `a.log` you reinclude the file itself.
+
+**The same rule explains a question this design will be asked.** Case 5's rule set
+lists only the junk rule `target`; with the *whole* default list in play, `*.o`
+matches `~/A/p/target/x.o` at depth 4 and beats the reinclude at depth 3, so the
+object files stay excluded while everything else under `target/` comes back. That is
+case 8 applied consistently rather than an exception to it. Re-including a directory
+re-includes the directory, not the deeper patterns inside it.
 
 ### Default junk ignores
 
