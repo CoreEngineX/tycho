@@ -1,24 +1,39 @@
 # Scheduling and service lifecycle
 
-Tycho has no resident process. The operating system's scheduler starts
-`tycho run --all`, it does its work, and it exits.
+Tycho has no resident process. The operating system's scheduler starts a run, it
+does its work, and it exits.
 
-## 1. Why the OS scheduler is enough
+## 1. Why the OS scheduler is enough, and where the argument stops
 
-From `man launchd.plist`:
+From `man launchd.plist`, on `StartCalendarInterval`:
 
 > Unlike cron which skips job invocations when the computer is asleep, launchd will
 > start the job the next time the computer wakes up.
 
-That is the catch-up behaviour a scheduler daemon would have been built to provide.
-The machine being asleep at the scheduled time is the normal case for a laptop, and
-launchd already handles it.
+That is the catch-up behaviour a scheduler daemon would have been built to provide,
+and a laptop being asleep at noon is the normal case.
+
+**The promise is scoped to sleep, not to power-off.** The man page says nothing
+about a machine that was shut down across its scheduled time, and a grep of the page
+for boot, power, shutdown or reboot returns nothing about a missed calendar
+interval. So the honest position is: launchd covers the common case, and Tycho must
+not assume it covers all of them.
+
+**Therefore every invocation performs an overdue check that does not depend on
+launchd firing at all.** On every run of any agent - including the hourly catch-up -
+Tycho compares now against the last successful run recorded in the state file. If
+the gap exceeds the profile's schedule interval plus a grace period, it says so:
+`status` shows the profile red, and a notification fires. If the invocation was the
+catch-up agent and a backup is overdue, it runs one.
+
+That check is what makes the no-daemon design safe rather than merely cheap. Without
+it, a Mac shut down over a weekend silently skips its weekly backup and nothing ever
+notices - which is the exact shape of the failure this project exists to correct.
 
 What a resident daemon would have added: an internal timer, an IPC protocol, an
-async runtime, a second lifecycle to install and debug, and a new failure mode
-where the daemon is dead and backups silently stop. What it would have bought:
-nothing that launchd does not already do. Windows Task Scheduler is the weaker half
-of this argument and is revisited when Windows support lands.
+async runtime, a second lifecycle to install and debug, and a new failure mode where
+the daemon is dead and backups stop silently. Windows Task Scheduler is the weaker
+half of this argument and is revisited when Windows support lands.
 
 ## 2. Schedule configuration
 
@@ -35,20 +50,46 @@ enum Schedule {
 ```
 
 Exactly one variant, enforced by the type rather than by validating that two
-mutually exclusive keys are not both set. Each maps onto a launchd key directly:
-`Daily` and `Weekly` become `StartCalendarInterval`, `Every` becomes
-`StartInterval`. No cron parsing, and no dependency to do it. A cron variant can be
-added if a schedule ever needs one, and until then the config cannot express a
-schedule Tycho fails to honour.
+mutually exclusive keys are not both set. `Daily` and `Weekly` become
+`StartCalendarInterval`; `Every` becomes `StartInterval`. No cron parsing and no
+dependency to do it. A cron variant can be added if a schedule ever needs one, and
+until then the config cannot express a schedule Tycho fails to honour.
 
-## 3. Generated agent
+## 3. Labels
+
+| Agent | Label |
+|---|---|
+| Backup, one per profile | `com.coreenginex.tycho.profile.<profile>` |
+| Catch-up, one shared | `com.coreenginex.tycho.catchup` |
+| Access probe, transient | `com.coreenginex.tycho.probe` |
+
+The label namespaces the software's **publisher**, not the person running it -
+`com.apple.*` and `com.google.keystone` run on machines belonging to people who work
+at neither. Someone else running Tycho is still running CoreEngineX's Tycho, so the
+branded label is correct precisely because strangers will use it. A neutral
+namespace would be worse: it claims a name nobody owns, and two unrelated tools
+could collide in it.
+
+**The `profile.` infix is load-bearing.** Deriving the backup label directly as
+`com.coreenginex.tycho.<profile>` from a user-controlled name means a profile named
+`catchup` produces exactly the catch-up agent's label, and `Label` is documented as
+uniquely identifying the job - so one silently displaces the other. Either that
+profile never gets a scheduled backup, or nothing ever catches up on mount. Putting
+the two families in disjoint namespaces removes the collision structurally, and
+`config.md` additionally constrains profile names to `[a-z0-9][a-z0-9-]*` with
+`catchup` reserved, which also keeps dots and path separators out of a label and a
+filename.
+
+Labels live in the per-user GUI domain, so two macOS accounts on one Mac each get
+their own agents with no interaction.
+
+## 4. The generated backup agent
 
 `tycho service install` writes the plist and bootstraps it. The plist is generated,
 never hand-written, because a hand-written plist that had drifted from what the
-script actually needed is a large part of how the old system failed unnoticed.
+script needed is a large part of how the old system failed unnoticed.
 
-Label: `com.coreenginex.tycho.<profile>`, at
-`~/Library/LaunchAgents/com.coreenginex.tycho.<profile>.plist`.
+At `~/Library/LaunchAgents/com.coreenginex.tycho.profile.<profile>.plist`:
 
 ```xml
 <key>ProgramArguments</key>
@@ -63,24 +104,35 @@ Label: `com.coreenginex.tycho.<profile>`, at
   <key>Hour</key><integer>12</integer>
   <key>Minute</key><integer>0</integer>
 </dict>
+<key>StandardOutPath</key>
+<string>/Users/…/Library/Logs/tycho/coreenginex.out.log</string>
 <key>StandardErrorPath</key>
 <string>/Users/…/Library/Logs/tycho/coreenginex.err.log</string>
 <key>RunAtLoad</key>
 <false/>
 ```
 
+`Weekday 0` is Sunday, confirmed against the man page.
+
 `RunAtLoad` is false deliberately. A backup on every login is not what a weekly
-schedule means, and the wake-up catch-up already covers a missed run.
+schedule means, and the wake-up catch-up plus the overdue check in section 1 cover a
+missed run.
 
-The absolute path to the binary is written at install time from the resolved
-location, so the plist never depends on a `PATH` that launchd does not have.
+**Both output paths are set.** launchd sends stdout to `/dev/null` when
+`StandardOutPath` is absent, which is a silent-failure surface in a tool whose whole
+thesis is that failure is loud.
 
-### The catch-up agent
+**`service install` creates `~/Library/Logs/tycho/` before writing the plist.**
+launchd silently drops output when the directory does not exist, so the diagnostic
+trail the design leans on would never have been written. `doctor` asserts the
+directory exists and is writable.
 
-`service install` writes a second, separate agent whose only job is
-`tycho push --all`. It never captures.
+The absolute path to the binary is resolved and written at install time, so the
+plist never depends on a `PATH` launchd does not have.
 
-Label: `com.coreenginex.tycho.catchup`.
+## 5. The catch-up agent
+
+One shared agent whose only job is `tycho push --all`. It never captures.
 
 ```xml
 <key>ProgramArguments</key>
@@ -93,56 +145,94 @@ Label: `com.coreenginex.tycho.catchup`.
 <true/>
 <key>StartInterval</key>
 <integer>3600</integer>
-<key>RunAtLoad</key>
-<true/>
 ```
 
-`StartOnMount` fires on every filesystem mount, so plugging in the external drive
-triggers the catch-up push within seconds rather than at the next weekly backup.
-The hourly interval covers the other reachability failures - a signed-out cloud
-account, a sync client that was not running. `RunAtLoad` is true here, unlike the
-backup agent, because pushing what already exists at login is free and occasionally
-exactly what is needed.
+`StartOnMount` fires on **every** filesystem mount - plugging in the external drive,
+but also mounting a DMG, a network share, or an APFS local snapshot, which happens
+often. `ThrottleInterval` bounds the resulting churn at one launch per 10 seconds by
+default. The job exits before doing any filesystem work when no remote is in
+`Behind`, so the common case costs a process spawn and a state-file read.
 
-With nothing pending the process reads the state file and exits, so an hourly
-trigger and a mount-storm both cost nothing worth measuring.
+`StartInterval` firings are **missed while the machine is asleep and are not
+coalesced on wake**, unlike `StartCalendarInterval`. So the hourly leg covers a
+signed-out account or a sync client that was not running, but it is not a
+post-wake guarantee - the overdue check in section 1 is what provides that.
 
-The split is deliberate: **capture happens on the backup schedule and nowhere
-else.** A trigger that fired a full backup on every mount would make the contents of
-a backup depend on when you happened to plug in a drive.
+**`RunAtLoad` is deliberately absent here**, though an earlier draft had it. At
+login, cloud File Providers may not have mounted, so remote paths do not exist yet
+and every remote would be probed as unreachable on every boot. `StartOnMount`
+already fires when those domains mount, which is strictly better timing. `remotes.md`
+section 4 additionally suppresses state transitions from probes within 60 seconds of
+load, as belt and braces.
 
-### Full Disk Access
+## 6. Service commands
 
-launchd runs the agent in a context macOS TCC restricts. A profile watching paths
-outside the ordinary home directories needs `~/.cargo/bin/tycho` added to Full Disk
-Access in System Settings, exactly as `a sibling daemon` in this same repository does.
-`tycho doctor` checks for the symptom - readable by hand, unreadable under the agent
-
-- and says so, rather than leaving a daemon that runs and quietly captures nothing.
-
-## 4. Service commands
-
-| Command             | Does                                                                          |
-| ------------------- | ----------------------------------------------------------------------------- |
-| `service install`   | Generate the plist, `launchctl bootstrap gui/$UID`, report the next fire time |
-| `service status`    | Whether the agent is loaded, its last exit status, and the next scheduled run |
-| `service restart`   | `bootout` then `bootstrap`, for after a config change                         |
-| `service uninstall` | `bootout` and remove the plist. Never touches the store or any backup         |
+| Command | Does |
+|---|---|
+| `service install` | Create the log directory, generate both plists, `launchctl bootstrap gui/$UID`, report the next fire time. Hard error on a profile with no schedule, naming the missing key |
+| `service status` | Whether each agent is loaded, its last exit status, and the next scheduled run |
+| `service restart` | `bootout` then `bootstrap`, for after a config change |
+| `service uninstall` | `bootout` and remove the plists. Never touches the store or any backup |
 
 `service status` surfacing the last exit status matters: `launchctl list` showing a
 non-zero exit for the old job was the evidence that revealed a year of silent
 failure, and nobody had reason to look. `tycho status` shows it without being asked.
 
-## 5. Logs
+**`doctor` compares each installed agent's schedule against the config's.** Drift
+between what the config says and what is actually installed is precisely what killed
+the old system, and it is a cheap comparison.
 
-`~/Library/Logs/tycho/<profile>.log`, rotated by size, with launchd's stderr going
-to a sibling `.err.log` so a crash before Tycho's own logging starts still leaves a
-trace. `tycho log -f` tails it.
+## 7. Full Disk Access
 
-## 6. Windows, later
+launchd runs the agent in a context macOS TCC restricts, so a profile watching paths
+outside the ordinary home directories needs `~/.cargo/bin/tycho` added to Full Disk
+Access in System Settings - exactly as `a sibling daemon` in the sibling repository
+does.
+
+**An interactive `doctor` cannot measure the agent's grant.** `doctor` runs with the
+terminal's TCC grant, which is a different grant from the agent's, so a check that
+simply reads a watched root proves nothing about what the agent can do. An earlier
+draft described exactly that impossible check.
+
+The only mechanism that measures the real thing is to probe **through launchd**:
+
+```text
+tycho doctor --deep
+  bootstraps  com.coreenginex.tycho.probe   -> tycho probe-access <root>...
+  waits for it to exit, reads its result file, boots it out
+```
+
+That is the same lifecycle `service install` already implements, so the cost is
+small. Plain `doctor` reports the access state as unverified and names
+`--deep` rather than guessing.
+
+This matters because a TCC denial is not a loud failure on its own - it is a read
+error on a directory. What makes it loud is the sanity gate in `capture.md` section
+3: a root that yields zero capturable entries fails the run outright, so a
+TCC-denied root cannot produce a green empty backup.
+
+## 8. Notifications
+
+Desktop notifications are one of the four channels behind "failure is loud", and
+they are the only one whose delivery depends on a user-level authorisation that can
+silently be off.
+
+`doctor` reports the notification authorisation state, and `doctor --deep` sends a
+test notification. A machine in a Focus mode suppresses delivery, which is expected -
+which is exactly why the non-zero exit code, the red `status` line and the state-file
+record are the real contract, and the notification is a convenience on top.
+
+## 9. Logs
+
+`~/Library/Logs/tycho/<profile>.log`, rotated by size, with launchd's stdout and
+stderr going to sibling `.out.log` and `.err.log` files so a crash before Tycho's own
+logging starts still leaves a trace. `tycho log -f` tails it.
+
+## 10. Windows, later
 
 Task Scheduler with a logon trigger and a calendar trigger, or a Windows service via
 the `windows-service` crate. The decision needs the actual machine, since the
 argument for the OS scheduler rests on wake-up catch-up behaviour that has to be
-verified rather than assumed. Until then the `Schedule` type stays the same and only
-its translation changes.
+verified rather than assumed - and on Windows, as on macOS, the overdue check in
+section 1 is what makes the answer not matter very much. Until then the `Schedule`
+type stays the same and only its translation changes.

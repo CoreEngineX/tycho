@@ -24,22 +24,101 @@ assembled.
 ## 2. Push
 
 ```text
-git -C <store> push <path> "+refs/heads/*:refs/heads/*" "+refs/tycho/*:refs/tycho/*"
+git -C <store> push --atomic <path>/<profile>.git \
+    "refs/heads/*:refs/heads/*" \
+    "+refs/tycho/*:refs/tycho/*"
 ```
 
-Both refspecs are required. `git push --all` covers only `refs/heads/*`, so the
+Every character of that is deliberate.
+
+**Both refspecs are required.** `git push --all` covers only `refs/heads/*`, so the
 captured repository history under `refs/tycho/*` would silently never leave the
 machine - a backup that looks green and is missing the majority of what it was
-protecting. This is the single most important line in this document.
+protecting.
 
-`--mirror` would carry both, but it also deletes remote refs absent locally, which
-turns a misconfigured run into remote data loss. Explicit refspecs, never
-`--mirror`.
+**`refs/heads/*` carries no `+`.** Tycho's own backup history is append-only by
+construction, so a non-fast-forward there means something is wrong - specifically, it
+means a second machine is pushing the same profile name. That must be rejected, and a
+leading `+` would instead force it through and destroy the other machine's entire
+backup history at exit 0. An earlier version of this document specified `+` on both
+refspecs while its own failure table promised "never force-pushed"; the command won.
 
-On first contact the remote folder gets `git init --bare <path>/<profile>.git`. The
-glob in a configured path is resolved then - `GoogleDrive-*` matches whatever
-account directory exists on this machine - and the first match wins. If the glob
-matches nothing, an optional remote is behind and a required remote fails.
+**`refs/tycho/*` keeps its `+`**, because those refs legitimately track a rewritten
+upstream. A rebase or an amend in a source repository moves a captured tip
+non-fast-forward, and capture fetches them with `+` for the same reason.
+
+**`--atomic` is not optional.** Without it, per-ref updates are independent: a
+rejection on `refs/heads/*` still lets the forced `refs/tycho/*` updates land, so a
+rejected push leaves the remote half-clobbered. With it, the whole push fails and
+both ref families stay untouched:
+
+```text
+error: atomic push failed for ref refs/heads/main. status: 5
+ ! [rejected]  main -> main (fetch first)
+ ! [rejected]  refs/tycho/r1/heads/main -> ... (atomic push failed)
+```
+
+`--mirror` was rejected outright: it carries both families but also deletes remote
+refs absent locally, turning a misconfigured run into remote data loss.
+
+**Do not rely on `receive.denyNonFastForwards` as the mechanism.** It protects
+`refs/heads/*` only - `refs/tycho/*` is force-overwritten regardless. It is worth
+setting as defence in depth, and section 2b does, but the refspec is the fix.
+
+### First contact
+
+The remote path is classified three ways, never as a boolean:
+
+| State | Test | Action |
+|---|---|---|
+| **Absent or empty** | directory missing, or contains nothing | `git init --bare` and configure it |
+| **A valid bare repository** | `HEAD` present, `objects/` and `refs/` present, and `git -C <path> rev-parse --git-dir` succeeds | push |
+| **Anything else** | neither of the above | **refuse**, and report which |
+
+The third row exists because `git init --bare` will happily initialise inside a
+directory holding your photos and tax returns, and inside a half-synced repository -
+in the latter case orphaning the pre-existing pack. The refusal message distinguishes
+"holds foreign content" from "looks like an incomplete repository, the sync may still
+be downloading", because the remedies differ.
+
+On creation the remote is configured:
+
+```text
+git -C <remote> config receive.autogc false
+git -C <remote> config gc.auto 0
+git -C <remote> config receive.denyNonFastForwards true
+git -C <remote> symbolic-ref HEAD refs/heads/main
+```
+
+`receive.autogc` is **on by default**, which means a remote would run `git gc` after
+receiving a push: packfiles rewritten inside a cloud-synced folder, a corruption
+window if the client uploads mid-rewrite, and - worst - the permanent pruning of
+anything a forced push orphaned. A remote is a **write-once, append-only replica that
+Tycho never compacts.** Its pack count grows; `doctor` reports it, and compaction is
+an explicit manual act in the shape of `store.md` section 10.
+
+The `symbolic-ref` line matters for the same reason it does in the store: a remote
+whose `HEAD` dangles clones to an empty repository, and cloning a remote is the
+disaster path.
+
+### Glob resolution refuses ambiguity
+
+A configured path may contain one `*`, for the account directory whose exact name
+you cannot predict:
+
+```text
+~/Library/CloudStorage/GoogleDrive-*/My Drive/CoreEngineX-Backups
+```
+
+**A glob matching more than one directory is an error, not a coin flip.** The run
+fails, lists the matches, and tells you to write the account out in full. Directory
+order is not stable - on this machine `OneDrive-Personal` and
+`OneDrive-Work` invert between readdir order and sorted order - and
+"first match wins" would mean company backups silently landing in a university
+account that `background.md` says must never be written to.
+
+A glob matching nothing is a warning for an optional remote and a failure for a
+required one.
 
 ## 2a. Several profiles can share one destination
 
@@ -54,66 +133,75 @@ as you point at it and they never interact:
 ```
 
 Nothing is shared: separate object databases, separate refs, separate locks,
-separate schedules. Pushing one cannot affect the other, and losing one does not
-touch the other. Two profiles may even both call their remote `t7` - remote names
+separate schedules. Two profiles may even both call their remote `t7` - remote names
 are unique within a profile, not across them.
 
-The only genuinely shared resource is **disk space**, and it matters here because
-the store keeps full history forever. Two profiles on one drive fill it twice as
-fast, so `tycho doctor` reports free space on each remote's volume rather than
-waiting for a push to fail with no room left.
+The one genuinely shared resource is **disk space**, and it matters because the
+store keeps full history. `tycho doctor` reports free space per volume rather than
+per profile.
 
-This is a different situation from the one in section 5. Two *profiles* sharing a
-folder is fine because they are two repositories. Two *machines* pushing the *same
-profile name* into one folder is not, because that is one repository receiving two
-divergent histories.
+This is a different situation from section 5. Two *profiles* sharing a folder is
+fine because they are two repositories. Two *machines* pushing the *same profile
+name* into one folder is not, because that is one repository receiving two divergent
+histories.
 
 ## 2b. `RECOVERY.md` beside the repositories
 
-Every run writes a `RECOVERY.md` into the remote folder, alongside the bare repos.
-It contains the exact commands to recover from this folder using nothing but git,
-with real paths and captured repository keys filled in, and the date it was written.
+Every run writes a `RECOVERY.md` into the remote folder, alongside the bare repos,
+containing the commands to recover from this folder using nothing but git, with real
+paths and captured repository keys filled in.
 
 **It describes the folder, not the profile that wrote it.** The writer scans the
 folder for `*.git` directories and documents every one it finds, so a folder holding
-two profiles gets one file covering both. Writing a per-profile file instead would
-mean whichever profile ran last silently overwrote the other's instructions, or a
-directory full of near-identical files that a person in a crisis has to choose
-between.
+two profiles gets one file covering both.
 
-Both profiles therefore produce identical content once both repositories exist, so a
-race between two simultaneous runs converges rather than corrupting. The write is a
-temporary file plus a rename, so a reader never sees a partial one.
+Two details make last-writer-wins actually safe rather than merely likely:
 
-This is not documentation for its own sake. In an actual disaster the thing you
-still have is a folder in a cloud account, quite possibly opened on a borrowed
-machine, and every other copy of the instructions was on the disk that died. A
-backup that requires you to remember a procedure is a backup with an undocumented
-dependency on your memory.
+- **The content carries no timestamp.** A folder's recovery commands do not expire,
+  and a write date would make two writers' output differ for no reason, so the
+  content is a pure function of the folder's contents and concurrent writers
+  converge by construction.
+- **The scan happens immediately before the write**, not at the start of the run, so
+  a sibling repository created earlier in the same run is seen.
 
-It is a plain file write into the folder, outside the bare repo and outside the
-push. A recovery guide stored *inside* the repository could only be read by
-somebody who already knew how to read the repository.
-
-It is also the one thing Tycho writes to a remote that is not a git object, so
-`doctor` treats an unexpected file in that folder as a sync artifact and `RECOVERY.md`
-as expected.
+The write is a temporary file plus a rename. The temp file is named
+`.RECOVERY.md.tmp` and `doctor` knows to expect both it and `RECOVERY.md`, so
+Tycho's own in-flight write is not reported as a sync artifact.
 
 ## 3. Verification
 
-A push that reports success has not proved anything until the remote agrees:
+A push that reports success has not proved anything until the remote agrees. The
+check compares the **full ref set**, not one ref:
 
 ```text
-git ls-remote <path>/<profile>.git refs/heads/main
+git ls-remote <path>/<profile>.git
 ```
 
-The sha must equal the commit just created. Only then is the remote recorded as
-`Synced` and only then does `tycho status` print "verified". This exists because
-the failure that started this project was a verification step that never actually
-ran in the context it claimed to check.
+diffed against `git -C <store> show-ref` filtered to `refs/heads/*` and
+`refs/tycho/*`. Every local ref must be present on the remote at the same sha.
 
-Weekly, and on `tycho doctor`, each reachable remote also gets `git fsck` against
-its object database.
+Checking only `refs/heads/main` - as an earlier version did - lets a run print
+"verified" while the captured repository history failed to land. `--atomic` makes the
+partial-push case impossible, and it is the cheap half of the fix, but the full
+comparison is what actually verifies the claim being made.
+
+Only then is the remote recorded as `Synced`, and only then does `tycho status`
+print `verified`. This exists because the failure that started this project was a
+verification step that never ran in the context it claimed to check.
+
+**Integrity checking is opt-in, because on a cloud remote it is expensive.** Files
+under `~/Library/CloudStorage` are dataless placeholders materialised on read -
+confirmed on this machine with `ls -lO`, which reports `compressed,dataless`. A full
+`git fsck` reads every object, so scheduling one weekly would download the entire
+backup from the cloud, every week, per remote.
+
+| Check | When |
+|---|---|
+| `git fsck --connectivity-only` | scheduled, cheap, catches a broken ref graph |
+| Full `git fsck` | `tycho doctor --remote <name> --deep` only, after printing "this will download N GB" |
+
+A directly attached drive has no such cost and can be checked in full whenever it is
+mounted.
 
 ## 4. Remote state
 
@@ -132,16 +220,13 @@ stateDiagram-v2
 
 | | Transition | Trigger |
 |---|---|---|
-| T1 | Unseen to Synced | First push succeeds and creates the bare repo |
+| T1 | Unseen to Synced | First push succeeds and the full ref comparison matches |
 | T2 | Unseen to Failed | A required remote was unreachable on its first run |
-| T3 | Synced to Behind | Unreachable, and the remote is marked optional |
+| T3 | Synced to Behind | Unreachable. Applies to required and optional remotes alike |
 | T4 | Behind to Synced | Reachable again. The next push carries everything missed |
-| T5 | Synced to Failed | Push rejected, or the remote head does not match after a reported success |
-| T6 | Behind to Failed | An optional remote has been behind past its tolerance |
+| T5 | Synced to Failed | Push rejected, or a ref missing or mismatched after a reported success |
+| T6 | Behind to Failed | Lag exceeds `behind_tolerance`, which is 1 for a required remote and 4 by default for an optional one |
 | T7 | Failed to Synced | The cause was fixed and the next run pushed cleanly |
-
-A `Synced` remote that pushes successfully again stays `Synced`; that self-transition
-is omitted from the diagram because it is the unremarkable case.
 
 ```rust
 enum RemoteState {
@@ -152,95 +237,106 @@ enum RemoteState {
 }
 ```
 
-The count in `Behind` is how many runs have happened since the remote last
-received one, which is the number a human actually wants: "that drive is three
-backups out of date."
+`Behind` applies to **both** required and optional remotes; the difference is the
+tolerance, not the state. A required remote's tolerance of 1 means it fails on the
+first missed run, which is the old behaviour, but expressing it as a tolerance
+removes the special case and makes `status` able to say `behind 3 of 4`.
 
-Catch-up needs no special code. A remote that comes back reachable receives the
-full history it missed on the next push, because git pushes everything the remote
-does not have. An external drive plugged in after a month gets the month.
+A `Synced` remote that pushes successfully again stays `Synced`; that self-transition
+is omitted from the diagram because it is the unremarkable case.
+
+**A reachability probe within 60 seconds of the catch-up agent loading does not
+transition state.** Cloud File Providers may not have mounted yet at that point, and
+a probe against a not-yet-mounted path would otherwise mark every remote `Behind` on
+every boot.
 
 ## 4a. What "unreachable" actually means, and no internet is usually not it
 
-A folder remote on a sync client behaves differently from what people expect,
-because **the push is a local filesystem write**. `~/Library/CloudStorage/GoogleDrive-…`
-is a mounted path on your disk. Pushing to it does not touch the network.
+A folder remote on a sync client behaves differently from what people expect, because
+**the push is a local filesystem write**. `~/Library/CloudStorage/GoogleDrive-…` is a
+mounted path on your disk; pushing to it does not touch the network.
 
 | Situation | What happens |
 |---|---|
-| **No internet, Drive folder mounted** | The push succeeds immediately. The Drive client queues the upload and sends it when connectivity returns. Tycho does not wait, retry, or report a problem, because from its side nothing went wrong |
-| **Drive app not running, or signed out** | The path does not exist. The remote is unreachable, so `Behind` if optional and `Failed` if required |
-| **External drive not plugged in** | Same. The path does not exist |
+| **No internet, Drive folder mounted** | The push succeeds immediately. The Drive client queues the upload and sends it when connectivity returns. Nothing in Tycho retries, waits or reports a problem, because nothing went wrong |
+| **Drive app not running, or signed out** | The path does not exist. `Behind`, then `Failed` past tolerance |
+| **External drive not plugged in** | Same |
 | **Folder exists but the disk is full** | The push fails. `Failed`, loudly |
 
-So the answer to "what if there is no internet when it backs up" is normally
-**nothing waits** - the data lands in the Drive folder on local disk at backup time
-and Google receives it whenever the machine is next online. That is the sync
-client's job, and duplicating it inside Tycho would mean maintaining a second,
-worse upload queue.
+**The honest limitation.** Verification compares against the folder, which proves the
+*folder* has the refs. It does not prove Google's servers do, and there is no reliable
+public API on macOS to ask a File Provider whether an upload finished. `verified`
+means the bytes are written and handed to the sync client.
 
-**The honest limitation this creates.** Post-push verification compares
-`git ls-remote` against the folder, which proves the *folder* has the commit. It
-does not prove Google's servers have it, and there is no reliable public API on
-macOS to ask a file provider whether an upload finished. A remote reading `verified`
-means the bytes are written and handed to the sync client, not that they are in the
-cloud.
-
-Two things make that acceptable rather than hand-waved. Multiple remotes fail
-independently, so one stalled sync client is not a lost backup. And the external
-drive is directly verifiable - there is no client between Tycho and the disk, which
-is a large part of what makes an unglamorous USB drive worth having in the list.
+Two things make that acceptable rather than hand-waved: multiple remotes fail
+independently, so one stalled client is not a lost backup; and the external drive is
+directly verifiable, with no client between Tycho and the disk. That is a large part
+of why an unglamorous USB drive belongs in the list.
 
 ## 4b. Catch-up without waiting for the next backup
 
-A remote that was genuinely unreachable - unplugged drive, signed-out account -
-would otherwise stay behind until the next scheduled run, which on a weekly
-schedule means up to a week with one destination stale while the others are fine.
+A genuinely unreachable remote would otherwise stay behind until the next scheduled
+run, which on a weekly schedule means up to a week with one destination stale.
 
 `tycho push [PROFILE]` closes that. It pushes whatever the store already has to any
-remote that is behind, and does no capture at all. With nothing pending it reads the
-state file and exits, which costs nothing worth measuring, so it can be triggered
-often.
+remote that is behind and does no capture at all. It takes the same profile lock as
+`run` and **exits 0 immediately if the lock is held**, since a run in progress is
+about to push anyway.
 
-Two triggers, both from `scheduling.md`:
-
-- **`StartOnMount`** - launchd starts the job every time a filesystem is mounted, so
-  plugging the T7 in causes the catch-up push within seconds. This is the exact case
-  the key exists for.
-- **A low-frequency `StartInterval`** - hourly by default, which covers a signed-out
-  account that gets signed back in, or a Drive app that was not running.
-
-Neither ever captures. Capture happens on the backup schedule and nowhere else, so
-these cannot produce a surprise backup at an unexpected moment - they only move
-bytes that were already committed.
+Triggers are in `scheduling.md`: `StartOnMount`, so plugging in the external drive
+causes a catch-up push within seconds, and an hourly interval for the rest. Neither
+ever captures - **capture happens on the backup schedule and nowhere else**, so what
+is in a backup never depends on when you plugged something in.
 
 ## 5. Failure modes
 
-| Situation                               | Behaviour                                                                                                                      |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| Optional remote unreachable             | `Behind`, run exits 0, status shows the lag in yellow                                                                          |
-| Required remote unreachable             | `Failed`, run exits non-zero, notification fires                                                                               |
-| Path exists but is not a git repository | `Failed`. Tycho never initialises over a directory holding other content                                                       |
-| Non-fast-forward rejection              | `Failed`. Means another machine pushed to this remote with the same profile. Never force-pushed                                |
-| Head mismatch after a successful push   | `Failed`. The push reported success and the remote disagrees, which is the case worth being loudest about                      |
-| Sync conflict artifacts in the folder   | `doctor` reports them. Files matching `*conflict*` or `* (1).*` next to a bare repo mean the sync client is fighting something |
+| Situation | Behaviour |
+|---|---|
+| Optional remote unreachable | `Behind`, run exits 0, status shows the lag in yellow |
+| Required remote unreachable | `Behind` then `Failed` at tolerance 1, run exits non-zero, notification fires |
+| Path holds foreign content | `Failed`. Never initialises over it |
+| Path is a partially synced repository | `Failed`, distinguished from foreign content in the message |
+| Glob matches more than one directory | `Failed`, matches listed |
+| Non-fast-forward rejection on `refs/heads/*` | `Failed`, and with `--atomic` nothing on the remote moved. Never force-pushed |
+| A ref missing or mismatched after a successful push | `Failed`. The push reported success and the remote disagrees, which is the case worth being loudest about |
+| Sync conflict artifacts | `doctor` reports them - see below |
 
 **One machine per profile name.** Two machines pushing the same profile name into
-one folder are two histories arriving at one repository. They diverge, and the
-second is rejected rather than merged, because a merged history would describe
-neither machine. Give the second machine a different profile name and it gets its
-own repository in the same folder, per section 2a.
+one folder are two histories arriving at one repository. They diverge, the second is
+rejected, and with `--atomic` the remote is left exactly as the first machine wrote
+it. Give the second machine a different profile name and it gets its own repository
+in the same folder, per section 2a.
 
-Note this constrains the *profile name*, not the folder. One folder holding several
-profiles is supported and expected.
+### Sync artifacts are scanned inside the repository, not beside it
+
+The damaging artifacts do not sit next to the bare repo, they land inside it. A
+duplicated packfile or a conflicted copy of a ref file is the case that silently
+corrupts a remote, and git will not always complain.
+
+`doctor` scans the remote folder recursively, including the contents of each
+`<profile>.git`:
+
+- any file in `objects/pack/` not matching
+  `pack-<hex>.(pack|idx|rev|bitmap|mtimes)` is an artifact
+- any file under `refs/` whose name is not a valid ref component is an artifact
+- the usual `*conflict*` and `* (1).*` shapes anywhere in the tree
+- `RECOVERY.md` and `.RECOVERY.md.tmp` at the folder root are expected, not artifacts
+
+It also reports pack count and total size per remote, which is the number that grows
+without bound now that remotes are never compacted.
 
 ## 6. What a remote costs
 
-The remote holds the same object database as the store, so its size is the store's
-size. The first push transfers everything; subsequent pushes transfer only new
-objects. A weekly run over a stable tree pushes kilobytes.
+A remote is **append-only and never pruned**, so it holds at least the store's object
+database and grows monotonically. It is a superset of the store, not a copy of it:
+push never deletes refs, so a ref that leaves the store stays on the remote forever.
+
+That divergence is deliberate. A backup destination that quietly forgot things the
+store forgot would be a worse backup. `doctor` reports refs present on a remote and
+absent from the store, and `tycho remote prune` exists as an explicit manual act in
+the shape of `store.md` section 10 - never as something a scheduled run does.
 
 For scale on the current machine: the two repositories the old script protected
-bundle to 7.7 MB and 112 KB. Under the old scheme each Sunday copied both bundles
-in full to both destinations forever. Under this one, an unchanged repository
-transfers nothing.
+bundle to 7.7 MB and 112 KB. Under the old scheme each Sunday copied both bundles in
+full to both destinations forever. Under this one, an unchanged repository transfers
+nothing.
