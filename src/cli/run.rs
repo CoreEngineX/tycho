@@ -627,7 +627,7 @@ fn open_source(args: &crate::cli::RestoreArgs) -> Option<Store> {
 }
 
 pub fn config(args: &ConfigArgs) -> Exit {
-    let path = match resolve(args.config.clone()) {
+    let path = match config_location(args.config.clone()) {
         Ok(path) => path,
         Err(error) => {
             eprintln!("tycho: {error}");
@@ -638,6 +638,9 @@ pub fn config(args: &ConfigArgs) -> Exit {
     if matches!(args.action, ConfigAction::Path) {
         println!("{}", path.display());
         return Exit::Ok;
+    }
+    if let ConfigAction::Init { force } = args.action {
+        return init(&path, force);
     }
 
     let Some((parsed, _)) = load(args.config.clone()) else {
@@ -653,6 +656,46 @@ pub fn config(args: &ConfigArgs) -> Exit {
     } else {
         Exit::Warning
     }
+}
+
+/// `config init`: a starter file, refusing to overwrite one that is already there.
+fn init(path: &Path, force: bool) -> Exit {
+    if path.exists() {
+        if !force {
+            eprintln!(
+                "tycho: {} already exists; --force overwrites it after writing a .bak",
+                path.display()
+            );
+            return Exit::Failure;
+        }
+        // A config is a file somebody wrote by hand, so --force keeps a copy rather
+        // than trusting that they meant it.
+        let backup = path.with_extension("toml.bak");
+        if let Err(error) = std::fs::copy(path, &backup) {
+            eprintln!("tycho: copying to {}: {error}", backup.display());
+            return Exit::Failure;
+        }
+        println!("kept           {}", backup.display());
+    }
+
+    if let Some(parent) = path.parent()
+        && let Err(error) = std::fs::create_dir_all(parent)
+    {
+        eprintln!("tycho: creating {}: {error}", parent.display());
+        return Exit::Failure;
+    }
+
+    let home =
+        std::env::home_dir().map_or_else(|| "~".to_owned(), |home| home.display().to_string());
+    let text = crate::config_edit::starter(&home);
+    if let Err(error) = crate::sys::fs::write_atomic(path, text.as_bytes()) {
+        eprintln!("tycho: writing {}: {error}", path.display());
+        return Exit::Failure;
+    }
+
+    println!("wrote          {}", path.display());
+    println!("\nedit it, then `tycho config check`");
+    Exit::Ok
 }
 
 /// The echo `cli.md` section 9 prints: reading your own config back in summarised
@@ -681,7 +724,7 @@ fn summarise(profile: &Profile) -> String {
     )
 }
 
-fn resolve(override_path: Option<PathBuf>) -> Result<PathBuf, String> {
+pub(crate) fn config_location(override_path: Option<PathBuf>) -> Result<PathBuf, String> {
     match override_path {
         Some(path) => Ok(path),
         None => platform::config_path()
@@ -691,7 +734,7 @@ fn resolve(override_path: Option<PathBuf>) -> Result<PathBuf, String> {
 }
 
 pub(crate) fn load(override_path: Option<PathBuf>) -> Option<(Parsed, String)> {
-    let path = match resolve(override_path) {
+    let path = match config_location(override_path) {
         Ok(path) => path,
         Err(error) => {
             eprintln!("tycho: {error}");

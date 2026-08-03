@@ -2,6 +2,7 @@
 
 pub mod doctor;
 pub mod render;
+pub mod rules;
 pub mod run;
 pub mod service;
 
@@ -42,6 +43,9 @@ const LOGO: &str = r"
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
+    /// Never colour the output. `NO_COLOR` and a non-terminal stdout mean the same
+    #[arg(long, global = true)]
+    pub no_color: bool,
 }
 
 #[derive(Clone, Debug, Args)]
@@ -235,6 +239,35 @@ pub enum ConfigAction {
     Check,
     /// Print where the config file is read from
     Path,
+    /// Write a starter file, refusing if one is already there
+    Init {
+        /// Overwrite, after writing a `.bak` beside it
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct RuleArgs {
+    #[command(subcommand)]
+    pub action: RuleAction,
+    /// Which profile. A flag rather than a positional, because `watch add PATH` and
+    /// `watch add PROFILE PATH` are otherwise indistinguishable to a parser
+    #[arg(short = 'p', long, global = true, value_name = "PROFILE")]
+    pub profile: Option<String>,
+    /// Read this config file instead of the default location
+    #[arg(long, value_name = "PATH", global = true)]
+    pub config: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Subcommand)]
+pub enum RuleAction {
+    /// Add an entry
+    Add { value: String },
+    /// Remove an entry
+    Rm { value: String },
+    /// Print the entries
+    List,
 }
 
 #[derive(Clone, Debug, Subcommand)]
@@ -250,11 +283,11 @@ pub enum Command {
     /// Recover to a destination directory
     Restore(RestoreArgs),
     /// Manage watched roots
-    Watch,
+    Watch(RuleArgs),
     /// Manage ignore rules
-    Ignore,
+    Ignore(RuleArgs),
     /// Manage re-include rules
-    Reinclude,
+    Reinclude(RuleArgs),
     /// Validate, locate or create the config file
     Config(ConfigArgs),
     /// launchd lifecycle for the backup agents
@@ -298,9 +331,9 @@ impl Command {
             Self::Status(_) => "status",
             Self::History(_) => "history",
             Self::Restore(_) => "restore",
-            Self::Watch => "watch",
-            Self::Ignore => "ignore",
-            Self::Reinclude => "reinclude",
+            Self::Watch(_) => "watch",
+            Self::Ignore(_) => "ignore",
+            Self::Reinclude(_) => "reinclude",
             Self::Config(_) => "config",
             Self::Service(_) => "service",
             Self::Doctor(_) => "doctor",
@@ -349,10 +382,9 @@ pub fn dispatch(command: Command) -> Exit {
         Command::Log(args) => run::log(&args),
         Command::Doctor(args) => doctor::dispatch(&args),
         Command::ProbeAccess(args) => doctor::probe_access(&args),
-        other => {
-            eprintln!("tycho: {} is not implemented yet", other.name());
-            Exit::Failure
-        }
+        Command::Watch(args) => rules::dispatch(crate::config_edit::List::Watch, &args),
+        Command::Ignore(args) => rules::dispatch(crate::config_edit::List::Ignore, &args),
+        Command::Reinclude(args) => rules::dispatch(crate::config_edit::List::Reinclude, &args),
     }
 }
 

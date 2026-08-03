@@ -72,11 +72,46 @@ fn a_hidden_command_still_runs() {
     let _ = std::fs::remove_file(&dir);
 }
 
+/// The last slice's whole point: nothing in `cli.md` section 1 refuses to run.
+///
+/// Each of these is invoked in a form that reaches its own code rather than clap's
+/// argument checking, against a config path that does not exist - so what is being
+/// asserted is that the command *ran* and complained about the config, not that it
+/// declined to exist.
 #[test]
-fn an_unimplemented_command_fails_loudly() {
-    let run = tycho(&["watch"]);
-    assert_eq!(run.code, 1);
-    assert!(run.stderr.contains("not implemented"), "{}", run.stderr);
+fn no_command_is_unimplemented() {
+    let missing = "/nonexistent/tycho.toml";
+    for args in [
+        vec!["run", "--config", missing],
+        vec!["push", "--config", missing],
+        vec!["status", "--config", missing],
+        vec!["history", "--config", missing],
+        vec!["restore", "--into", "/tmp/x", "--config", missing],
+        vec!["watch", "list", "--config", missing],
+        vec!["ignore", "list", "--config", missing],
+        vec!["reinclude", "list", "--config", missing],
+        vec!["config", "check", "--config", missing],
+        vec!["service", "status", "--config", missing],
+        vec!["doctor", "--config", missing],
+        vec!["log", "--config", missing],
+    ] {
+        let run = tycho(&args);
+        assert!(
+            !run.stderr.contains("not implemented"),
+            "{args:?} is still unimplemented"
+        );
+        assert_ne!(run.code, 2, "{args:?} was a usage error: {}", run.stderr);
+    }
+}
+
+/// Colour is emphasis on top of text that already carries the meaning, so a pipe -
+/// which is how every one of these tests runs the binary - must contain none of it.
+#[test]
+fn piped_output_carries_no_escape_codes() {
+    let run = tycho(&["--help"]);
+    assert!(!run.stdout.contains('\x1b'), "{}", run.stdout);
+    let run = tycho(&["doctor", "--config", "/nonexistent/tycho.toml"]);
+    assert!(!run.stderr.contains('\x1b'), "{}", run.stderr);
 }
 
 #[test]

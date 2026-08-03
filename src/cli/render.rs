@@ -13,6 +13,46 @@ use std::path::Path;
 /// Total width, which fits an eighty-column terminal.
 pub const WIDTH: usize = 74;
 
+/// Whether output carries colour.
+///
+/// **Meaning never depends on colour.** Every verdict is a word first - `status`
+/// prints `behind 3 of 4`, `doctor` prints `warn` - so a pipe, a log file, a screen
+/// reader and a colourblind reader all get the same information. Colour is emphasis
+/// on top of text that already says it.
+static COLOUR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Decides once, from the three things that all mean no.
+///
+/// `NO_COLOR` is the cross-tool convention; `--no-color` is the explicit ask; and a
+/// stdout that is not a terminal is a pipe or a log file, where escape codes are
+/// noise. Under launchd stdout is a file, so an agent's log never contains them.
+pub fn decide_colour(disabled_by_flag: bool) {
+    let on = !disabled_by_flag
+        && std::env::var_os("NO_COLOR").is_none()
+        && std::io::IsTerminal::is_terminal(&std::io::stdout());
+    COLOUR.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[must_use]
+pub fn colour_is_on() -> bool {
+    COLOUR.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Wraps text in an SGR colour, or returns it untouched.
+#[must_use]
+pub fn paint(text: &str, code: &str) -> String {
+    if colour_is_on() {
+        format!("\x1b[{code}m{text}\x1b[0m")
+    } else {
+        text.to_owned()
+    }
+}
+
+pub const RED: &str = "31";
+pub const YELLOW: &str = "33";
+pub const GREEN: &str = "32";
+pub const DIM: &str = "2";
+
 /// `8,412`.
 #[must_use]
 pub fn count(value: usize) -> String {
@@ -484,11 +524,19 @@ pub fn doctor(report: &crate::doctor::Report) -> String {
         let _ = writeln!(out, "{}", section.title);
         rule(&mut out);
         for check in &section.checks {
+            // Padded before painting: an escape sequence has width in bytes and
+            // none on screen, so colouring first would push every later column out.
+            let verdict = format!("{:<8}", check.verdict);
+            let code = match check.verdict {
+                crate::doctor::Verdict::Ok => GREEN,
+                crate::doctor::Verdict::Warn => YELLOW,
+                crate::doctor::Verdict::Fail => RED,
+            };
             let _ = writeln!(
                 out,
-                "  {:<22}{:<8}{}",
+                "  {:<22}{}{}",
                 clip(&check.name, 21),
-                check.verdict,
+                paint(&verdict, code),
                 clip(&check.evidence, WIDTH - 32)
             );
         }
