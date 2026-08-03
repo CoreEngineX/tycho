@@ -1,6 +1,7 @@
 //! Absolute paths, and the expansion rules a config value goes through to become
 //! one.
 
+use std::borrow::Borrow;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
@@ -112,6 +113,15 @@ impl AbsPath {
 impl fmt::Display for AbsPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0.display())
+    }
+}
+
+/// Lets a map keyed by `AbsPath` be looked up with a `&Path`, which the rule tree
+/// does once per ancestor of every candidate. Sound because every ordering and
+/// equality impl here delegates to the `PathBuf` inside.
+impl Borrow<Path> for AbsPath {
+    fn borrow(&self) -> &Path {
+        &self.0
     }
 }
 
