@@ -264,7 +264,9 @@ macro_rules! display {
     ($($ty:ty),*) => {$(
         impl fmt::Display for $ty {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str(&self.0)
+                // pad, not write_str: the latter ignores width and alignment, so
+                // every table column built from one of these would collapse.
+                f.pad(&self.0)
             }
         }
     )*};

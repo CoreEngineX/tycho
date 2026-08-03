@@ -6,6 +6,7 @@
 use crate::primitives::path::AbsPath;
 use globset::{Candidate, Glob, GlobSet, GlobSetBuilder};
 use std::collections::BTreeMap;
+use std::ops::Bound;
 use std::path::Path;
 
 /// Applied unless `use_default_ignores = false`. Load-bearing rather than cosmetic:
@@ -174,6 +175,56 @@ impl RuleTree {
     pub fn captures(&self, path: &Path) -> bool {
         self.resolve(path).verdict == Verdict::Capture
     }
+
+    /// Whether anything beneath `dir` could still be captured, which is the only
+    /// safe basis for pruning a walk.
+    ///
+    /// A walk that stops descending wherever the verdict is `Skip` silently breaks
+    /// re-inclusion: `ignore ~/A/s` with `reinclude ~/A/s/keep` is the documented
+    /// carve-out, and pruning at `~/A/s` means `keep` is never reached. Globs and
+    /// junk are ignores at every depth, so only an explicit capture rule below the
+    /// directory can rescue anything.
+    #[must_use]
+    pub fn may_contain_captures(&self, dir: &Path) -> bool {
+        self.explicit
+            .range::<Path, _>((Bound::Included(dir), Bound::Unbounded))
+            .take_while(|(path, _)| path.as_path().starts_with(dir))
+            .any(|(_, (verdict, _))| *verdict == Verdict::Capture)
+    }
+
+    /// Records every glob and junk pattern that matched anywhere along the path, so
+    /// `--dry-run` can list the rules that matched nothing at all - the row that
+    /// earns that command, since a typo'd rule is otherwise a silent no-op.
+    pub fn record_hits(&self, path: &Path, hits: &mut Hits) {
+        let mut prefix = std::path::PathBuf::new();
+        for component in path.components() {
+            prefix.push(component);
+            let candidate = Candidate::new(&prefix);
+            for index in self.globs.matches_candidate(&candidate) {
+                hits.globs.insert(index);
+            }
+            for index in self.junk.matches_candidate(&candidate) {
+                hits.junk.insert(index);
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn glob_patterns(&self) -> &[String] {
+        &self.glob_patterns
+    }
+
+    #[must_use]
+    pub fn junk_patterns(&self) -> &[String] {
+        &self.junk_patterns
+    }
+}
+
+/// Which non-explicit rules fired during a walk.
+#[derive(Debug, Default)]
+pub struct Hits {
+    pub globs: std::collections::BTreeSet<usize>,
+    pub junk: std::collections::BTreeSet<usize>,
 }
 
 fn consider(best: &mut Decision, candidate: Decision) {
@@ -361,6 +412,44 @@ mod tests {
         assert_eq!(decision.rule, "*.o", "the deeper junk glob should win");
         // A file the junk list does not name comes back.
         assert!(captured(&tree, "A/p/target/keep.txt"));
+    }
+
+    /// The pruning question. Answering it with the verdict alone would stop the walk
+    /// at `~/A/s` and lose the re-included subtree entirely.
+    #[test]
+    fn a_skipped_directory_still_reports_that_it_may_contain_captures() {
+        let tree = tree(RuleSet {
+            watch: paths(&["A"]),
+            ignore_paths: paths(&["A/s"]),
+            reinclude: paths(&["A/s/keep"]),
+            ..RuleSet::default()
+        });
+        let ignored = home("A/s");
+        assert!(!captured(&tree, "A/s"), "the directory itself is skipped");
+        assert!(
+            tree.may_contain_captures(ignored.as_path()),
+            "pruning here would lose the re-included subtree"
+        );
+        assert!(
+            !tree.may_contain_captures(home("A/other").as_path()),
+            "a skipped directory with nothing under it is prunable"
+        );
+    }
+
+    #[test]
+    fn hits_record_every_pattern_that_matched_anywhere() {
+        let tree = tree(RuleSet {
+            watch: paths(&["A"]),
+            ignore_globs: vec!["*.log".to_owned(), "*.never".to_owned()],
+            junk: vec!["target".to_owned(), "node_modules".to_owned()],
+            ..RuleSet::default()
+        });
+        let mut hits = super::Hits::default();
+        tree.record_hits(home("A/p/target/a.log").as_path(), &mut hits);
+        assert!(hits.globs.contains(&0), "*.log matched");
+        assert!(!hits.globs.contains(&1), "*.never matched nothing");
+        assert!(hits.junk.contains(&0), "target matched");
+        assert!(!hits.junk.contains(&1), "node_modules matched nothing");
     }
 
     #[test]

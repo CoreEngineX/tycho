@@ -36,12 +36,12 @@ fn version_is_the_crate_version() {
 fn help_lists_every_public_command() {
     let run = tycho(&["--help"]);
     assert_eq!(run.code, 0);
-    for command in Command::ALL {
-        let name = command.name();
+    for name in Command::NAMES {
         let listed = run.stdout.contains(&format!("\n  {name} "));
-        match command {
-            Command::ProbeAccess => assert!(!listed, "'{name}' is internal and must stay hidden"),
-            _ => assert!(listed, "'{name}' is missing from --help"),
+        if name == Command::INTERNAL {
+            assert!(!listed, "'{name}' is internal and must stay hidden");
+        } else {
+            assert!(listed, "'{name}' is missing from --help");
         }
     }
 }

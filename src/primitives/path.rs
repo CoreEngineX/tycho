@@ -112,7 +112,7 @@ impl AbsPath {
 
 impl fmt::Display for AbsPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0.display())
+        f.pad(&self.0.to_string_lossy())
     }
 }
 
@@ -185,7 +185,7 @@ impl TreePath {
 
 impl fmt::Display for TreePath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0.display())
+        f.pad(&self.0.to_string_lossy())
     }
 }
 
