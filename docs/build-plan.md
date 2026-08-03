@@ -26,15 +26,14 @@ produced them. The architecture docs are the contract; this is the order of work
   library, per D7.
 - **`#[ignore]` is not an escape hatch.** The gate runs `--run-ignored=all`.
 
-### Open at slice 6: the `ignore` crate
+### Decided at slice 6: no `ignore` crate
 
-`capture.md` section 3 specifies it, with `standard_filters(false)`,
-`.hidden(false)` and `.follow_links(false)`. Decide it there rather than assume it,
-because its filters are **opt-out**: the default `WalkBuilder` honours `.gitignore`,
-which is the behaviour D9 forbids and the behaviour that lost `CLAUDE.md`. Weigh
-that against a hand-rolled recursion, which the two walks may want anyway since
-content stops at a repository boundary and discovery does not, and `symlink_metadata`
-is needed regardless for `st_mode` classification.
+The walk is Tycho's own. Its descent policy is not expressible as a filter - it
+prunes only where nothing beneath could still be captured, and switches to
+directories-only inside a repository - classification was already ours, and that
+crate's filters are opt-out, so its default is the behaviour D9 forbids. The cost is
+its parallel walker, which is a real loss on a stat-bound walk and is recoverable
+later behind a measurement. `capture.md` section 3 describes what was built.
 
 ## Decided, do not relitigate
 

@@ -6,7 +6,7 @@ nothing that stops being useful when piped into a log file.
 ## 1. Commands
 
 ```text
-tycho run [PROFILE] [--all] [--dry-run] [--quick] [--allow-shrink]
+tycho run [PROFILE] [--all] [--dry-run] [--quick] [--allow-shrink] [--config PATH]
 tycho push [PROFILE] [--all]
 tycho status [PROFILE] [--check] [--strict]
 tycho history [PROFILE] [-n N] [--path PATH]
@@ -14,7 +14,7 @@ tycho restore [PROFILE] [--store PATH] [--at TIME] [--bundle] [--force] [-- PATH
 tycho watch add|rm|list [-p PROFILE] [PATH]
 tycho ignore add|rm|list [-p PROFILE] [PATTERN]
 tycho reinclude add|rm|list [-p PROFILE] [PATH]
-tycho config check|path|init [--force]
+tycho config check|path|init [--force] [--config PATH]
 tycho service install|uninstall|status|restart [PROFILE]
 tycho doctor [--deep] [--remote NAME]
 tycho probe-access PATH...
@@ -311,28 +311,28 @@ restore.
 ## 8. Dry run
 
 ```text
-roots                                                 files       size
-----------------------------------------------------------------------
-  CoreEngineX   ~/Developer/CoreEngineX               8,412    1.19 GB
-  Books         ~/Books                                 126     340 MB
+roots                                               files             size
+--------------------------------------------------------------------------
+  CoreEngineX   ~/Developer/CoreEngineX                31          32.6 KB
+  Books         ~/Books                                126           340 MB
 
-repositories                        head          state
-----------------------------------------------------------------------
-  CoreEngineX/org                   main aef686f  1 untracked
-  CoreEngineX/org/handbook      main 1930b99  clean
-  CoreEngineX/products/a sibling project   dev  41c8ee2  3 modified
-                                                  and 9 more
+repositories                              head              state
+--------------------------------------------------------------------------
+  CoreEngineX/org                         main aef686f      2 modified
+  CoreEngineX/org/handbook            main 1930b99      clean
+  CoreEngineX/products/pager/pager-daemon detached ca905eb  clean
+                                                            and 10 more
 
 excluded                                          reason
-----------------------------------------------------------------------
+--------------------------------------------------------------------------
   ~/Developer/CoreEngineX/scratch                 ignore rule
-  **/node_modules                                 default junk
-  **/target                                       default junk
+  node_modules                                    default junk
+  target                                          default junk
   ~/Developer/CoreEngineX/scrach                  matched nothing
 
-----------------------------------------------------------------------
-  to read      8,538 files in 12 repositories        1.53 GB
-  to write     estimated new objects                  412 MB
+--------------------------------------------------------------------------
+  to read      157 files                                            340 MB
+               20 repositories                                      251 MB
 ```
 
 Three tables, because the three questions are separate: how much is coming, what
@@ -340,18 +340,27 @@ repositories were found and in what state, and what the rules threw away.
 
 **`matched nothing` is the row that earns this command.** A typo'd ignore path is
 otherwise a silent no-op that commits gigabytes into permanent history, so every rule
-that matched nothing is listed.
+a person wrote that matched nothing is listed. The built-in junk list is exempt: most
+of its twenty patterns match nothing on any given tree, and listing them would bury
+the one row that matters.
 
-The totals separate **what will be read** from **what will be written**, because they
-are different quantities and conflating them made the earlier version's arithmetic
-meaningless. The write estimate includes the repositories' object sizes on a first
-run, from `git count-objects -vH` per repository.
+**The read total is split, because the two halves are read differently.** Loose files
+are read from disk; a repository is read from its object database. On this machine
+the first number is tiny and the second is nearly everything, since almost every
+watched path is inside a repository - a total that counted only loose files would
+understate the run by three orders of magnitude.
 
-The repository table truncates with `and 9 more` so the count and the rows agree.
+There is deliberately no "to write" estimate after a first run. Knowing how many new
+objects a run produces means knowing which blobs the store already has, which means
+hashing them - and D4 rejects the mtime cache that would approximate it. A fabricated
+number is worse than an absent one.
 
-`--dry-run` is not free: it is a full stat walk plus two git invocations per
-repository. `--quick` omits the repository table, which is the expensive half, when
-you only want the exclusion list.
+The repository table lists ten and truncates with `and N more`, so the count and the
+rows agree.
+
+`--dry-run` is not free: it is a full stat walk plus three git invocations per
+repository - head, state and `count-objects`. `--quick` omits the repository table,
+which is the expensive half, when you only want the exclusion list.
 
 ## 9. `tycho config check`
 

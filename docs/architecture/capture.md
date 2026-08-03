@@ -67,19 +67,23 @@ optional and none may be inherited from ambient config.
 
 ## 3. Plan
 
-The walk uses the `ignore` crate with **gitignore semantics off**. That crate honours
-`.gitignore` by default; every such source is disabled explicitly:
+The walk is Tycho's own, over `read_dir` and `symlink_metadata`, using an explicit
+work stack rather than recursion so a pathological tree depth is not a stack
+overflow. Symlinks are never followed, which makes link loops a non-issue.
 
-```rust
-WalkBuilder::new(root)
-    .standard_filters(false)
-    .hidden(false)
-    .follow_links(false)
-    .build()
-```
+**The `ignore` crate was rejected**, having been the plan until the rule tree
+existed. Its filters are opt-out - the default `WalkBuilder` honours `.gitignore`,
+which is the exact behaviour that lost `CLAUDE.md` and the reason D9 exists - and the
+descent policy below is not expressible as a filter in any case. What is given up is
+its parallel walker; the walk is stat-bound, so that is a real loss, recoverable
+later behind a measurement.
 
-This is the invariant from `overview.md` expressed in code, and worth a note in the
-source: the walker's default behaviour is the exact behaviour that lost `CLAUDE.md`.
+**Descent is pruned only where nothing beneath could still be captured.** The obvious
+walk stops descending wherever the rule tree says `Skip`, and that silently breaks
+re-inclusion: `ignore ~/A/s` with `reinclude ~/A/s/keep` is the documented carve-out,
+and stopping at `~/A/s` means `keep` is never reached. The rule tree answers "is there
+an explicit capture rule below this directory" instead, and only a no there permits a
+prune.
 
 ### Two walks, not one
 
@@ -90,6 +94,13 @@ that would have silently reduced every submodule to a gitlink:
 |---|---|
 | **Content** - which files become plain-file blobs | **Stops.** A repository's tracked content is captured as history, not as loose files |
 | **Discovery** - which repositories exist | **Continues.** It descends into every subdirectory of a repository except its own `.git`, classifying each nested `.git` marker as another repository |
+
+They are one traversal in two modes, which is also what makes it fast. Once inside a
+repository, **only directories matter**: its tracked content is captured as history
+and its uncommitted content comes from the overlay, so the walk stops stat-ing files
+and descends purely to find nested `.git` markers. Measured on the real
+`~/Developer/CoreEngineX`, that plans the whole tree - twenty repositories - in under
+a second.
 
 Repository discovery is therefore **recursive**. On this machine that is the normal
 case: `~/Developer/CoreEngineX/org` is a repository containing four submodules, and
@@ -130,11 +141,12 @@ failures treated as warnings, the run would produce a near-empty commit, exit 0,
 record every remote as `Synced` - a green backup containing nothing. That is the
 a sibling daemon failure, where the agent ran faithfully and silently moved nothing.
 
-A second gate catches the partial version: **if a root's entry count drops by more
-than a configured fraction against the previous run's `RunStats`, the run fails**
-unless `--allow-shrink` is passed. `RunStats` is already persisted per run, so the
-comparison costs nothing. A genuine mass deletion is a real event worth confirming
-once.
+A second gate catches the partial version: **if a root's entry count falls below half
+the previous run's, and that previous count was at least 100, the run fails** unless
+`--allow-shrink` is passed. `RunStats` is already persisted per run, so the comparison
+costs nothing. The floor is there because a root of three files becoming one is noise
+rather than a mass deletion; without it the gate would cry wolf on every small root.
+A genuine mass deletion is a real event worth confirming once.
 
 `tycho run --dry-run` stops after the gate and prints the plan: per root, the file
 count and byte total, the repositories found with their current head, and what the
