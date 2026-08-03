@@ -273,7 +273,7 @@ pruned - the refs are additive, and the next run's commit records them.
 | Nested repositories | An outer repository containing a nested one, asserting no `.git` component appears in the tree and the inner repository is captured independently |
 | Submodules | The `org` plus four submodules shape, asserting each submodule is captured with history rather than as a gitlink |
 | Overlay filtering | A repository with a gitignored `node_modules` and a gitignored `CLAUDE.md`, asserting the first is excluded and the second captured |
-| Hostile filenames | Newline, tab, quote, backslash and non-UTF-8 bytes in filenames, through both pipeline legs |
+| Hostile filenames | Newline, tab, quote, backslash and non-UTF-8 bytes in filenames, through both pipeline legs. APFS rejects a non-UTF-8 filename with `EILSEQ`, so that row is covered by encoder unit tests rather than end to end on macOS, and the filesystem test asserts that the only names it could not create are the non-UTF-8 ones |
 | Batch scale | More than 5,000 files, asserting no deadlock. The small fixtures elsewhere cannot reach the threshold |
 | Read failure | An unreadable file in the **middle** of the batch, asserting every file after it is present in the tree |
 | Byte-exactness | Round-trip with a fixture set containing a CRLF file, an `export-ignore`d path, a filter-attributed path and an `ident` file, comparing bytes with `cmp` |

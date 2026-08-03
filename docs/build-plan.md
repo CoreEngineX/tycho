@@ -22,12 +22,19 @@ produced them. The architecture docs are the contract; this is the order of work
 - Comments only for what the code cannot say. No history narration.
 - Commit and **push** at every meaningful step.
 - **A dependency lands in the slice that first uses it**, in its own commit, so
-  `cargo audit` watches only what is linked. Three are excluded permanently:
-  `ignore`, because it implements the gitignore semantics D9 forbids from affecting
-  capture; `directories`/`dirs`, because `std::env::home_dir()` carries no
-  deprecation on 1.97 and every path needed is a join from home; and any git library,
-  per D7.
+  `cargo audit` watches only what is linked. The one permanent exclusion is a git
+  library, per D7.
 - **`#[ignore]` is not an escape hatch.** The gate runs `--run-ignored=all`.
+
+### Open at slice 6: the `ignore` crate
+
+`capture.md` section 3 specifies it, with `standard_filters(false)`,
+`.hidden(false)` and `.follow_links(false)`. Decide it there rather than assume it,
+because its filters are **opt-out**: the default `WalkBuilder` honours `.gitignore`,
+which is the behaviour D9 forbids and the behaviour that lost `CLAUDE.md`. Weigh
+that against a hand-rolled recursion, which the two walks may want anyway since
+content stops at a repository boundary and discovery does not, and `symlink_metadata`
+is needed regardless for `st_mode` classification.
 
 ## Decided, do not relitigate
 

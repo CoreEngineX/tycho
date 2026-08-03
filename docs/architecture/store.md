@@ -118,6 +118,13 @@ branches onto one path. Git errors on first exposure but the *next* fetch is sil
 and clobbers the captured tip. Before each fetch, case-fold and NFC-normalise every
 destination refname and fail loudly on a duplicate.
 
+The two halves of a destination refname need the fold for different reasons.
+Percent-encoding leaves `<key>` pure ASCII, so only case can collide there. The
+branch and tag tail is copied from the source unencoded, so it carries whatever the
+source repository holds - and a repository created on a case-sensitive, normalisation
+-preserving filesystem can hold both the composed and decomposed forms of one name.
+That tail is the only place normalisation folding can fire.
+
 ### Capturing a repository
 
 ```text

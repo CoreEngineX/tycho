@@ -111,7 +111,7 @@ coreenginex    2 roots, 2 ignores, 1 reinclude, 3 remotes, weekly Sun 12:00
 | `profile.use_default_ignores` | bool | `true` | Apply the built-in junk list |
 | `profile.store_path` | path | state dir | **Directory** into which `<profile>.git` is created. See section 6 |
 | `profile.local_only` | bool | `false` | Acknowledges a profile with no remotes. See section 3 |
-| `profile.remote.name` | string | required | Unique within the profile |
+| `profile.remote.name` | string | required | Unique within the profile. Same charset as `profile.name` |
 | `profile.remote.path` | path | required | Folder holding the bare repo |
 | `profile.remote.optional` | bool | `false` | An unreachable optional remote is behind, not failed |
 | `profile.remote.behind_tolerance` | int | `4` | Runs a remote may lag before it becomes a failure |
@@ -139,16 +139,23 @@ After expansion a path must be absolute; a relative path is a config error. The
 `AbsPath` constructor enforces this, so no code downstream can hold an unexpanded or
 relative path.
 
+**A `..` component is a config error rather than something Tycho resolves.**
+Resolving it lexically is wrong whenever a component is a symlink, and leaving it in
+place breaks the containment checks in section 6, which compare path prefixes -
+`~/A/../B` does not compare as being outside `~/A`. Write the path out in full.
+
 ## 3. Profiles: what they are and whether you need two
 
 A profile is **one set of watched paths, sharing one store, one schedule, one set of
 destinations, and one restore boundary**. Profiles are independent - nothing is
 shared, not the store, not the remotes, not the lock.
 
-`profile.name` is constrained to `[a-z0-9][a-z0-9-]*` because it is not just a
-label: it becomes a directory name in every remote, part of a launchd label, and
-part of the store filename. No dots (they make a launchd label ambiguous), no path
-separators, no `catchup` (reserved - see `scheduling.md`).
+`profile.name` is constrained to `[a-z0-9][a-z0-9-]*` and 64 characters because it
+is not just a label: it becomes a directory name in every remote, part of a launchd
+label, and part of the store filename. No dots (they make a launchd label
+ambiguous), no path separators, no `catchup` (reserved - see `scheduling.md`). The
+length cap keeps a too-long name a config error rather than a cryptic filesystem
+error at store creation.
 
 You need exactly one today. The second person's machine does not need a second
 profile in *your* config; they have their own machine with their own config file
@@ -405,8 +412,10 @@ first.
 | Duplicate remote name within a profile | error |
 | Empty `watch` | error |
 | Relative path after expansion | error |
+| `..` component in a path | error, name the path in full |
 | Unset or empty environment variable in a path | error |
 | Environment variable outside the allow-list | error |
+| Invalid remote name charset | error |
 | Alias collision | error, suggests the `{ path, name }` form |
 | Invalid alias after encoding, or the reserved alias `.tycho` | error |
 | Two explicit path rules at equal depth on one path | error |
