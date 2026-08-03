@@ -283,6 +283,13 @@ store's objects into that repository instead, at exit 0. `GIT_DIR`, `GIT_WORK_TR
 itself. `GIT_TERMINAL_PROMPT=0` is set for the same reason the timeout exists: a
 credential prompt under launchd would otherwise block until it fires.
 
+**The identity variables are removed for a second reason: they outrank the `-c`
+pins.** Verified - with `-c user.name=tycho` on the command line, an inherited
+`GIT_AUTHOR_NAME` still wins, so a backup taken from inside a hook would record that
+hook's user as the author of your history. `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`,
+`GIT_AUTHOR_DATE` and the three `GIT_COMMITTER_*` equivalents are stripped alongside
+the rest.
+
 `GIT_CONFIG_GLOBAL` is deliberately **not** cleared. Command-line `-c` already
 outranks every environment and file source for the settings that matter, and
 clearing it would break `safe.directory`, which is what lets git read a repository

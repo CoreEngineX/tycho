@@ -210,7 +210,17 @@ printf '* -text -diff -filter -ident -export-subst -export-ignore\n' > <store>/i
 `hash_object_batch` owns the **short-read recovery protocol**: on fewer hashes than
 paths, attribute the failure to `paths[hashes.len()]`, record it as a warning, and
 restart from the next path, looping until exhausted. Invariant: *either every planned
-path is hashed, or the ones that were not are named.*
+path is hashed, or the ones that were not are named* - carried by the return type,
+which holds exactly one outcome per input path, rather than by discipline.
+
+**Settled invariants are structure, not parameters.** `push` always passes
+`--atomic`, `fetch_refs` always passes `--no-tags` and offers no prune, and the hash
+batch always passes `--no-filters`. Each of those left as a flag is a call site that
+can be wrong once and fail green, which is the whole failure mode this project
+exists to correct. For the same reason `Refspec` carries `force` as a field, so D14
+reads at the call site, and `write_tree` is a method on a scratch `Index` rather than
+on `Repo` - without `GIT_INDEX_FILE` it silently uses the store's own index and a
+stale entry survives into the tree.
 
 **Byte-exactness test, layer 2's reason to exist:** round-trip a CRLF file, a file
 matching an lfs `clean` pattern, an `ident` file, an `export-subst` file and an
