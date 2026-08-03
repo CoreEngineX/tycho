@@ -69,6 +69,7 @@ reversals that resulted. The audit workspace is at `.audit/`, which is gitignore
 | [`docs/background.md`](docs/background.md) | The incidents behind the requirements, and the system being replaced |
 | [`docs/git-primer.md`](docs/git-primer.md) | Objects, refs, refspecs and reachability - the git parts this design rests on |
 | [`docs/disaster-recovery.md`](docs/disaster-recovery.md) | Recovering onto a new machine from a cloud folder, using only git |
+| [`docs/build-plan.md`](docs/build-plan.md) | Layered build order from primitives upward, and the decisions that are settled |
 | [`docs/walkthrough.md`](docs/walkthrough.md) | The whole lifecycle as terminal sessions: install, backup, restore one file, recover from nothing |
 
 Start with the git primer if refs and refspecs are unfamiliar territory - everything
