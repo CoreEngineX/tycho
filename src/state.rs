@@ -5,6 +5,7 @@
 //! anything a restore depends on lives: the store carries its own history, because
 //! the disaster path is a replacement machine where this file is already gone.
 
+use crate::remote::state::RemoteState;
 use crate::sys::fs::write_atomic;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -42,6 +43,13 @@ pub struct RunRecord {
 pub struct State {
     #[serde(default)]
     pub profiles: BTreeMap<String, Vec<RunRecord>>,
+    /// Where each remote stands right now, per profile.
+    ///
+    /// Current state rather than a per-run column, because the state machine's input
+    /// is what the *last* run left behind, and a remote's lag has to survive a run
+    /// that never reached it.
+    #[serde(default)]
+    pub remotes: BTreeMap<String, BTreeMap<String, RemoteState>>,
 }
 
 /// How many runs are kept per profile. The store keeps history forever; this file
@@ -119,6 +127,24 @@ impl State {
     #[must_use]
     pub fn last(&self, profile: &str) -> Option<&RunRecord> {
         self.profiles.get(profile)?.first()
+    }
+
+    /// A remote nobody has heard of yet is `Unseen`, not an error - which is what
+    /// makes the first run's transition T1 rather than a special case.
+    #[must_use]
+    pub fn remote(&self, profile: &str, remote: &str) -> RemoteState {
+        self.remotes
+            .get(profile)
+            .and_then(|remotes| remotes.get(remote))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub fn set_remote(&mut self, profile: &str, remote: &str, state: RemoteState) {
+        self.remotes
+            .entry(profile.to_owned())
+            .or_default()
+            .insert(remote.to_owned(), state);
     }
 
     /// What the sanity gate compares against: the entry counts of the last run that

@@ -331,6 +331,54 @@ impl Store {
         Ok(total)
     }
 
+    /// How many backups there are and when the first and last landed.
+    ///
+    /// Two cheap git calls rather than reading the whole log, because `status` is run
+    /// casually and this is its subtitle, not its subject.
+    ///
+    /// # Errors
+    ///
+    /// If git fails. A store with no commits is `None`, not an error.
+    pub fn span(&self) -> Result<Option<Span>, StoreError> {
+        let out = self
+            .repo
+            .git()
+            .run(&["rev-list", "--count", BACKUP_REF], Timeout::QUICK)?;
+        if !out.status.success() {
+            return Ok(None);
+        }
+        let backups: usize = String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse()
+            .unwrap_or_default();
+        if backups == 0 {
+            return Ok(None);
+        }
+
+        let out = self.repo.git().checked(
+            &["log", "--format=%cI", "--max-parents=0", BACKUP_REF],
+            Timeout::WORK,
+        )?;
+        let oldest = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .next_back()
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+
+        let out = self.repo.git().checked(
+            &["log", "-n", "1", "--format=%cI", BACKUP_REF],
+            Timeout::QUICK,
+        )?;
+        let newest = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+
+        Ok(Some(Span {
+            backups,
+            oldest,
+            newest,
+        }))
+    }
+
     /// Every backup, newest first, with what each run recorded about itself.
     ///
     /// Read out of the store's own commits rather than the state file, so this works
@@ -376,6 +424,15 @@ impl Store {
         }
         Ok(backups)
     }
+}
+
+/// What `status` says about a store above its remote lines.
+#[derive(Clone, Debug)]
+pub struct Span {
+    pub backups: usize,
+    /// RFC 3339, as git prints it with `%cI`.
+    pub oldest: String,
+    pub newest: String,
 }
 
 /// One row of `history`.

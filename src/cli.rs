@@ -61,6 +61,30 @@ pub struct RunArgs {
 }
 
 #[derive(Clone, Debug, Args)]
+pub struct PushArgs {
+    /// Which profile's store to push
+    pub profile: Option<String>,
+    /// Read this config file instead of the default location
+    #[arg(long, value_name = "PATH")]
+    pub config: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct StatusArgs {
+    /// Limit the report to one profile
+    pub profile: Option<String>,
+    /// Exit non-zero on red, for monitoring
+    #[arg(long)]
+    pub check: bool,
+    /// With `--check`, make yellow non-zero too
+    #[arg(long)]
+    pub strict: bool,
+    /// Read this config file instead of the default location
+    #[arg(long, value_name = "PATH")]
+    pub config: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Args)]
 pub struct HistoryArgs {
     /// Which profile's store to read
     pub profile: Option<String>,
@@ -94,9 +118,9 @@ pub enum Command {
     /// Capture, commit and push
     Run(RunArgs),
     /// Push what the store already holds to any remote that is behind
-    Push,
+    Push(PushArgs),
     /// Per-profile schedule, store summary and remote health
-    Status,
+    Status(StatusArgs),
     /// The store's commits, rendered
     History(HistoryArgs),
     /// Recover to a destination directory
@@ -146,8 +170,8 @@ impl Command {
     pub const fn name(&self) -> &'static str {
         match self {
             Self::Run(_) => "run",
-            Self::Push => "push",
-            Self::Status => "status",
+            Self::Push(_) => "push",
+            Self::Status(_) => "status",
             Self::History(_) => "history",
             Self::Restore => "restore",
             Self::Watch => "watch",
@@ -192,6 +216,8 @@ impl From<Exit> for ExitCode {
 pub fn dispatch(command: Command) -> Exit {
     match command {
         Command::Run(args) => run::run(&args),
+        Command::Push(args) => run::push(&args),
+        Command::Status(args) => run::status(&args),
         Command::Config(args) => run::config(&args),
         Command::History(args) => run::history(&args),
         other => {

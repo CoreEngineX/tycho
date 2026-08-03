@@ -5,6 +5,7 @@ use crate::cli::{ConfigAction, ConfigArgs, Exit, RunArgs, render};
 use crate::config::{Config, Parsed, Profile};
 use crate::plan::Plan;
 use crate::platform;
+use crate::remote::state::RemoteState;
 use crate::state::State;
 use crate::store::{self, Store};
 use std::fs;
@@ -95,11 +96,11 @@ pub fn run(args: &RunArgs) -> Exit {
         );
         incomplete = Exit::Warning;
     }
-    if !profile.remotes.is_empty() {
-        eprintln!("warn  nothing was pushed; remotes are not built yet");
-        incomplete = Exit::Warning;
+    match (report(&done.remotes), incomplete) {
+        (Exit::Failure, _) => Exit::Failure,
+        (Exit::Warning, _) | (Exit::Ok, Exit::Warning) => Exit::Warning,
+        (Exit::Ok, other) => other,
     }
-    incomplete
 }
 
 /// Where a profile's three files live.
@@ -165,6 +166,231 @@ pub fn history(args: &crate::cli::HistoryArgs) -> Exit {
             eprintln!("tycho: {error}");
             Exit::Failure
         }
+    }
+}
+
+/// `tycho push`: the catch-up in `remotes.md` section 4b. No capture at all, so what
+/// is in a backup never depends on when a drive was plugged in.
+pub fn push(args: &crate::cli::PushArgs) -> Exit {
+    let Some((parsed, config_text)) = load(args.config.clone()) else {
+        return Exit::Failure;
+    };
+    let Some(profile) = select(&parsed.config, args.profile.as_deref()) else {
+        return Exit::Failure;
+    };
+    if profile.remotes.is_empty() {
+        eprintln!("tycho: {} has no remotes to push to", profile.name);
+        return Exit::Ok;
+    }
+    let Some(paths) = locations(profile) else {
+        return Exit::Failure;
+    };
+    let mut state = match State::load(paths.state.as_path()) {
+        Ok(state) => state,
+        Err(error) => {
+            eprintln!("tycho: {error}");
+            return Exit::Failure;
+        }
+    };
+    let store = match Store::open_or_init(&paths.store) {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("tycho: {error}");
+            return Exit::Failure;
+        }
+    };
+    let run_paths = store::run::Paths {
+        lock: paths.lock.as_path(),
+        state: paths.state.as_path(),
+        config_text: Some(&config_text),
+    };
+
+    match store::run::catch_up(profile, &store, &run_paths, &mut state) {
+        // A run in progress is about to push anyway, so this is a success, not a
+        // contention error to retry.
+        Ok(None) => Exit::Ok,
+        Ok(Some(results)) => {
+            let span = store.span().ok().flatten();
+            print!(
+                "{}",
+                render::status(&[snapshot(profile, &state, span.as_ref())], None)
+            );
+            report(&results)
+        }
+        Err(error) => {
+            eprintln!("tycho: {error}");
+            Exit::Failure
+        }
+    }
+}
+
+/// What the remotes did, as an exit code.
+///
+/// Yellow is said out loud and still exits 0, which is what makes `run` and
+/// `status --check` agree: an optional remote merely unplugged is yellow in both. A
+/// monitor that cries wolf every time a drive is out is a monitor people turn off.
+/// Code 3 belongs to `status --check` and `doctor`, not here.
+fn report(results: &[store::run::RemoteResult]) -> Exit {
+    let mut exit = Exit::Ok;
+    for result in results {
+        match &result.state {
+            RemoteState::Failed { reason, .. } => {
+                eprintln!("error {}: {reason}", result.name);
+                exit = Exit::Failure;
+            }
+            RemoteState::Behind { runs, .. } => eprintln!(
+                "warn  {} is behind {runs} of {}",
+                result.name, result.tolerance
+            ),
+            RemoteState::Synced { .. } | RemoteState::Unseen => {}
+        }
+    }
+    exit
+}
+
+/// `tycho status`, which must render when everything else is broken.
+pub fn status(args: &crate::cli::StatusArgs) -> Exit {
+    let Some((parsed, _)) = load(args.config.clone()) else {
+        return Exit::Failure;
+    };
+    let banner = if parsed.has_errors() {
+        Some("config unreadable, showing the last run instead")
+    } else {
+        None
+    };
+
+    let state = match platform::state_path().map(|path| State::load(path.as_path())) {
+        Ok(Ok(state)) => state,
+        Ok(Err(error)) => {
+            eprintln!("tycho: {error}");
+            State::default()
+        }
+        Err(error) => {
+            eprintln!("tycho: {error}");
+            State::default()
+        }
+    };
+
+    let wanted = args.profile.as_deref();
+    let profiles: Vec<&Profile> = parsed
+        .config
+        .profiles
+        .iter()
+        .filter(|profile| wanted.is_none_or(|name| profile.name.as_str() == name))
+        .collect();
+    if profiles.is_empty() {
+        eprintln!("tycho: no profile named '{}'", wanted.unwrap_or(""));
+        return Exit::Failure;
+    }
+
+    let reports: Vec<render::ProfileStatus> = profiles
+        .iter()
+        .map(|profile| {
+            // A store that will not open still has a state file, so the profile keeps
+            // its line rather than the whole report failing.
+            let span = locations(profile)
+                .and_then(|paths| Store::open_or_init(&paths.store).ok())
+                .and_then(|store| store.span().ok())
+                .flatten();
+            snapshot(profile, &state, span.as_ref())
+        })
+        .collect();
+    print!("{}", render::status(&reports, banner));
+
+    if !args.check {
+        return Exit::Ok;
+    }
+    let mut red = false;
+    let mut yellow = false;
+    for profile in &profiles {
+        for remote in &profile.remotes {
+            let current = state.remote(profile.name.as_str(), remote.name.as_str());
+            red |= current.is_red();
+            yellow |= current.is_yellow();
+        }
+    }
+    if red {
+        return Exit::Failure;
+    }
+    if yellow && args.strict {
+        return Exit::Warning;
+    }
+    Exit::Ok
+}
+
+/// One profile's status line, its subtitle, and one row per remote.
+fn snapshot(
+    profile: &Profile,
+    state: &State,
+    span: Option<&crate::store::Span>,
+) -> render::ProfileStatus {
+    let last = state.last(profile.name.as_str());
+    render::ProfileStatus {
+        name: profile.name.to_string(),
+        next_run: profile.schedule.and_then(|schedule| {
+            schedule
+                .next_after(&jiff::Timestamp::now().to_zoned(jiff::tz::TimeZone::system()))
+                .ok()
+                .map(|next| render::upcoming(&next))
+        }),
+        backups: span.map_or(0, |span| span.backups),
+        since: span.map(|span| render::day(&span.oldest)),
+        newest: span.map(|span| render::moment(&span.newest)),
+        store_bytes: last.map_or(0, |run| run.store_bytes),
+        remotes: profile
+            .remotes
+            .iter()
+            .map(|remote| row(remote, profile, state))
+            .collect(),
+    }
+}
+
+fn row(remote: &crate::config::Remote, profile: &Profile, state: &State) -> render::RemoteRow {
+    let current = state.remote(profile.name.as_str(), remote.name.as_str());
+    let tolerance = store::run::tolerance(remote);
+    let (detail, note, hint) = match &current {
+        RemoteState::Unseen => (
+            "never pushed".to_owned(),
+            if remote.optional {
+                "optional".to_owned()
+            } else {
+                String::new()
+            },
+            None,
+        ),
+        // `verified` appears only when the full ref-set comparison actually passed,
+        // never as decoration - it is what distinguishes a verified push from a push
+        // command that merely returned success.
+        RemoteState::Synced { at, .. } => (
+            format!("pushed {}", render::moment(at)),
+            "verified".to_owned(),
+            None,
+        ),
+        RemoteState::Behind { last_seen, .. } => (
+            if last_seen.is_empty() {
+                "never seen".to_owned()
+            } else {
+                format!("last seen {}", render::day(last_seen))
+            },
+            if remote.optional {
+                "optional, on next mount".to_owned()
+            } else {
+                "required".to_owned()
+            },
+            None,
+        ),
+        RemoteState::Failed { at, reason } => (
+            format!("{reason}"),
+            render::moment(at),
+            Some(format!("tycho log {}", profile.name)),
+        ),
+    };
+    render::RemoteRow {
+        name: remote.name.to_string(),
+        word: current.word(tolerance),
+        detail,
+        note,
+        hint,
     }
 }
 

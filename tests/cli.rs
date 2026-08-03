@@ -62,7 +62,7 @@ fn a_hidden_command_still_runs() {
 
 #[test]
 fn an_unimplemented_command_fails_loudly() {
-    let run = tycho(&["status"]);
+    let run = tycho(&["restore"]);
     assert_eq!(run.code, 1);
     assert!(run.stderr.contains("not implemented"), "{}", run.stderr);
 }

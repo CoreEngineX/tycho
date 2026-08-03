@@ -5,10 +5,11 @@ use crate::config::Profile;
 use crate::config::rules::RuleTree;
 use crate::plan::{self, Plan};
 use crate::primitives::path::TreePath;
+use crate::remote::{self, state::REQUIRED_TOLERANCE, state::RemoteState};
 use crate::state::{Outcome, RunRecord, State};
 use crate::store::pipeline::{
-    Captured, Committed, Hashed, Indexed, Locked, Planned, Published, Reconciled, Recorded, Run,
-    Treed,
+    Captured, Committed, Hashed, Indexed, Locked, Mirrored, Planned, Published, Reconciled,
+    Recorded, Run, Treed,
 };
 use crate::store::{Store, StoreError, message};
 use crate::sys::lock::{LockError, LockGuard, try_lock};
@@ -65,6 +66,7 @@ pub struct Completed {
     pub summary: message::Summary,
     pub warnings: Vec<String>,
     pub record: RunRecord,
+    pub remotes: Vec<RemoteResult>,
 }
 
 /// Takes the profile lock, walks the spine, and records the result.
@@ -306,7 +308,27 @@ fn finish(
              commit,
              unreadable,
              summary,
+             mut record,
+         }| {
+            let remotes = mirror(profile, store, state);
+            record.outcome = outcome_of(&remotes);
+            Ok::<_, RunError>(Mirrored {
+                commit,
+                unreadable,
+                summary,
+                record,
+                remotes,
+            })
+        },
+    )?;
+
+    let run = run.advance(
+        |Mirrored {
+             commit,
+             unreadable,
+             summary,
              record,
+             remotes,
          }| {
             state.record(profile.name.as_str(), record.clone());
             state.save(state_path)?;
@@ -315,6 +337,7 @@ fn finish(
                 unreadable,
                 summary,
                 record,
+                remotes,
             })
         },
     )?;
@@ -327,13 +350,123 @@ fn finish(
         unreadable,
         summary,
         record,
+        remotes,
     } = run.state;
     Ok(Completed {
         commit,
         summary,
         warnings: unreadable,
         record,
+        remotes,
     })
+}
+
+/// What one remote did on this run, alongside the state that resulted.
+#[derive(Clone, Debug)]
+pub struct RemoteResult {
+    pub name: String,
+    pub optional: bool,
+    pub tolerance: u32,
+    pub state: RemoteState,
+}
+
+/// A remote's tolerance: 1 if it is required, its configured allowance if not.
+#[must_use]
+pub fn tolerance(remote: &crate::config::Remote) -> u32 {
+    if remote.optional {
+        remote.behind_tolerance
+    } else {
+        REQUIRED_TOLERANCE
+    }
+}
+
+/// Pushes to every configured remote and transitions each one's state.
+///
+/// Never returns an error. A destination that is unreachable, refuses, or fails
+/// verification is an observation about that remote; letting it abort the loop would
+/// mean one unplugged drive stopped the cloud copies from being written.
+fn mirror(profile: &Profile, store: &Store, state: &mut State) -> Vec<RemoteResult> {
+    let now = Timestamp::now().to_string();
+    let mut results = Vec::new();
+    let mut folders: Vec<std::path::PathBuf> = Vec::new();
+
+    for configured in &profile.remotes {
+        let name = configured.name.as_str();
+        let allowed = tolerance(configured);
+        let seen = remote::publish(store, configured, profile.name.as_str());
+        if matches!(seen, remote::state::Observation::Verified { .. })
+            && let Ok(folder) = remote::resolve(&configured.path)
+        {
+            folders.push(folder);
+        }
+
+        let next = remote::state::advance(
+            &state.remote(profile.name.as_str(), name),
+            &seen,
+            allowed,
+            &now,
+        );
+        state.set_remote(profile.name.as_str(), name, next.clone());
+        results.push(RemoteResult {
+            name: name.to_owned(),
+            optional: configured.optional,
+            tolerance: allowed,
+            state: next,
+        });
+    }
+
+    // After every push, so a sibling repository created earlier in this same run is
+    // in the scan. A folder that took two profiles is written once.
+    folders.sort();
+    folders.dedup();
+    for folder in &folders {
+        let _ = remote::recovery::write(folder);
+    }
+    results
+}
+
+/// A run that failed to reach a required remote is `Failed` even though the local
+/// commit landed - a backup that has not left the machine is the condition this
+/// project treats as not yet a backup.
+#[must_use]
+pub fn outcome_of(remotes: &[RemoteResult]) -> Outcome {
+    if remotes.iter().any(|remote| remote.state.is_red()) {
+        return Outcome::Failed;
+    }
+    if remotes
+        .iter()
+        .any(|remote| matches!(remote.state, RemoteState::Behind { .. }))
+    {
+        return Outcome::Partial;
+    }
+    Outcome::Ok
+}
+
+/// `tycho push`: everything a run does about remotes, and nothing it does about
+/// capture.
+///
+/// **Capture happens on the backup schedule and nowhere else**, so what is in a
+/// backup never depends on when a drive was plugged in.
+///
+/// # Errors
+///
+/// If the state file cannot be written. A held lock is `Ok(None)`: a run in progress
+/// is about to push anyway.
+pub fn catch_up(
+    profile: &Profile,
+    store: &Store,
+    paths: &Paths<'_>,
+    state: &mut State,
+) -> Result<Option<Vec<RemoteResult>>, RunError> {
+    let guard = match try_lock(paths.lock) {
+        Ok(guard) => guard,
+        Err(LockError::Held(_)) => return Ok(None),
+        Err(other) => return Err(RunError::Lock(other)),
+    };
+    let results = mirror(profile, store, state);
+    state.save(paths.state)?;
+    drop(guard);
+    Ok(Some(results))
 }
 
 /// The plan a run would produce, for `--dry-run`.

@@ -201,7 +201,6 @@ pub fn render(folder: &Path, sources: &[Source]) -> String {
          \x20 \"+refs/tycho/{example}/heads/*:refs/heads/*\" \\\n\
          \x20 \"+refs/tycho/{example}/tags/*:refs/tags/*\" \\\n\
          \x20 \"+refs/tycho/{example}/remotes/*:refs/remotes/*\" \\\n\
-         \x20 \"+refs/tycho/{example}/stash:refs/stash\" \\\n\
          \x20 \"+refs/tycho/{example}/stashes/*:refs/tycho-stash/*\"\n\
          git -C ~/recovered-repos/{leaf} checkout main\n\
          ```\n\
@@ -210,6 +209,21 @@ pub fn render(folder: &Path, sources: &[Source]) -> String {
          init` leaves HEAD on an unborn `refs/heads/main`, and git refuses to fetch into\n\
          a branch that is checked out. Parking HEAD on a name that will never exist lets\n\
          the fetch write every branch as a real local branch.\n\
+         \n\
+         **Every refspec above is a glob, which matters.** A glob that matches nothing\n\
+         is silently skipped; a refspec naming one exact ref that is absent aborts the\n\
+         whole fetch with `couldn't find remote ref` and writes **nothing at all** - no\n\
+         branches, no tags. That is why the stash's top entry, which is a single ref\n\
+         rather than a pattern, is fetched separately:\n\
+         \n\
+         ```text\n\
+         git -C ~/recovered-repos/{leaf} fetch ~/{profile}.git \\\n\
+         \x20 \"+refs/tycho/{example}/stash:refs/stash\"\n\
+         ```\n\
+         \n\
+         That command fails harmlessly on a repository that had no stash. Only the top\n\
+         entry can become `refs/stash`, because git's stash stack is a reflog and cannot\n\
+         be rebuilt from refs; the rest arrive under `refs/tycho-stash/`.\n\
          \n\
          `git stash list` will be empty afterwards and **the stash is not lost**: that\n\
          command reads the reflog of `refs/stash`, and a fetch does not carry reflogs.\n\

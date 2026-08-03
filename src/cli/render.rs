@@ -283,6 +283,137 @@ pub fn history(backups: &[crate::store::Backup]) -> String {
     out
 }
 
+/// One destination's line in `status`.
+#[derive(Clone, Debug)]
+pub struct RemoteRow {
+    pub name: String,
+    /// `ok`, `behind 3 of 4`, `failed`, `unseen`. Meaning never depends on colour.
+    pub word: String,
+    pub detail: String,
+    /// `verified`, or what to expect next. Empty is fine.
+    pub note: String,
+    /// What to type next when something is wrong.
+    pub hint: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProfileStatus {
+    pub name: String,
+    /// `Sun 12:00, in 6d 2h`, or absent when the profile has no schedule or the
+    /// config could not be read.
+    pub next_run: Option<String>,
+    pub backups: usize,
+    pub since: Option<String>,
+    pub newest: Option<String>,
+    /// **Read out of the state file**, never measured. Walking the object database on
+    /// a command people run casually would make `status` slow in proportion to the
+    /// size of the backup, and on a cloud remote it would materialise dataless files.
+    pub store_bytes: u64,
+    pub remotes: Vec<RemoteRow>,
+}
+
+const REMOTE_NAME: usize = 10;
+const REMOTE_WORD: usize = 15;
+const REMOTE_DETAIL: usize = 24;
+const REMOTE_NOTE: usize = WIDTH - 2 - REMOTE_NAME - REMOTE_WORD - REMOTE_DETAIL;
+
+/// `cli.md` section 3. Profile name and next run sit at opposite edges, so a glance
+/// down the left lists your profiles and a glance down the right says when each
+/// fires.
+#[must_use]
+pub fn status(profiles: &[ProfileStatus], banner: Option<&str>) -> String {
+    let mut out = String::new();
+    if let Some(banner) = banner {
+        let _ = writeln!(out, "{banner}\n");
+    }
+
+    for profile in profiles {
+        let right = profile
+            .next_run
+            .as_ref()
+            .map_or_else(String::new, |next| format!("next run  {next}"));
+        let width = WIDTH.saturating_sub(profile.name.chars().count());
+        let _ = writeln!(out, "{}{right:>width$}", profile.name);
+        let _ = writeln!(out, "  {}", subtitle(profile));
+
+        out.push('\n');
+        if profile.remotes.is_empty() {
+            let _ = writeln!(out, "  local only, no remotes configured");
+        }
+        for remote in &profile.remotes {
+            let _ = writeln!(
+                out,
+                "  {:<REMOTE_NAME$}{:<REMOTE_WORD$}{:<REMOTE_DETAIL$}{:>REMOTE_NOTE$}",
+                fit(&remote.name, REMOTE_NAME - 1),
+                fit(&remote.word, REMOTE_WORD - 1),
+                fit(&remote.detail, REMOTE_DETAIL - 1),
+                fit(&remote.note, REMOTE_NOTE)
+            );
+            if let Some(hint) = &remote.hint {
+                let _ = writeln!(out, "{}{hint}", " ".repeat(2 + REMOTE_NAME + REMOTE_WORD));
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
+fn subtitle(profile: &ProfileStatus) -> String {
+    let mut parts = vec![format!(
+        "{} backup{}",
+        count(profile.backups),
+        if profile.backups == 1 { "" } else { "s" }
+    )];
+    if let Some(since) = &profile.since {
+        parts.push(format!("since {since}"));
+    }
+    let mut line = parts.join(" ");
+    if let Some(newest) = &profile.newest {
+        let _ = write!(line, ", newest {newest}");
+    }
+    let _ = write!(line, ", store {}", size(profile.store_bytes));
+    line
+}
+
+/// `6d 2h`, `8h 46m`, `12m`. Two units, because the third never changes a decision.
+#[must_use]
+pub fn until(seconds: i64) -> String {
+    if seconds <= 0 {
+        return "now".to_owned();
+    }
+    let (days, hours, minutes) = (
+        seconds / 86_400,
+        (seconds % 86_400) / 3_600,
+        (seconds % 3_600) / 60,
+    );
+    if days > 0 {
+        return format!("{days}d {hours}h");
+    }
+    if hours > 0 {
+        return format!("{hours}h {minutes}m");
+    }
+    format!("{minutes}m")
+}
+
+/// The wall-clock half of the next-run column, in the reader's own time zone.
+#[must_use]
+pub fn upcoming(next: &jiff::Zoned) -> String {
+    let now = jiff::Timestamp::now().to_zoned(next.time_zone().clone());
+    let days = next
+        .date()
+        .since(now.date())
+        .map_or(99, |span| span.get_days());
+    let clock = next.strftime("%H:%M").to_string();
+    let label = match days {
+        0 => format!("today {clock}"),
+        1 => format!("tomorrow {clock}"),
+        2..=6 => next.strftime("%a %H:%M").to_string(),
+        _ => next.strftime("%F %H:%M").to_string(),
+    };
+    let seconds = (next.timestamp().as_second()) - jiff::Timestamp::now().as_second();
+    format!("{label}, in {}", until(seconds))
+}
+
 /// Only the non-zero parts, so a run that only changed files reads `2 changed`
 /// rather than `2 changed, 0 added, 0 deleted`.
 #[must_use]
@@ -303,8 +434,27 @@ pub fn counted(summary: &crate::store::message::Summary) -> String {
     parts.join(", ")
 }
 
+/// Just the date, for a lag measured in days where the hour is noise.
+#[must_use]
+pub fn day(rfc3339: &str) -> String {
+    rfc3339.parse::<jiff::Timestamp>().map_or_else(
+        |_| rfc3339.to_owned(),
+        |stamp| {
+            stamp
+                .to_zoned(jiff::tz::TimeZone::system())
+                .strftime("%F")
+                .to_string()
+        },
+    )
+}
+
 /// Recent stamps read as `today` and `yesterday`, older ones as dates - and all of
 /// them in local time, because that is the clock the person reading them lives on.
+#[must_use]
+pub fn moment(rfc3339: &str) -> String {
+    when(rfc3339)
+}
+
 fn when(rfc3339: &str) -> String {
     let Ok(stamp) = rfc3339.parse::<jiff::Timestamp>() else {
         return rfc3339.to_owned();

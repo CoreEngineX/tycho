@@ -7,6 +7,7 @@ pub mod rules;
 
 use crate::primitives::names::{ProfileName, RemoteName, RootAlias};
 use crate::primitives::path::AbsPath;
+use jiff::Zoned;
 use std::fmt;
 use std::path::Path;
 use std::time::Duration;
@@ -70,6 +71,12 @@ impl TimeOfDay {
         }
         Ok(Self { hour, minute })
     }
+
+    /// This time of day on a given date.
+    #[must_use]
+    pub const fn on(self, date: jiff::civil::Date) -> jiff::civil::DateTime {
+        date.at(self.hour as i8, self.minute as i8, 0, 0)
+    }
 }
 
 impl fmt::Display for TimeOfDay {
@@ -106,6 +113,19 @@ impl Weekday {
         }
     }
 
+    #[must_use]
+    pub const fn civil(self) -> jiff::civil::Weekday {
+        match self {
+            Self::Sunday => jiff::civil::Weekday::Sunday,
+            Self::Monday => jiff::civil::Weekday::Monday,
+            Self::Tuesday => jiff::civil::Weekday::Tuesday,
+            Self::Wednesday => jiff::civil::Weekday::Wednesday,
+            Self::Thursday => jiff::civil::Weekday::Thursday,
+            Self::Friday => jiff::civil::Weekday::Friday,
+            Self::Saturday => jiff::civil::Weekday::Saturday,
+        }
+    }
+
     /// launchd's `Weekday` key, where Sunday is 0.
     #[must_use]
     pub const fn launchd(self) -> u8 {
@@ -128,6 +148,49 @@ pub enum Schedule {
     Daily { at: TimeOfDay },
     Weekly { day: Weekday, at: TimeOfDay },
     Every(Duration),
+}
+
+impl Schedule {
+    /// When this schedule next fires, strictly after `from`.
+    ///
+    /// Zoned rather than added seconds, because "Sunday 12:00" is a wall-clock
+    /// promise: across the two nights a year the offset changes, the interval to the
+    /// next run is 23 or 25 hours, not 24. `Every` is the opposite by definition - an
+    /// elapsed duration, which is what launchd's `StartInterval` counts.
+    ///
+    /// # Errors
+    ///
+    /// If the arithmetic leaves the range `jiff` can represent.
+    pub fn next_after(self, from: &Zoned) -> Result<Zoned, jiff::Error> {
+        let tz = from.time_zone().clone();
+        match self {
+            Self::Every(interval) => from.checked_add(
+                jiff::Span::new().seconds(i64::try_from(interval.as_secs()).unwrap_or(i64::MAX)),
+            ),
+            Self::Daily { at } => {
+                let today = at.on(from.date()).to_zoned(tz.clone())?;
+                if &today > from {
+                    return Ok(today);
+                }
+                at.on(from.date().tomorrow()?).to_zoned(tz)
+            }
+            Self::Weekly { day, at } => {
+                let mut date = from.date();
+                // Eight, not seven: today may match the weekday and have already
+                // passed, in which case the answer is a week from today.
+                for _ in 0..8 {
+                    if date.weekday() == day.civil() {
+                        let candidate = at.on(date).to_zoned(tz.clone())?;
+                        if &candidate > from {
+                            return Ok(candidate);
+                        }
+                    }
+                    date = date.tomorrow()?;
+                }
+                at.on(date).to_zoned(tz)
+            }
+        }
+    }
 }
 
 /// Parses `6h`-style intervals: an integer and one of `s`, `m`, `h`, `d`.
@@ -296,4 +359,89 @@ pub fn parse_with(
     let raw: raw::RawConfig =
         toml::from_str(text).map_err(|error| ConfigError::Toml(error.to_string()))?;
     Ok(check::validate(&raw, home, &var))
+}
+
+#[cfg(test)]
+mod schedule_tests {
+    use super::{Schedule, TimeOfDay, Weekday, parse_interval};
+    use jiff::{Zoned, tz::TimeZone};
+
+    fn at(text: &str) -> Zoned {
+        let tz = TimeZone::get("America/Toronto").expect("a zone with DST");
+        text.parse::<jiff::civil::DateTime>()
+            .expect("a civil datetime")
+            .to_zoned(tz)
+            .expect("no gap")
+    }
+
+    fn noon() -> TimeOfDay {
+        TimeOfDay {
+            hour: 12,
+            minute: 0,
+        }
+    }
+
+    #[test]
+    fn daily_takes_today_if_it_has_not_passed_and_tomorrow_otherwise() {
+        let daily = Schedule::Daily { at: noon() };
+        let next = daily.next_after(&at("2026-08-03T09:00:00")).expect("next");
+        assert_eq!(next.strftime("%F %H:%M").to_string(), "2026-08-03 12:00");
+
+        let next = daily.next_after(&at("2026-08-03T12:00:00")).expect("next");
+        assert_eq!(
+            next.strftime("%F %H:%M").to_string(),
+            "2026-08-04 12:00",
+            "the boundary is strictly after, or a run would re-fire on itself"
+        );
+    }
+
+    #[test]
+    fn weekly_finds_the_named_day() {
+        let weekly = Schedule::Weekly {
+            day: Weekday::Sunday,
+            at: noon(),
+        };
+        let next = weekly.next_after(&at("2026-08-03T09:00:00")).expect("next");
+        assert_eq!(
+            next.strftime("%a %F %H:%M").to_string(),
+            "Sun 2026-08-09 12:00"
+        );
+    }
+
+    /// Today is the named day and the time has gone, so the answer is a week out
+    /// rather than a few hours ago.
+    #[test]
+    fn weekly_on_its_own_day_after_the_hour_goes_a_full_week_out() {
+        let weekly = Schedule::Weekly {
+            day: Weekday::Sunday,
+            at: noon(),
+        };
+        let next = weekly.next_after(&at("2026-08-09T14:00:00")).expect("next");
+        assert_eq!(next.strftime("%F %H:%M").to_string(), "2026-08-16 12:00");
+    }
+
+    /// The whole reason this is zoned arithmetic. Toronto springs forward at 02:00 on
+    /// 2027-03-14, so the gap between two consecutive 12:00 runs is 23 hours - and a
+    /// schedule that added 86,400 seconds would drift the run to 13:00 and stay there.
+    #[test]
+    fn a_wall_clock_schedule_holds_its_hour_across_a_dst_boundary() {
+        let daily = Schedule::Daily { at: noon() };
+        let before = at("2027-03-13T12:00:01");
+        let next = daily.next_after(&before).expect("next");
+
+        assert_eq!(next.strftime("%F %H:%M").to_string(), "2027-03-14 12:00");
+        let elapsed = &next - &before;
+        assert_eq!(elapsed.get_hours(), 22, "23 hours, less the one second");
+    }
+
+    /// `Every` is the opposite promise: an elapsed duration, which does not hold its
+    /// wall-clock hour and is not meant to.
+    #[test]
+    fn an_interval_counts_elapsed_time_not_wall_clock() {
+        let every = Schedule::Every(parse_interval("24h").expect("24h"));
+        let before = at("2027-03-13T12:00:00");
+        let next = every.next_after(&before).expect("next");
+
+        assert_eq!(next.strftime("%F %H:%M").to_string(), "2027-03-14 13:00");
+    }
 }

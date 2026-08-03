@@ -93,6 +93,21 @@ pub struct Published {
     pub record: crate::state::RunRecord,
 }
 
+/// Every remote has been attempted and its state transitioned.
+///
+/// After `Published` because a remote must never receive a commit the store itself
+/// has not adopted, and before `Recorded` because the run's outcome depends on what
+/// the remotes did: a commit that never left the machine is the condition this
+/// project treats as not yet a backup.
+#[derive(Debug)]
+pub struct Mirrored {
+    pub commit: Oid,
+    pub unreadable: Vec<String>,
+    pub summary: crate::store::message::Summary,
+    pub record: crate::state::RunRecord,
+    pub remotes: Vec<crate::store::run::RemoteResult>,
+}
+
 /// The state file records what happened.
 #[derive(Debug)]
 pub struct Recorded {
@@ -100,11 +115,12 @@ pub struct Recorded {
     pub unreadable: Vec<String>,
     pub summary: crate::store::message::Summary,
     pub record: crate::state::RunRecord,
+    pub remotes: Vec<crate::store::run::RemoteResult>,
 }
 
 spine! {
     Locked -> Planned -> Hashed -> Captured -> Indexed -> Treed
-           -> Reconciled -> Committed -> Published -> Recorded
+           -> Reconciled -> Committed -> Published -> Mirrored -> Recorded
 }
 
 /// A run in progress, carrying what it has established so far.

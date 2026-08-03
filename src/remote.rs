@@ -278,8 +278,20 @@ pub fn publish(store: &Store, remote: &Remote, profile: &str) -> Observation {
         Err(RemoteError::NoGlobMatch { .. }) => return Observation::Unreachable,
         Err(error) => return Observation::Refused(FailureReason::Unusable(error.to_string())),
     };
+    // A missing folder whose **parent** exists is first contact: `/Volumes/T7` is
+    // mounted and `/Volumes/T7/tycho` has not been made yet. A missing parent is the
+    // drive not being plugged in, which is unreachable and not Tycho's to create -
+    // making it would write the backup to the boot disk under the mount point.
     if !folder.exists() {
-        return Observation::Unreachable;
+        if !folder.parent().is_some_and(Path::exists) {
+            return Observation::Unreachable;
+        }
+        if let Err(error) = std::fs::create_dir_all(&folder) {
+            return Observation::Refused(FailureReason::Unusable(format!(
+                "creating {}: {error}",
+                folder.display()
+            )));
+        }
     }
 
     let repo = repo_path(&folder, profile);

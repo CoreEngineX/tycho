@@ -4,17 +4,21 @@ Your machine is gone. What do you actually have, and what do you type?
 
 **Verification scope, stated precisely.** Every command below was executed against a
 real store and a real folder remote on a local disk, in the literal form written
-here, and the recovered file contents came back byte-identical including a gitignored
-file. Three things were **not** verified: the procedure against a real
-`~/Library/CloudStorage` folder with dataless placeholders, recovery onto a machine
-other than this one, and metadata - permissions, timestamps and extended attributes
-are **not** restored, and "byte-identical" here means file contents only.
+here, against **both** a repository that had a stash and one that did not, and the
+recovered file contents came back byte-identical including a gitignored file. Three
+things were **not** verified: the procedure against a real `~/Library/CloudStorage`
+folder with dataless placeholders, recovery onto a machine other than this one, and
+metadata - permissions, timestamps and extended attributes are **not** restored, and
+"byte-identical" here means file contents only.
 
-An earlier version of this document claimed it had been "run end to end" when the
-commands had in fact only been run with shell variables substituted for the literal
-paths. Four of them did not work as written. That claim is the reason nobody
-re-tested them, which is the same failure as the original script's un-`-C`'d
-`bundle verify`.
+Two earlier versions of this document were wrong, in the same shape both times. The
+first claimed it had been "run end to end" when the commands had only been run with
+shell variables substituted for the literal paths; four of them did not work as
+written. The second fixed those and was genuinely executed - against one repository,
+which happened to have a stash, so the exact-ref stash refspec in step 5 passed. On
+any repository without one it aborted the whole fetch and recovered nothing. Both
+failures are the original script's un-`-C`'d `bundle verify`: a check that passed in
+a context it was not actually checking.
 
 ## 1. What is in the cloud folder
 
@@ -182,7 +186,7 @@ git -C ~/recovered-repos/handbook fetch ~/store.git \
   "+refs/tycho/CoreEngineX/org/handbook/heads/*:refs/heads/*" \
   "+refs/tycho/CoreEngineX/org/handbook/tags/*:refs/tags/*" \
   "+refs/tycho/CoreEngineX/org/handbook/remotes/*:refs/remotes/*" \
-  "+refs/tycho/CoreEngineX/org/handbook/stash:refs/stash"
+  "+refs/tycho/CoreEngineX/org/handbook/stashes/*:refs/tycho-stash/*"
 git -C ~/recovered-repos/handbook checkout main
 ```
 
@@ -197,18 +201,26 @@ fatal: refusing to fetch into branch 'refs/heads/main' checked out at …
 Parking HEAD on a name that will never exist lets the fetch write every branch as a
 real local branch, which is what you want from a backup.
 
-**All four refspecs matter.** The last two recover the remote-tracking refs and the
-stash, which the store captured and which an earlier version of this document
-silently left behind. Only the top entry can become `refs/stash`, because git's stash
-stack is a reflog and cannot be rebuilt from refs; the rest come back as ordinary
-refs, from `stashes/` rather than `stash/`:
+**Every refspec above is a glob, and that is not a stylistic choice.** A glob that
+matches nothing is silently skipped, so a repository with no tags fetches its branches
+regardless. A refspec naming one exact ref that is absent does the opposite: git
+aborts the entire fetch with `couldn't find remote ref` and writes **nothing at all**,
+not the branches, not the tags. Verified: an earlier version of this document put
+`+refs/tycho/<key>/stash:refs/stash` in this list, which worked against the one
+repository it was tested on - a repository that happened to have a stash - and failed
+completely against every repository that did not.
+
+So the stash's top entry, which is one exact ref rather than a pattern, is fetched on
+its own, where failing means only that there was no stash:
 
 ```text
 git -C ~/recovered-repos/handbook fetch ~/store.git \
-  "+refs/tycho/CoreEngineX/org/handbook/stashes/*:refs/tycho-stash/*"
+  "+refs/tycho/CoreEngineX/org/handbook/stash:refs/stash"
 ```
 
-`REPO.txt` records how many there were.
+Only the top entry can become `refs/stash`, because git's stash stack is a reflog and
+cannot be rebuilt from refs. The rest arrive under `refs/tycho-stash/` from the glob
+in the main fetch, and `REPO.txt` records how many there were.
 
 **`git stash list` will be empty afterwards, and the stash is not lost.** That command
 reads the *reflog* of `refs/stash`, and a fetch does not carry reflogs - so the stack
