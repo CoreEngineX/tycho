@@ -1,6 +1,8 @@
 //! Layer 5. Paths, launchd plist generation, notifications, and the Full Disk Access
 //! probe.
 
+pub mod launchd;
+
 use crate::primitives::path::{AbsPath, PathError};
 
 /// The config file a human is expected to open and edit.
