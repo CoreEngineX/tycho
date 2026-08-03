@@ -32,6 +32,7 @@ pub mod plan;
 pub mod platform;
 pub mod primitives;
 pub mod remote;
+pub(crate) mod spine;
 pub mod state;
 pub mod store;
 pub mod sys;

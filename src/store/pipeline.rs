@@ -5,69 +5,13 @@
 //! transitions alone already stop that - the method only exists on the state that
 //! earned it - but they do not stop someone *adding* a transition that skips a
 //! state. Every step therefore goes through [`Run::advance`], which is bounded on
-//! [`After`], so a skip requires a new line in `run_spine!` rather than emerging
-//! from whichever methods happen to exist.
+//! [`After`], so a skip requires a new line in the spine declaration rather than
+//! emerging from whichever methods happen to exist.
 
 use crate::config::Profile;
 use crate::primitives::oid::Oid;
+use crate::spine::spine;
 use crate::store::Store;
-
-mod private {
-    pub trait Sealed {}
-}
-
-/// One step of the run spine follows another.
-///
-/// Sealed, so nothing outside this crate can claim an adjacency, and every impl
-/// inside it comes from `run_spine!` - a hand-written one is a build failure, see
-/// `tests/layering.rs`. `toolkit`'s equivalent marks these `unsafe` as a
-/// think-hard signal; here the crate forbids `unsafe_code` outright, and a wrong
-/// impl reorders a pipeline rather than breaking memory safety, so borrowing the
-/// keyword would cost `grep unsafe` its meaning for no control the seal and the
-/// guard do not already give.
-pub trait After<S>: private::Sealed {}
-
-/// The symmetric companion to [`After`], so a step can name its successor.
-pub trait Before<S>: private::Sealed {}
-
-/// Declares the spine, and nothing else.
-///
-/// A wall of `impl After<Locked> for Planned {}` lines is the pipeline's
-/// most important declaration written in its least readable form. This takes the
-/// chain as it appears in `store.md` and expands the sealing, the ordering, and the
-/// test that pins it.
-macro_rules! run_spine {
-    ($($state:ident)->+ $(,)?) => {
-        $( impl private::Sealed for $state {} )+
-        run_spine!(@link $($state)->+);
-
-        #[cfg(test)]
-        mod spine {
-            use super::{After, $($state),+};
-
-            const fn assert_after<A, B: After<A>>() {}
-
-            /// Fails to compile if the spine is reordered or a link is dropped.
-            #[test]
-            fn the_spine_is_the_documented_order() {
-                run_spine!(@assert $($state)->+);
-            }
-        }
-    };
-
-    (@link $a:ident -> $b:ident $(-> $rest:ident)*) => {
-        impl After<$a> for $b {}
-        impl Before<$b> for $a {}
-        run_spine!(@link $b $(-> $rest)*);
-    };
-    (@link $a:ident) => {};
-
-    (@assert $a:ident -> $b:ident $(-> $rest:ident)*) => {
-        assert_after::<$a, $b>();
-        run_spine!(@assert $b $(-> $rest)*);
-    };
-    (@assert $a:ident) => {};
-}
 
 /// The profile lock is held.
 #[derive(Debug)]
@@ -158,7 +102,7 @@ pub struct Recorded {
     pub record: crate::state::RunRecord,
 }
 
-run_spine! {
+spine! {
     Locked -> Planned -> Hashed -> Captured -> Indexed -> Treed
            -> Reconciled -> Committed -> Published -> Recorded
 }
