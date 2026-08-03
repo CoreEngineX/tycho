@@ -55,6 +55,17 @@ fn rule(out: &mut String) {
     let _ = writeln!(out, "{}", "-".repeat(WIDTH));
 }
 
+/// `1 file`, `4 files`, `1 repository`, `12 repositories`.
+fn plural(value: usize, word: &str) -> String {
+    if value == 1 {
+        return format!("{} {word}", count(value));
+    }
+    match word.strip_suffix('y') {
+        Some(stem) => format!("{} {stem}ies", count(value)),
+        None => format!("{} {word}s", count(value)),
+    }
+}
+
 /// Keeps a value inside its column. A path's tail is the informative half, so an
 /// over-long one loses its head rather than its name.
 fn fit(text: &str, width: usize) -> String {
@@ -416,6 +427,92 @@ pub fn upcoming(next: &jiff::Zoned) -> String {
     };
     let seconds = (next.timestamp().as_second()) - jiff::Timestamp::now().as_second();
     format!("{label}, in {}", until(seconds))
+}
+
+/// What a restore produced.
+#[must_use]
+pub fn restored(into: &std::path::Path, done: &crate::restore::Done) -> String {
+    let mut out = String::new();
+    if let Some(commit) = done.commit {
+        let _ = writeln!(out, "using     {}", commit.short());
+    }
+    for (path, resolved) in &done.resolved {
+        let _ = writeln!(
+            out,
+            "resolved  {:<28}{}",
+            fit(&path.display().to_string(), 27),
+            resolved.source()
+        );
+    }
+    if let Some(bundle) = &done.bundle {
+        let _ = writeln!(
+            out,
+            "bundled   {}",
+            abbreviate(&bundle.display().to_string())
+        );
+        return out;
+    }
+
+    let _ = writeln!(
+        out,
+        "restored  {:<40}{:>24}",
+        plural(done.files, "file"),
+        size(done.bytes)
+    );
+    if !done.repos.is_empty() {
+        let _ = writeln!(
+            out,
+            "restored  {} with full history",
+            plural(done.repos.len(), "repository")
+        );
+        for repo in done.repos.iter().take(REPO_TABLE_ROWS) {
+            let _ = writeln!(
+                out,
+                "          {:<34}{:<12}{}",
+                fit(&repo.key, 33),
+                repo.head.as_deref().unwrap_or("no commits"),
+                overlay_note(repo)
+            );
+        }
+        if done.repos.len() > REPO_TABLE_ROWS {
+            let _ = writeln!(
+                out,
+                "          and {} more",
+                done.repos.len() - REPO_TABLE_ROWS
+            );
+        }
+    }
+
+    // Named rather than resolved, and the file it declined to write is still in the
+    // staging tree under `.tycho/`, which is why that tree is never deleted.
+    for repo in &done.repos {
+        for conflict in &repo.conflicts {
+            let _ = writeln!(
+                out,
+                "conflict  {:<34}{}",
+                fit(&conflict.path.display().to_string(), 33),
+                conflict.reason
+            );
+        }
+    }
+
+    let _ = writeln!(
+        out,
+        "\nnote      file permissions, timestamps and extended attributes are not\n\
+         \x20         restored - re-secure anything secret-bearing\n\n\
+         done      {}",
+        abbreviate(&into.display().to_string())
+    );
+    out
+}
+
+fn overlay_note(repo: &crate::restore::Rebuilt) -> String {
+    match (repo.overlay, repo.stashes) {
+        (0, 0) => "overlay: clean".to_owned(),
+        (files, 0) => format!("overlay: {}", count(files)),
+        (0, stashes) => format!("{} stashed", count(stashes)),
+        (files, stashes) => format!("overlay: {}, {} stashed", count(files), count(stashes)),
+    }
 }
 
 /// `history --path`. The header names which half of the store answered, because a

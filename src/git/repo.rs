@@ -128,6 +128,14 @@ impl Repo {
         Ok(repo)
     }
 
+    /// Names a repository without opening it, for a caller that has already decided
+    /// what it is looking at - a restore source it does not own, where [`Repo::open`]'s
+    /// mode check would refuse a perfectly good mirror clone.
+    #[must_use]
+    pub fn at_unchecked(path: &AbsPath) -> Self {
+        Self { path: path.clone() }
+    }
+
     #[must_use]
     pub fn path(&self) -> &AbsPath {
         &self.path

@@ -6,7 +6,7 @@ use crate::config::{Config, Parsed, Profile};
 use crate::plan::Plan;
 use crate::platform;
 use crate::remote::state::RemoteState;
-use crate::restore::resolve;
+use crate::restore::{self, resolve};
 use crate::state::State;
 use crate::store::{self, Store};
 use std::fs;
@@ -445,6 +445,101 @@ fn row(remote: &crate::config::Remote, profile: &Profile, state: &State) -> rend
         detail,
         note,
         hint,
+    }
+}
+
+/// `tycho restore`. Never writes into your live tree.
+pub fn restore(args: &crate::cli::RestoreArgs) -> Exit {
+    let store = match open_source(args) {
+        Some(store) => store,
+        None => return Exit::Failure,
+    };
+
+    let at = match args.at.as_deref() {
+        Some(text) => {
+            let now = jiff::Timestamp::now().to_zoned(jiff::tz::TimeZone::system());
+            match restore::when::parse(text, &now) {
+                Ok(stamp) => Some(stamp),
+                Err(error) => {
+                    eprintln!("tycho: {error}");
+                    return Exit::Failure;
+                }
+            }
+        }
+        None => None,
+    };
+
+    match store.span() {
+        Ok(Some(span)) => println!(
+            "reading   {} backups, {} to {}",
+            render::count(span.backups),
+            render::day(&span.oldest),
+            render::day(&span.newest)
+        ),
+        Ok(None) => {
+            eprintln!("tycho: this store holds no backups yet");
+            return Exit::Failure;
+        }
+        Err(error) => {
+            eprintln!("tycho: {error}");
+            return Exit::Failure;
+        }
+    }
+
+    let wanted = restore::Wanted {
+        paths: args.paths.clone(),
+        bundle: args.bundle,
+    };
+    match restore::execute(&store, &args.into, at.as_ref(), &wanted, args.force) {
+        Ok(done) => {
+            print!("{}", render::restored(&args.into, &done));
+            // A refused overlay file is not a failed restore - everything else landed,
+            // and the file it declined to write is still in the staging tree.
+            if done.conflicts() > 0 {
+                Exit::Warning
+            } else {
+                Exit::Ok
+            }
+        }
+        Err(error) => {
+            eprintln!("tycho: {error}");
+            Exit::Failure
+        }
+    }
+}
+
+/// `--store` reads **no config file at all**, which is the whole disaster case: on a
+/// replacement machine there is no config, no state file and no local store.
+fn open_source(args: &crate::cli::RestoreArgs) -> Option<Store> {
+    let path = match args.source() {
+        crate::cli::Source::Store(path) => match std::path::absolute(&path) {
+            Ok(path) => crate::primitives::path::AbsPath::from_absolute(&path),
+            Err(error) => {
+                eprintln!("tycho: {}: {error}", path.display());
+                return None;
+            }
+        },
+        crate::cli::Source::Profile(wanted) => {
+            let (parsed, _) = load(args.config.clone())?;
+            let profile = select(&parsed.config, wanted.as_deref())?;
+            let paths = locations(profile)?;
+            Ok(paths.store)
+        }
+    };
+    let path = match path {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("tycho: {error}");
+            return None;
+        }
+    };
+
+    match Store::open_to_read(&path) {
+        Ok(store) => Some(store),
+        Err(error) => {
+            eprintln!("tycho: {error}");
+            None
+        }
     }
 }
 

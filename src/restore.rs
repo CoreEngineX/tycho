@@ -10,6 +10,7 @@ pub mod resolve;
 pub mod when;
 
 use crate::capture::{Recorded, parse_repo_txt};
+use crate::git::Repo;
 use crate::git::refs::{Refspec, fetch_from};
 use crate::primitives::oid::Oid;
 use crate::spine::spine;
@@ -408,6 +409,12 @@ fn read_recorded(store: &Store, backup: &Backup, key: &str) -> Result<Recorded, 
 }
 
 /// `--bundle`: history in one file, for handing to someone without the store.
+///
+/// Built from a **restored** bare repository rather than straight from the store,
+/// because a bundle of `refs/tycho/<key>/*` carries the store's internal ref names:
+/// cloning it yields a repository with no branch and no HEAD. Verified - `git clone`
+/// of such a bundle fails outright. The bare repository is left beside the bundle,
+/// since restore deletes nothing.
 fn write_bundle(
     store: &Store,
     into: &Path,
@@ -426,10 +433,32 @@ fn write_bundle(
         .ok_or_else(|| ResolveError::NotFound(format!("{asked} is not a captured repository")))?;
 
     let leaf = key.rsplit('/').next().unwrap_or(key);
+    let bare = into.join(format!("{leaf}.git"));
+    std::fs::create_dir_all(&bare).map_err(io(format!("creating {}", bare.display())))?;
+
+    let git = Git::at(&bare);
+    git.checked(&["init", "--bare", "-q"], Timeout::QUICK)?;
+    let store_path = store.repo().path().as_path();
+    fetch_from(&bare, store_path, &repo_refspecs(key))?;
+    let _ = fetch_from(&bare, store_path, &[stash_refspec(key)]);
+
+    // A bundle whose HEAD dangles clones to an empty working tree, which is the same
+    // trap `store.md` names for the store's own HEAD.
+    if let Some(head) = read_recorded(store, backup, key)?.head {
+        let target = format!("refs/heads/{head}");
+        let _ = git.run(&["symbolic-ref", "HEAD", &target], Timeout::QUICK);
+    }
+
     let out = into.join(format!("{leaf}.bundle"));
-    store
-        .repo()
-        .bundle(&out, &[format!("--glob=refs/tycho/{key}/*")])?;
+    Repo::at_unchecked(
+        &crate::primitives::path::AbsPath::from_absolute(&bare).map_err(|error| {
+            ResolveError::NotStorable {
+                path: bare.display().to_string(),
+                reason: error.to_string(),
+            }
+        })?,
+    )
+    .bundle(&out, &["--all".to_owned()])?;
     Ok(out)
 }
 

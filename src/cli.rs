@@ -85,6 +85,55 @@ pub struct StatusArgs {
 }
 
 #[derive(Clone, Debug, Args)]
+pub struct RestoreArgs {
+    /// Which profile's store to read
+    pub profile: Option<String>,
+    /// Where to put the recovered files. Required, with no default and no fallback
+    #[arg(long, value_name = "DIR")]
+    pub into: PathBuf,
+    /// Read this store or remote directly, without a config file
+    #[arg(long, value_name = "PATH", conflicts_with = "profile")]
+    pub store: Option<PathBuf>,
+    /// The backup to use: "2026-10-19 12:00", "2026-10-19", or "3 days ago"
+    #[arg(long, value_name = "WHEN")]
+    pub at: Option<String>,
+    /// Write a bundle of the named repository's history instead of a working tree
+    #[arg(long)]
+    pub bundle: bool,
+    /// Restore into a destination that already holds things
+    #[arg(long)]
+    pub force: bool,
+    /// Read this config file instead of the default location
+    #[arg(long, value_name = "PATH")]
+    pub config: Option<PathBuf>,
+    /// Paths to recover, after `--`. Omit for the whole backup
+    #[arg(last = true, value_name = "PATH")]
+    pub paths: Vec<PathBuf>,
+}
+
+/// Where a restore reads from.
+///
+/// A sum type rather than two optionals, because `--store` reads **no config file at
+/// all** and that is the whole disaster case: on a replacement machine there is no
+/// config, no state file and no local store, so a restore that needed a profile from
+/// a config would be unusable exactly when it is needed.
+#[derive(Clone, Debug)]
+pub enum Source {
+    Profile(Option<String>),
+    Store(PathBuf),
+}
+
+impl RestoreArgs {
+    #[must_use]
+    pub fn source(&self) -> Source {
+        self.store.as_ref().map_or_else(
+            || Source::Profile(self.profile.clone()),
+            |path| Source::Store(path.clone()),
+        )
+    }
+}
+
+#[derive(Clone, Debug, Args)]
 pub struct HistoryArgs {
     /// Which profile's store to read
     pub profile: Option<String>,
@@ -127,7 +176,7 @@ pub enum Command {
     /// The store's commits, rendered
     History(HistoryArgs),
     /// Recover to a destination directory
-    Restore,
+    Restore(RestoreArgs),
     /// Manage watched roots
     Watch,
     /// Manage ignore rules
@@ -176,7 +225,7 @@ impl Command {
             Self::Push(_) => "push",
             Self::Status(_) => "status",
             Self::History(_) => "history",
-            Self::Restore => "restore",
+            Self::Restore(_) => "restore",
             Self::Watch => "watch",
             Self::Ignore => "ignore",
             Self::Reinclude => "reinclude",
@@ -223,6 +272,7 @@ pub fn dispatch(command: Command) -> Exit {
         Command::Status(args) => run::status(&args),
         Command::Config(args) => run::config(&args),
         Command::History(args) => run::history(&args),
+        Command::Restore(args) => run::restore(&args),
         other => {
             eprintln!("tycho: {} is not implemented yet", other.name());
             Exit::Failure

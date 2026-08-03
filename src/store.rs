@@ -41,6 +41,8 @@ pub enum StoreError {
     },
     #[error("'{0}' is not a refname")]
     BadRef(String),
+    #[error("{path} is not a git repository, so there is nothing to restore from")]
+    NotAStore { path: String },
     /// The check `store.md` calls the one that catches the short-batch case, the
     /// silently-discarded-path case, and future variants at once.
     #[error(
@@ -77,6 +79,39 @@ impl Store {
         };
         let index = path.as_path().join("tycho-index");
         Ok(Self { repo, index })
+    }
+
+    /// Opens a store to read, creating nothing.
+    ///
+    /// Restore uses this rather than [`Store::open_or_init`] for two reasons, both of
+    /// which only show up on the disaster path.
+    ///
+    /// It **never creates**: `--store` takes a long `~/Library/CloudStorage/…` path
+    /// typed by hand on a replacement machine, and initialising an empty store at a
+    /// typo would answer "no backups yet" while leaving a new directory in somebody's
+    /// cloud folder, rather than saying the path is wrong.
+    ///
+    /// It **does not check the mode**. [`Repo::open`] refuses anything group- or
+    /// world-readable, which is right for the live store Tycho writes gitignored
+    /// content into and wrong here: a `git clone --mirror` of a store is mode `0755`,
+    /// and so is a remote in a synced folder. Refusing to *read* one would make the
+    /// recovery path unusable to protect a file the person is already holding.
+    ///
+    /// # Errors
+    ///
+    /// If the path is not a git repository.
+    pub fn open_to_read(path: &AbsPath) -> Result<Self, StoreError> {
+        let out = crate::sys::process::Git::at(path.as_path())
+            .run(&["rev-parse", "--git-dir"], Timeout::QUICK)?;
+        if !out.status.success() {
+            return Err(StoreError::NotAStore {
+                path: path.to_string(),
+            });
+        }
+        Ok(Self {
+            repo: Repo::at_unchecked(path),
+            index: path.as_path().join("tycho-index"),
+        })
     }
 
     #[must_use]
