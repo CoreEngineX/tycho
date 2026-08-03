@@ -1,0 +1,37 @@
+[package]
+name = "tycho"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+description = "A backup daemon that treats git as the storage format"
+
+[[bin]]
+name = "tycho"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+# mirrors the set `cex ci-check --rust` gates, which stays the source of truth
+cast_lossless = "warn"
+explicit_iter_loop = "warn"
+format_push_string = "warn"
+ignored_unit_patterns = "warn"
+implicit_clone = "warn"
+map_unwrap_or = "warn"
+missing_panics_doc = "warn"
+needless_pass_by_value = "warn"
+redundant_closure_for_method_calls = "warn"
+single_match_else = "warn"
+uninlined_format_args = "warn"
+unreadable_literal = "warn"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
