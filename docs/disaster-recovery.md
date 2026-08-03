@@ -190,6 +190,15 @@ git -C ~/recovered-repos/handbook fetch ~/store.git \
 git -C ~/recovered-repos/handbook checkout main
 ```
 
+**On Windows the checkout rewrites line endings, and that is not damage.** Git for
+Windows sets `core.autocrlf=true` in its system config, so `checkout main` above
+lands CRLF in the working tree for a blob stored as LF. The recovered *objects* are
+byte-exact - `git cat-file blob HEAD:file` proves it, and `tests/remote.rs` asserts
+exactly that pair. If you need the working tree to match the stored bytes as well,
+add `-c core.autocrlf=false` to the `git init` above. The same applies to a `restore
+--bundle` handed to someone else: what their `git clone` writes is their config's
+business, not the bundle's.
+
 The `symbolic-ref` line is not optional and is the step people trip on. `git init`
 leaves HEAD pointing at an unborn `refs/heads/main`, and git refuses to fetch into a
 branch that is checked out:

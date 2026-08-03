@@ -463,13 +463,48 @@ convenience, not the interface.
 
 ## 10. Cross-platform naming
 
-Windows cannot represent several classes of name that macOS and Linux allow:
-reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`),
-trailing dots and spaces, the characters `<>:"|?*`, and paths beyond 260 characters
-without the extended-length prefix.
-
-Tycho captures them all faithfully - the store is a git repository and has no such
+Tycho captures every name faithfully - the store is a git repository and has no such
 limits. The constraint appears at **restore** time on Windows, so `restore` reports
-a per-file skip list rather than aborting, and `doctor` warns when a watched tree
-contains names that cannot be restored on Windows. That is knowable years before
-anyone needs the restore, which is the only time the warning is useful.
+what it could not write rather than aborting, and `doctor` warns when a watched tree
+contains names that cannot be restored there. That is knowable years before anyone
+needs the restore, which is the only time the warning is useful.
+
+**What follows was measured on Windows 11 build 22635, not read from
+documentation.** The first version of this section was read from documentation and
+was wrong in the direction that matters: it said Windows "cannot represent" these
+names, implying a refusal. Most of them are not refused. They are silently accepted
+as **a different name**, which is worse, because a refusal is a report and a rename
+is not.
+
+| Class | What actually happens |
+| --- | --- |
+| `<>"\|?*` | Refused, `errno 22`. A real error the caller sees. |
+| Control characters `0x01`-`0x1F` | Refused, `InvalidFilename`. A newline or tab in a name is not storable, which the old text did not mention at all. |
+| `\` and `/` | Refused - they are separators. See `store.md` section 2 for why this one is load-bearing. |
+| Trailing dot or space | **Silently stripped.** `trailing.` and `trailing ` both become `trailing`, so two distinct source names collide on one destination. |
+| `:` | **Silently redirects into an alternate data stream.** `colon:.md` creates a 0-byte file `colon` carrying a stream `colon:.md:$DATA` holding the content. `dir /r` is what shows it. |
+| `CON`, `PRN`, `AUX`, `COM1`-`COM9`, `LPT1`-`LPT9`, and their `.ext` forms | **Created as ordinary files.** The reservation is not enforced by `CreateFileW` on this build. It *is* still enforced by `cmd` redirection, so `echo x > COM1` reaches the device while a program writing the same path gets a file. |
+| Bare `NUL` | The one true device case: the write succeeds, goes to the null device, and no file appears. Silent, complete data loss. |
+| Beyond 260 characters | Depends on two independent settings, below. |
+
+The 260-character limit is **not** a filesystem property. It is off on this machine:
+`HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled` is `1`, and a
+506-character path was created without complaint.
+
+Git has a **separate** switch, `core.longpaths`, and it is unset by default. With it
+off, `git add` on a directory past the limit prints `warning: could not open
+directory ...: Filename too long`, **exits 0**, and stages nothing:
+
+```text
+$ git -c core.longpaths=false add -A
+warning: could not open directory 'aaaa.../': Filename too long
+$ git ls-files | wc -l
+0
+$ git -c core.longpaths=true add -A && git ls-files | wc -l
+1
+```
+
+That is a captured repository silently losing files at exit 0, which is the failure
+class this project exists to prevent, so **`doctor` checks `core.longpaths` on
+Windows and says so when it is unset**. The OS setting is worth reporting too, but it
+is the git one that decides what a captured repository contains.

@@ -13,8 +13,32 @@ Default location, overridable per profile with `store_path`:
 | Windows | `%LOCALAPPDATA%\tycho\store\<profile>.git` |
 
 **The store is secret-bearing.** It contains copies of gitignored files, which is
-the whole point of the overlay, and gitignored is where secrets live. It is created
-mode `0700` and Tycho refuses to open one that is group- or world-readable.
+the whole point of the overlay, and gitignored is where secrets live. Tycho refuses
+to open one that anybody but its owner can read.
+
+On macOS that is mode `0700` and a check on `0o077`. **On Windows it is the DACL**,
+and the guarantee is equivalent rather than weaker - which is a measurement, not an
+assurance. A directory created under the user profile carries exactly three entries:
+
+```text
+D:(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)(A;OICIID;FA;;;S-1-5-21-...-1004)
+```
+
+`SYSTEM`, `Administrators` and the owner - the same reach `0700` grants, since root
+can read a `0700` directory too. One created under `C:\Users\Public` additionally
+carries `(A;OICIID;0x1301ff;;;IU)` and the same for `SU` and batch: **any
+interactively logged-on user, with modify rights.** That is precisely the condition
+`0700` exists to refuse, so `Repo::open` refuses it.
+
+The DACL is read as SDDL through `icacls <path> /save`, not from `icacls`'s own
+listing, because the listing prints localised account names - `BUILTIN\Administrators`
+is `VORDEFINIERT\Administratoren` on a German install - while SDDL is fixed
+abbreviations and raw SIDs. `Get-Acl` would also give SDDL, but it needs a PowerShell
+process: measured at 1.6s against 30ms, on a check that runs on every command.
+
+`--shared=0600` below has **no effect on Windows** - git ignores it, and the ACL is
+the inherited one. The refusal is what enforces the guarantee there, not the
+creation mode.
 
 ## 1. Why bare
 
@@ -60,6 +84,36 @@ identity config and hard-fails under `user.useConfigOnly=true`, so a backup woul
 depend on ambient config being present and would record whoever happened to be
 configured.
 
+### Tree paths are `/`-separated, and that is a contract
+
+A git tree path uses `/` on every platform. A `PathBuf` assembled from components
+does not - it uses the host separator, which on Windows is `\`. `TreePath` therefore
+joins with `/` explicitly and is the single place that guarantees it.
+
+This is not tidiness. `git update-index -z --index-info` answers a path holding any
+character NTFS reserves - `\` included - by printing `Ignoring path` **to stderr** and
+**exiting 0**:
+
+```text
+$ printf '100644 %s\tsub\\file.md\0' $OID | git update-index -z --index-info
+Ignoring path sub\file.md
+$ echo $?
+0
+$ git write-tree
+4b825dc642cb6eb9a060e54bf8d69288fbee4904      <- the empty tree
+```
+
+Every path in a run goes through that one call, so before `TreePath` was fixed a
+Windows run hashed every blob correctly, discarded every index entry, committed the
+empty tree, pushed it, and reported success. `Index::update` now treats `Ignoring
+path` as the error it is, and `tests/git_ground_truth.rs` pins the git behaviour per
+reserved character so a future git release changing it is a failing test rather than
+a silent backup.
+
+The conversion is a join and never a `replace('\\', "/")`: `\` is a legal byte in a
+Unix filename and a reserved one in an NTFS name, so rewriting bytes would corrupt a
+Unix path in order to fix a Windows one.
+
 ## 3. Byte-exactness, and why it needs three separate mechanisms
 
 **Invariant: the blob stored for a plain file is `cmp`-identical to the bytes on
@@ -84,6 +138,23 @@ which `--no-filters` handles - row one, and the row `tests/byte_exactness.rs` pr
 The archive-side traps are `export-ignore`, `export-subst` and `ident`, and those are
 real: `tests/restore.rs` runs a restore from a mirror clone with the mechanism removed
 and watches all three fire.
+
+**All three mechanisms hold on Windows under `core.autocrlf=true`**, which is what
+Git for Windows sets in its system config and what this machine has. The whole of
+`tests/byte_exactness.rs` passes there, including the two cases that run with the
+mechanism removed - so it is passing because the mechanisms work, not because the
+platform happened not to need them. This had never been executed before; it was the
+open question the port existed to answer, and the answer is yes.
+
+Two Windows details behind that:
+
+- `core.attributesFile=/dev/null`, one of the pinned `-c` values, **works on
+  Windows**. Git for Windows resolves `/dev/null` internally; the pin does not need a
+  `NUL` spelling.
+- The guarantee is about the **blob**. What a *working tree* ends up holding is the
+  reader's own `core.autocrlf`, and a plain `git clone` of a byte-exact bundle on
+  Windows checks out CRLF. That is git behaving as documented rather than content
+  being lost, and `disaster-recovery.md` now says so where it hands someone a bundle.
 
 The second one needs no unusual configuration anywhere. Any repository you back up
 that contains a `.gitattributes` arms it.

@@ -242,14 +242,49 @@ record are the real contract, and the notification is a convenience on top.
 stderr going to sibling `.out.log` and `.err.log` files so a crash before Tycho's own
 logging starts still leaves a trace. `tycho log -f` tails it.
 
-## 10. Windows, later
+## 10. Windows
 
-Task Scheduler with a logon trigger and a calendar trigger, or a Windows service via
-the `windows-service` crate. The decision needs the actual machine, since the
-argument for the OS scheduler rests on wake-up catch-up behaviour that has to be
-verified rather than assumed - and on Windows, as on macOS, the overdue check in
-section 1 is what makes the answer not matter very much. Until then the `Schedule`
-type stays the same and only its translation changes.
+Task Scheduler, driven through `schtasks`, in `platform::schtasks`. `service` talks
+to a `#[cfg]`-selected `platform::scheduler`; the `Schedule` type is unchanged and
+only its translation differs, as this section predicted. No Windows service and no
+`windows-service` crate: there is still no resident process.
+
+The catch-up argument in section 1 rests on the scheduler running a job it missed,
+and on Windows that is **`<StartWhenAvailable>true</StartWhenAvailable>`**. It
+round-trips through `schtasks /Query /XML`, so it can be read back off a registered
+task rather than believed. As on macOS, `Schedule::overdue_by` is what makes the
+precise semantics not matter very much.
+
+Four things the actual machine decided, none of which are in the documentation you
+would reach for first:
+
+- **A task does not run on battery unless told to.** `DisallowStartIfOnBatteries` and
+  `StopIfGoingOnBatteries` default to `true`, and a definition naming neither *gets
+  them anyway* - read back off a task registered without them. On a laptop that is a
+  weekly backup that silently never happens, which is this project's own failure mode.
+  Both are written `false`, and `Power Management` reads empty on an installed task.
+- **`schtasks /Create /XML` refuses a UTF-8 declaration**, with `unable to switch the
+  encoding` pointing at line 1 column 40. The definition declares UTF-16 and is
+  written as UTF-16LE with a BOM, rather than declaring one encoding and carrying
+  another. That is the reason `scheduler::encode`/`decode` exist as a seam at all.
+- **A `<LogonTrigger>` naming no `<UserId>` means every user**, and registering one
+  needs elevation: `ERROR: Access is denied` on an ordinary account. It is dropped,
+  which lands in the same place as `catchup_plist` leaving `RunAtLoad` out - at logon
+  the cloud File Providers may not have mounted, so every remote would probe as
+  unreachable on every boot.
+- **Task Scheduler captures no output.** There is no `StandardOutPath` equivalent, so
+  the action is `cmd /c ""prog" args >> "log" 2>&1"` - the one quoting form that
+  survives a space in either path. Without it a panic before Tycho opens its own log
+  leaves nothing at all, and "failure is loud" would be a claim rather than a fact.
+
+There is also **no `StartOnMount`**: Task Scheduler has no "a volume appeared"
+trigger. The catch-up task is hourly instead, and the overdue check covers the gap.
+
+`Ended` gained a `NeverRun` variant for this. Task Scheduler reports
+`SCHED_S_TASK_HAS_NOT_RUN` (267011) for a task that has not fired yet, and a freshly
+installed agent must read as neither success nor failure. launchd conflates the two -
+an absent `LastExitStatus` decodes to exit 0 - so this is a distinction macOS could
+have drawn and did not.
 
 **Notifications port by the same pattern, and the pattern is the interesting part.**
 A CLI has no notification identity of its own on either platform: macOS wants an
@@ -264,11 +299,17 @@ A crate does not remove that. `notify-rust` hits the identical AUMID requirement
 Windows and binds the deprecated `NSUserNotification` on macOS; it moves the caveat
 behind a dependency and an audit surface instead of solving it.
 
-**The Windows arm is deliberately not written yet.** It would compile, nothing would
-exercise it, and unverified code that compiles is the exact shape of thing this
-project keeps discovering was wrong - `disaster-recovery.md` has now been wrong twice
-that way. `platform::notify` is a `#[cfg]`-selected free function whose non-macOS arm
-returns a typed `Unsupported`, so a future port finds a failing call rather than a
-lie. A free function rather than a trait object because the implementation is chosen
-at compile time and never swapped at run time: a `dyn` would buy indirection and
-nothing else.
+**The Windows arm is now written, and fired.** It was deliberately left unwritten
+until there was a machine to run it on, which was the right call: getting it right
+took two things no reading would have produced. The body crosses two parsers - XML,
+then a PowerShell single-quoted literal - so it is escaped for both, and a control
+character is replaced rather than embedded because XML 1.0 cannot carry one. Delivery
+was confirmed out of band, by `LastNotificationAddedTime` under the PowerShell AUMID's
+registry key moving to the second the test ran; a toast that Windows accepts but never
+shows would otherwise look identical.
+
+`platform::notify` remains a `#[cfg]`-selected free function, and the arm for any
+third platform still returns a typed `Unsupported`, so a future port finds a failing
+call rather than a lie. A free function rather than a trait object because the
+implementation is chosen at compile time and never swapped at run time: a `dyn` would
+buy indirection and nothing else.

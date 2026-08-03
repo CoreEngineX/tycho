@@ -16,7 +16,7 @@ what was rejected and why. This file is the map; the others are the contracts.
 | `capture.md` | What a run does, stage by stage |
 | `remotes.md` | Push, verification, offline handling |
 | `cli.md` | Every command, flag and exit code |
-| `scheduling.md` | launchd integration and service lifecycle |
+| `scheduling.md` | The service lifecycle: launchd on macOS, Task Scheduler on Windows |
 
 ## 1. Topology
 
@@ -161,6 +161,13 @@ These hold across every module and are what the tests exist to defend.
    what a restore does not preserve.
 4. **A run either captures every planned path or names the ones it did not.**
    Enforced by short-read recovery and a post-`write-tree` count reconciliation.
+   The reconciliation compares the tree against **the entries the run built**, not
+   against the index it just wrote. Reading the count back out of the index cannot
+   detect an entry `update-index` refused: the shortfall is then present in both
+   numbers, they compare equal, and the run publishes. That is not hypothetical -
+   `update-index --index-info` drops any path holding a character NTFS reserves and
+   **exits 0**, so on Windows a `\` separator turned every run into the empty tree at
+   exit 0 until `TreePath` was made to guarantee `/`. See `store.md` section 2.
 5. **`.gitignore` never affects capture.** The one file the July 2026 incident could
    not restore was gitignored. Exclusions come from the profile config and nowhere
    else. The overlay is derived from `git status --ignored` and then filtered through
