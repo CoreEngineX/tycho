@@ -263,9 +263,15 @@ not a bug to catch in review but a program that does not compile. The chain is
 declared once, as a chain:
 
 ```text
-Locked -> Planned -> Hashed -> Indexed -> Treed -> Reconciled
-       -> Committed -> Published -> Recorded
+Locked -> Planned -> Hashed -> Captured -> Indexed -> Treed -> Reconciled
+       -> Committed -> Published -> Mirrored -> Recorded
 ```
+
+`Mirrored` sits between `Published` and `Recorded` in both directions for a reason.
+After `Published`, because a remote must never hold a commit the store itself has not
+adopted. Before `Recorded`, because the run's outcome depends on what the remotes
+did - a commit that never left the machine is the condition this project treats as
+not yet a backup, so it cannot be written down as a success before the push is known.
 
 ### The two legs use different path encodings, deliberately
 

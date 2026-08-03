@@ -328,12 +328,16 @@ pub fn status(profiles: &[ProfileStatus], banner: Option<&str>) -> String {
     }
 
     for profile in profiles {
-        let right = profile
-            .next_run
-            .as_ref()
-            .map_or_else(String::new, |next| format!("next run  {next}"));
-        let width = WIDTH.saturating_sub(profile.name.chars().count());
-        let _ = writeln!(out, "{}{right:>width$}", profile.name);
+        match &profile.next_run {
+            Some(next) => {
+                let right = format!("next run  {next}");
+                let width = WIDTH.saturating_sub(profile.name.chars().count());
+                let _ = writeln!(out, "{}{right:>width$}", profile.name);
+            }
+            None => {
+                let _ = writeln!(out, "{}", profile.name);
+            }
+        }
         let _ = writeln!(out, "  {}", subtitle(profile));
 
         out.push('\n');

@@ -165,8 +165,19 @@ Two details make last-writer-wins actually safe rather than merely likely:
   a sibling repository created earlier in the same run is seen.
 
 The write is a temporary file plus a rename. The temp file is named
-`.RECOVERY.md.tmp` and `doctor` knows to expect both it and `RECOVERY.md`, so
-Tycho's own in-flight write is not reported as a sync artifact.
+`RECOVERY.md.tmp.<pid>` and `doctor` knows to expect it alongside `RECOVERY.md`, so
+Tycho's own in-flight write is not reported as a sync artifact. **The process id in
+that name is load-bearing, not decoration**: a fixed temp name would have two
+concurrent writers writing the same file and renaming each other's half-written
+bytes into place, which is precisely the convergence the timestamp-free content was
+chosen to guarantee.
+
+The commands it writes out are the ones in `disaster-recovery.md`, with the folder's
+real paths and keys filled in - including that document's hardest-won correction,
+that the branch-and-tag fetch must contain **globs only**. A refspec naming one exact
+ref that is absent aborts the whole fetch and recovers nothing at all, so the stash's
+top entry is fetched by a separate command where failing means only that there was no
+stash.
 
 ## 3. Verification
 
@@ -262,6 +273,20 @@ mounted path on your disk; pushing to it does not touch the network.
 | **Drive app not running, or signed out** | The path does not exist. `Behind`, then `Failed` past tolerance |
 | **External drive not plugged in** | Same |
 | **Folder exists but the disk is full** | The push fails. `Failed`, loudly |
+
+Verified on this machine against the real `GoogleDrive-…/My Drive`: a first-contact
+run initialised the repository, pushed, and passed the full ref-set comparison in
+roughly one second at exit 0. The write is local, exactly as claimed.
+
+**A missing folder is unreachable or first contact depending on its parent.** The
+configured path not existing means one of two opposite things, and getting it wrong
+in either direction is expensive. `/Volumes/T7/tycho` absent while `/Volumes/T7`
+exists is a mounted drive that has not been backed up to yet: create it and push.
+`/Volumes/T7` itself absent is the drive not being plugged in - `Behind`, and Tycho
+must **not** create the path, because macOS removes the `/Volumes` entry on eject, so
+creating it would silently write the whole backup onto the boot disk underneath the
+mount point and report success. The rule is therefore: create the folder when its
+parent exists, treat a missing parent as unreachable.
 
 **The honest limitation.** Verification compares against the folder, which proves the
 *folder* has the refs. It does not prove Google's servers do, and there is no reliable
