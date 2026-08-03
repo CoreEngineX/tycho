@@ -116,8 +116,11 @@ impl Backup {
         &self.tree
     }
 
+    /// Both sides go through `TreePath`, so a candidate assembled with `join` - or
+    /// typed by someone whose shell uses `\` - is compared in the same separator the
+    /// tree is stored in rather than never matching.
     fn holds(&self, path: &Path) -> bool {
-        self.tree.iter().any(|entry| entry.as_path() == path)
+        TreePath::parse(path).is_ok_and(|wanted| self.tree.contains(&wanted))
     }
 
     /// The longest key that is a prefix of `path`.

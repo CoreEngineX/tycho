@@ -281,7 +281,6 @@ mod tests {
         SlugError,
     };
     use std::ffi::OsStr;
-    use std::os::unix::ffi::OsStrExt;
 
     #[test]
     fn profile_names_accept_the_documented_charset() {
@@ -333,7 +332,7 @@ mod tests {
             RootAlias::explicit("my docs").expect("valid").as_str(),
             "my%20docs"
         );
-        let raw = RootAlias::from_component(OsStr::from_bytes(b"caf\xc3\xa9")).expect("valid");
+        let raw = RootAlias::from_component(OsStr::new("café")).expect("valid");
         assert_eq!(raw.as_str(), "caf%C3%A9");
     }
 
@@ -365,9 +364,13 @@ mod tests {
         ));
     }
 
+    /// One predicate per row, so a case names the variant it expects rather than
+    /// asserting only that something failed.
+    type Expecting = fn(&RefNameError) -> bool;
+
     #[test]
     fn refnames_reject_what_git_rejects() {
-        let cases: [(&str, fn(&RefNameError) -> bool); 8] = [
+        let cases: [(&str, Expecting); 8] = [
             ("refs/heads//main", |e| {
                 matches!(e, RefNameError::EmptyComponent(_))
             }),

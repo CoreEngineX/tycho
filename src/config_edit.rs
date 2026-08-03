@@ -275,7 +275,20 @@ pub fn starter(home: &str) -> String {
 mod tests {
     use super::{Editing, List, starter};
 
-    const WITH_COMMENTS: &str = r#"# the whole file's heading
+    /// A drive letter is what makes a path absolute on Windows, and forward slashes
+    /// keep it inside a TOML basic string without escaping.
+    #[cfg(unix)]
+    const HOME: &str = "/home/me";
+    #[cfg(windows)]
+    const HOME: &str = "C:/home/me";
+
+    fn home(rest: &str) -> String {
+        format!("{HOME}{rest}")
+    }
+
+    fn with_comments() -> String {
+        format!(
+            r#"# the whole file's heading
 version = 1
 
 [[profile]]
@@ -284,10 +297,12 @@ name = "demo"
 # why these roots and not others
 watch = [
   # the important one
-  "/home/me/A",
-  "/home/me/B", # trailing note
+  "{HOME}/A",
+  "{HOME}/B", # trailing note
 ]
-"#;
+"#
+        )
+    }
 
     fn open(text: &str) -> (tempfile::TempDir, Editing) {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -301,8 +316,8 @@ watch = [
     /// file worse every time it was used.
     #[test]
     fn adding_a_root_keeps_every_comment() {
-        let (_dir, mut editing) = open(WITH_COMMENTS);
-        assert!(editing.add(0, List::Watch, "/home/me/C").expect("add"));
+        let (_dir, mut editing) = open(&with_comments());
+        assert!(editing.add(0, List::Watch, &home("/C")).expect("add"));
 
         let text = editing.text();
         for comment in [
@@ -313,23 +328,20 @@ watch = [
         ] {
             assert!(text.contains(comment), "{comment} was lost:\n{text}");
         }
-        assert!(text.contains("/home/me/C"), "{text}");
+        assert!(text.contains(&home("/C")), "{text}");
     }
 
     /// And the file it produces has to still parse, or the next command cannot read
     /// what this one wrote.
     #[test]
     fn the_edited_file_is_still_valid_toml_and_still_a_config() {
-        let (_dir, mut editing) = open(WITH_COMMENTS);
-        editing.add(0, List::Watch, "/home/me/C").expect("add");
+        let (_dir, mut editing) = open(&with_comments());
+        editing.add(0, List::Watch, &home("/C")).expect("add");
         editing.add(0, List::Ignore, "*.tmp").expect("add");
 
-        let parsed = crate::config::parse_with(
-            &editing.text(),
-            Some(std::path::Path::new("/home/me")),
-            |_| None,
-        )
-        .expect("still valid TOML");
+        let parsed =
+            crate::config::parse_with(&editing.text(), Some(std::path::Path::new(HOME)), |_| None)
+                .expect("still valid TOML");
         let profile = parsed
             .config
             .profiles
@@ -341,48 +353,46 @@ watch = [
 
     #[test]
     fn adding_something_already_there_changes_nothing() {
-        let (_dir, mut editing) = open(WITH_COMMENTS);
+        let (_dir, mut editing) = open(&with_comments());
         let before = editing.text();
-        assert!(!editing.add(0, List::Watch, "/home/me/A").expect("add"));
+        assert!(!editing.add(0, List::Watch, &home("/A")).expect("add"));
         assert_eq!(editing.text(), before);
     }
 
     #[test]
     fn removing_a_root_leaves_the_rest_alone() {
-        let (_dir, mut editing) = open(WITH_COMMENTS);
-        editing
-            .remove(0, List::Watch, "/home/me/B")
-            .expect("remove");
+        let (_dir, mut editing) = open(&with_comments());
+        editing.remove(0, List::Watch, &home("/B")).expect("remove");
 
         let text = editing.text();
-        assert!(!text.contains("/home/me/B"), "{text}");
-        assert!(text.contains("/home/me/A"), "{text}");
+        assert!(!text.contains(&home("/B")), "{text}");
+        assert!(text.contains(&home("/A")), "{text}");
         assert!(text.contains("# why these roots and not others"), "{text}");
         assert!(text.contains("# the important one"), "{text}");
     }
 
     #[test]
     fn removing_something_absent_says_so_rather_than_succeeding_quietly() {
-        let (_dir, mut editing) = open(WITH_COMMENTS);
+        let (_dir, mut editing) = open(&with_comments());
         let error = editing
-            .remove(0, List::Watch, "/home/me/never")
+            .remove(0, List::Watch, &home("/never"))
             .expect_err("not in the list");
-        assert!(error.to_string().contains("/home/me/never"), "{error}");
+        assert!(error.to_string().contains(&home("/never")), "{error}");
     }
 
     /// A hand-written config may have no `reinclude` key at all, and adding one must
     /// not be an error.
     #[test]
     fn a_missing_list_is_created() {
-        let (_dir, mut editing) = open(WITH_COMMENTS);
+        let (_dir, mut editing) = open(&with_comments());
         assert!(
             editing
-                .add(0, List::Reinclude, "/home/me/A/keep")
+                .add(0, List::Reinclude, &home("/A/keep"))
                 .expect("add")
         );
         assert_eq!(
             editing.entries(0, List::Reinclude),
-            ["/home/me/A/keep"],
+            [home("/A/keep")],
             "{}",
             editing.text()
         );
@@ -390,10 +400,13 @@ watch = [
 
     #[test]
     fn one_profile_needs_no_name_and_two_do() {
-        let (_dir, one) = open(WITH_COMMENTS);
+        let (_dir, one) = open(&with_comments());
         assert_eq!(one.which(None).expect("the only profile"), 0);
 
-        let two = format!("{WITH_COMMENTS}\n[[profile]]\nname = \"work\"\nwatch = []\n");
+        let two = format!(
+            "{}\n[[profile]]\nname = \"work\"\nwatch = []\n",
+            with_comments()
+        );
         let (_dir, editing) = open(&two);
         assert_eq!(editing.profiles(), ["demo", "work"]);
         assert_eq!(editing.which(Some("work")).expect("named"), 1);
@@ -403,10 +416,9 @@ watch = [
     /// `config init` must not hand somebody a file that `config check` rejects.
     #[test]
     fn the_starter_file_parses_and_only_warns_about_what_it_cannot_know() {
-        let text = starter("/home/me");
-        let parsed =
-            crate::config::parse_with(&text, Some(std::path::Path::new("/home/me")), |_| None)
-                .expect("valid TOML");
+        let text = starter(HOME);
+        let parsed = crate::config::parse_with(&text, Some(std::path::Path::new(HOME)), |_| None)
+            .expect("valid TOML");
 
         // `NoRemotes` is expected and unavoidable: only the person running it knows
         // where their cloud folder is, so the starter comments the examples out.

@@ -4,7 +4,6 @@ use crate::primitives::encode::FileMode;
 use std::ffi::OsString;
 use std::fs::{self, File, Metadata};
 use std::io::{self, Write};
-use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
 /// Every kind an entry can be, with no implicit remainder. The remainder is what
@@ -17,12 +16,22 @@ pub enum FileKind {
     Skip(SkipReason),
 }
 
+/// Windows carries none of the four named kinds because nothing in `std` can tell
+/// them apart there: a WSL-created FIFO or socket on NTFS is a reparse point, and the
+/// tag that says which is not exposed by `std::os::windows::fs`. They fall into
+/// `Unknown`, which is what keeps them out of `hash-object` all the same.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SkipReason {
+    #[cfg(unix)]
     Socket,
+    #[cfg(unix)]
     Fifo,
+    #[cfg(unix)]
     BlockDevice,
+    #[cfg(unix)]
     CharDevice,
+    /// The bits that matched nothing: `st_mode` on Unix, the file attributes on
+    /// Windows.
     Unknown(u32),
 }
 
@@ -41,8 +50,11 @@ impl FileKind {
 }
 
 /// Classifies already-read metadata.
+#[cfg(unix)]
 #[must_use]
 pub fn classify(metadata: &Metadata) -> FileKind {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+
     let kind = metadata.file_type();
     if kind.is_symlink() {
         FileKind::Symlink
@@ -62,6 +74,34 @@ pub fn classify(metadata: &Metadata) -> FileKind {
         FileKind::Skip(SkipReason::CharDevice)
     } else {
         FileKind::Skip(SkipReason::Unknown(metadata.mode()))
+    }
+}
+
+/// Classifies already-read metadata.
+///
+/// **Nothing on NTFS is executable**, so every regular file stores as `100644`. That
+/// is not a shortcut: there is no permission bit to read, and Git for Windows makes
+/// the same call by defaulting `core.fileMode` to false. A `100755` blob captured on
+/// macOS still restores as `100755` in the tree - what is lost is the bit on the
+/// restored file, which `store.md` section 7 already counts as metadata.
+///
+/// A junction reports `is_symlink`, so it classifies as [`FileKind::Symlink`] and is
+/// stored as its target rather than descended into. Measured, not assumed: `mklink /J`
+/// needs no privilege, so junctions are the link a Windows user actually has.
+#[cfg(windows)]
+#[must_use]
+pub fn classify(metadata: &Metadata) -> FileKind {
+    use std::os::windows::fs::MetadataExt;
+
+    let kind = metadata.file_type();
+    if kind.is_symlink() {
+        FileKind::Symlink
+    } else if kind.is_dir() {
+        FileKind::Directory
+    } else if kind.is_file() {
+        FileKind::Regular { executable: false }
+    } else {
+        FileKind::Skip(SkipReason::Unknown(metadata.file_attributes()))
     }
 }
 
@@ -109,15 +149,17 @@ mod tests {
     use crate::primitives::encode::FileMode;
     use crate::sys::process::{Timeout, command};
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
 
     fn write(path: &Path, text: &str) {
         fs::write(path, text).expect("write fixture");
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_regular_file_carries_only_the_owner_execute_bit() {
+        use std::os::unix::fs::PermissionsExt;
+
         let dir = tempfile::tempdir().expect("temp dir");
         let plain = dir.path().join("plain.md");
         let runnable = dir.path().join("run.sh");
@@ -135,6 +177,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_symlink_is_never_followed() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -158,6 +201,43 @@ mod tests {
         }
     }
 
+    /// A junction, not a symlink: creating a symlink needs a privilege this process
+    /// does not hold by default, and a junction is what a Windows user has without
+    /// one. Classifying it as a link is what stops the walk descending into it and
+    /// storing the target's contents at a path that never held them.
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_is_a_link_rather_than_a_directory_to_descend() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let target = dir.path().join("target");
+        fs::create_dir_all(&target).expect("mkdir");
+        write(&target.join("inside.md"), "x");
+
+        let junction = dir.path().join("junction");
+        let made = command(
+            "cmd",
+            &[
+                "/c",
+                "mklink",
+                "/J",
+                junction.to_str().expect("temp paths are utf-8"),
+                target.to_str().expect("temp paths are utf-8"),
+            ],
+            Timeout::QUICK,
+        )
+        .expect("mklink runs");
+        assert!(
+            made.status.success(),
+            "mklink /J: {}",
+            String::from_utf8_lossy(&made.stdout)
+        );
+
+        assert_eq!(
+            classify_path(&junction).expect("classified"),
+            FileKind::Symlink
+        );
+    }
+
     #[test]
     fn a_directory_is_its_own_kind() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -167,6 +247,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_fifo_is_skipped_rather_than_read() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -185,6 +266,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_character_device_is_skipped() {
         assert_eq!(
@@ -205,10 +287,13 @@ mod tests {
         );
         assert_eq!(FileKind::Symlink.mode(), Some(FileMode::Symlink));
         assert_eq!(FileKind::Directory.mode(), None);
-        assert_eq!(FileKind::Skip(SkipReason::Fifo).mode(), None);
-        assert_eq!(FileKind::Skip(SkipReason::Socket).mode(), None);
-        assert_eq!(FileKind::Skip(SkipReason::BlockDevice).mode(), None);
         assert_eq!(FileKind::Skip(SkipReason::Unknown(0)).mode(), None);
+        #[cfg(unix)]
+        {
+            assert_eq!(FileKind::Skip(SkipReason::Fifo).mode(), None);
+            assert_eq!(FileKind::Skip(SkipReason::Socket).mode(), None);
+            assert_eq!(FileKind::Skip(SkipReason::BlockDevice).mode(), None);
+        }
     }
 
     #[test]

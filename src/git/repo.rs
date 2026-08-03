@@ -6,7 +6,6 @@ use crate::primitives::path::{AbsPath, TreePath};
 use crate::sys::process::{Git, RunError, Timeout};
 use std::fs;
 use std::io;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 /// Neutralises every attribute that could alter bytes on the way out. It is the
@@ -29,11 +28,13 @@ pub enum RepoError {
     #[error("git printed output this command cannot parse: {0}")]
     Unparsable(String),
     #[error(
-        "the store at {path} is mode {mode:04o}; it holds gitignored content and must not be readable by others"
+        "the store at {path} {detail}; it holds gitignored content and must not be readable by others"
     )]
-    Exposed { path: String, mode: u32 },
+    Exposed { path: String, detail: String },
     #[error("hashing stopped with {remaining} paths left and no path to blame: {stderr}")]
     Stalled { remaining: usize, stderr: String },
+    #[error("git refused to index a path and did not fail doing it: {detail}")]
+    PathRefused { detail: String },
 }
 
 /// One outcome per planned path, so the caller cannot be handed a short list.
@@ -109,20 +110,7 @@ impl Repo {
     /// If the path is not a repository, or its mode grants group or other access.
     pub fn open(path: &AbsPath) -> Result<Self, RepoError> {
         let repo = Self { path: path.clone() };
-        let mode = fs::metadata(path.as_path())
-            .map_err(|source| RepoError::Io {
-                context: format!("reading {path}"),
-                source,
-            })?
-            .permissions()
-            .mode()
-            & 0o777;
-        if mode & 0o077 != 0 {
-            return Err(RepoError::Exposed {
-                path: path.to_string(),
-                mode,
-            });
-        }
+        refuse_if_exposed(path)?;
         repo.git()
             .checked(&["rev-parse", "--git-dir"], Timeout::QUICK)?;
         Ok(repo)
@@ -348,12 +336,20 @@ impl Index<'_> {
                 .map(|entry| index_info_line(entry.mode, entry.oid, entry.path.as_path())),
             Timeout::WORK,
         )?;
-        if out.status.success() {
-            return Ok(());
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if !out.status.success() {
+            return Err(RepoError::Unparsable(stderr.trim().to_owned()));
         }
-        Err(RepoError::Unparsable(
-            String::from_utf8_lossy(&out.stderr).trim().to_owned(),
-        ))
+        // `update-index` answers a path it will not hold by printing `Ignoring path`
+        // and **exiting 0**. Every character NTFS reserves is in that set, `\`
+        // included, so on Windows a run that trusted the status would write a tree
+        // short of what it planned - or the empty tree - and report success.
+        if stderr.contains("Ignoring path") {
+            return Err(RepoError::PathRefused {
+                detail: stderr.trim().to_owned(),
+            });
+        }
+        Ok(())
     }
 
     /// # Errors
@@ -393,6 +389,139 @@ impl Index<'_> {
     pub fn is_empty(&self) -> Result<bool, RepoError> {
         self.len().map(|count| count == 0)
     }
+}
+
+/// Refuses a store others can read, because it holds gitignored content.
+#[cfg(unix)]
+fn refuse_if_exposed(path: &AbsPath) -> Result<(), RepoError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = fs::metadata(path.as_path())
+        .map_err(|source| RepoError::Io {
+            context: format!("reading {path}"),
+            source,
+        })?
+        .permissions()
+        .mode()
+        & 0o777;
+    if mode & 0o077 != 0 {
+        return Err(RepoError::Exposed {
+            path: path.to_string(),
+            detail: format!("is mode {mode:04o}"),
+        });
+    }
+    Ok(())
+}
+
+/// The NTFS equivalent: refuse a store whose DACL names any trustee other than the
+/// owner, `SYSTEM` and `Administrators`.
+///
+/// This is a real equivalent rather than a weakened one, and the measurement that
+/// says so is that a directory under the user profile carries exactly `SY`, `BA` and
+/// the owner - the same reach as `0700` - while one under `C:\Users\Public` adds
+/// `IU`, `SU` and `BA`-batch with modify rights, which is what `0700` exists to
+/// refuse. `store.md` section 2 records both.
+///
+/// SDDL rather than `icacls`'s own listing because the listing prints localised
+/// account names - `BUILTIN\Administrators` is `VORDEFINIERT\Administratoren` on a
+/// German install - while SDDL is fixed abbreviations and raw SIDs.
+#[cfg(windows)]
+fn refuse_if_exposed(path: &AbsPath) -> Result<(), RepoError> {
+    let owner = current_user_sid()?;
+    let dacl = read_dacl(path)?;
+    if let Some(trustee) = foreign_trustee(&dacl, &owner) {
+        return Err(RepoError::Exposed {
+            path: path.to_string(),
+            detail: format!("grants access to {trustee}"),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn current_user_sid() -> Result<String, RepoError> {
+    let out =
+        crate::sys::process::command("whoami", &["/user", "/fo", "csv", "/nh"], Timeout::QUICK)
+            .map_err(RepoError::Run)?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.rsplit(',')
+        .next()
+        .map(|field| field.trim().trim_matches('"').to_owned())
+        .filter(|sid| sid.starts_with("S-1-"))
+        .ok_or_else(|| RepoError::Unparsable(format!("whoami /user printed {}", text.trim())))
+}
+
+/// `icacls /save` is the only way to get SDDL out of a tool that starts fast enough
+/// to run on every command: `Get-Acl` needs a PowerShell process, measured at 1.6s
+/// against 30ms here. It writes to a file rather than stdout, hence the temporary.
+#[cfg(windows)]
+fn read_dacl(path: &AbsPath) -> Result<String, RepoError> {
+    let target = path
+        .as_path()
+        .to_str()
+        .ok_or_else(|| RepoError::Unparsable(format!("{path} is not representable as UTF-8")))?;
+    let scratch = std::env::temp_dir().join(format!("tycho-acl-{}.sddl", std::process::id()));
+    let scratch_arg = scratch.to_str().ok_or_else(|| {
+        RepoError::Unparsable("the temporary directory is not representable as UTF-8".to_owned())
+    })?;
+
+    let out = crate::sys::process::command(
+        "icacls",
+        &[target, "/save", scratch_arg, "/q"],
+        Timeout::QUICK,
+    )
+    .map_err(RepoError::Run)?;
+    let read = fs::read(&scratch);
+    let _ = fs::remove_file(&scratch);
+
+    if !out.status.success() {
+        return Err(RepoError::Unparsable(format!(
+            "icacls /save: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    let bytes = read.map_err(|source| RepoError::Io {
+        context: format!("reading the saved ACL for {path}"),
+        source,
+    })?;
+    Ok(decode_utf16le(&bytes))
+}
+
+/// `icacls /save` writes UTF-16LE with a BOM. An odd trailing byte is dropped rather
+/// than refused: the DACL line is what matters and a truncated tail cannot be part of
+/// it.
+#[cfg(windows)]
+fn decode_utf16le(bytes: &[u8]) -> String {
+    let body = bytes.strip_prefix(&[0xff, 0xfe]).unwrap_or(bytes);
+    let units: Vec<u16> = body
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect();
+    String::from_utf16_lossy(&units)
+}
+
+/// The first trustee in the DACL that is neither the owner, `SYSTEM` nor
+/// `Administrators`.
+///
+/// Only allow ACEs count. A deny ACE removes access rather than granting it, and an
+/// inherit-only ACE - `IO` in the flags - applies to children this object does not
+/// have yet, so neither can expose what is already there.
+#[cfg(windows)]
+fn foreign_trustee(dacl: &str, owner: &str) -> Option<String> {
+    for ace in dacl.split('(').skip(1) {
+        let ace = ace.split(')').next().unwrap_or_default();
+        let fields: Vec<&str> = ace.split(';').collect();
+        let [kind, flags, .., trustee] = fields.as_slice() else {
+            continue;
+        };
+        if !kind.starts_with('A') || flags.contains("IO") {
+            continue;
+        }
+        if !matches!(*trustee, "SY" | "BA") && !trustee.eq_ignore_ascii_case(owner) {
+            return Some((*trustee).to_owned());
+        }
+    }
+    None
 }
 
 fn parse_one(stdout: &[u8], stderr: &[u8], success: bool) -> Result<Oid, RepoError> {

@@ -360,10 +360,19 @@ mod tests {
         String::from_utf8_lossy(bytes).trim().to_owned()
     }
 
+    /// `ping` rather than `sleep` on Windows, which has neither `sleep` nor a
+    /// `timeout` that runs without a console.
+    #[cfg(windows)]
+    const SLOW: (&str, [&str; 3]) = ("ping", ["-n", "31", "127.0.0.1"]);
+    #[cfg(unix)]
+    const SLOW: (&str, [&str; 3]) = ("sleep", ["30", "30", "30"]);
+
     #[test]
     fn a_child_that_outlives_its_limit_is_killed() {
-        let error = command("sleep", &["30"], Timeout::from_millis(150))
-            .expect_err("sleep 30 cannot finish in 150ms");
+        let (program, args) = SLOW;
+        let args = if cfg!(windows) { &args[..] } else { &args[..1] };
+        let error = command(program, args, Timeout::from_millis(150))
+            .expect_err("a 30s child cannot finish in 150ms");
         assert!(
             matches!(error, RunError::Timeout { .. }),
             "expected a timeout, got {error}"

@@ -263,10 +263,18 @@ mod tests {
     use crate::primitives::path::AbsPath;
     use std::path::Path;
 
-    /// The truth table uses `~` for readability; the algorithm compares component
-    /// counts of prefixes of one candidate, so a constant offset cannot reorder them.
+    /// A path is only absolute on Windows with a drive prefix, so the fixture home
+    /// carries one. It adds a component on that platform and nothing else: the
+    /// algorithm compares component counts of prefixes of one candidate, so a
+    /// constant offset cannot reorder them.
+    #[cfg(unix)]
+    const HOME: &str = "/h";
+    #[cfg(windows)]
+    const HOME: &str = r"C:\h";
+
+    /// The truth table uses `~` for readability.
     fn home(rest: &str) -> AbsPath {
-        AbsPath::parse_with(&format!("~/{rest}"), Some(Path::new("/h")), |_| None)
+        AbsPath::parse_with(&format!("~/{rest}"), Some(Path::new(HOME)), |_| None)
             .expect("a valid path")
     }
 
@@ -274,8 +282,8 @@ mod tests {
         rest.iter().map(|item| home(item)).collect()
     }
 
-    fn tree(rules: RuleSet) -> RuleTree {
-        RuleTree::build(&rules).expect("the patterns compile")
+    fn tree(rules: &RuleSet) -> RuleTree {
+        RuleTree::build(rules).expect("the patterns compile")
     }
 
     fn captured(tree: &RuleTree, candidate: &str) -> bool {
@@ -285,7 +293,7 @@ mod tests {
     /// Row 1: watch `~/A` (d1), candidate `~/A/x.md` (d2). Winner: watch, d1.
     #[test]
     fn row_1_a_watched_root_captures_what_is_under_it() {
-        let tree = tree(RuleSet {
+        let tree = tree(&RuleSet {
             watch: paths(&["A"]),
             ..RuleSet::default()
         });
@@ -295,7 +303,7 @@ mod tests {
     /// Row 2: + ignore `~/A/s` (d2), candidate `~/A/s/t.bin`. Winner: ignore, d2.
     #[test]
     fn row_2_a_deeper_ignore_beats_the_watch_above_it() {
-        let tree = tree(RuleSet {
+        let tree = tree(&RuleSet {
             watch: paths(&["A"]),
             ignore_paths: paths(&["A/s"]),
             ..RuleSet::default()
@@ -306,7 +314,7 @@ mod tests {
     /// Row 3: + reinclude `~/A/s/keep` (d3), candidate `~/A/s/keep/k.pem`.
     #[test]
     fn row_3_a_deeper_reinclude_beats_the_ignore_above_it() {
-        let tree = tree(RuleSet {
+        let tree = tree(&RuleSet {
             watch: paths(&["A"]),
             ignore_paths: paths(&["A/s"]),
             reinclude: paths(&["A/s/keep"]),
@@ -318,7 +326,7 @@ mod tests {
     /// Row 4: watch `~/A` (d1), junk `target`, candidate `~/A/p/target/x.o`.
     #[test]
     fn row_4_junk_matches_at_the_depth_of_the_component_it_names() {
-        let tree = tree(RuleSet {
+        let tree = tree(&RuleSet {
             watch: paths(&["A"]),
             junk: vec!["target".to_owned()],
             ..RuleSet::default()
@@ -332,7 +340,7 @@ mod tests {
     /// Row 5: + reinclude `~/A/p/target` (d3). Reinclude beats junk at equal depth.
     #[test]
     fn row_5_a_reinclude_beats_junk_at_the_same_depth_by_tier() {
-        let tree = tree(RuleSet {
+        let tree = tree(&RuleSet {
             watch: paths(&["A"]),
             reinclude: paths(&["A/p/target"]),
             junk: vec!["target".to_owned()],
@@ -344,7 +352,7 @@ mod tests {
     /// Row 6: glob `**/*.xcarchive` matches `~/A/b/Foo.xcarchive` at d3.
     #[test]
     fn row_6_a_glob_ignores_what_it_matches() {
-        let tree = tree(RuleSet {
+        let tree = tree(&RuleSet {
             watch: paths(&["A"]),
             ignore_globs: vec!["**/*.xcarchive".to_owned()],
             ..RuleSet::default()
@@ -355,7 +363,7 @@ mod tests {
     /// Row 7: + reinclude of the file itself (d3). Reinclude beats glob by tier.
     #[test]
     fn row_7_a_reinclude_beats_a_glob_at_the_same_depth_by_tier() {
-        let tree = tree(RuleSet {
+        let tree = tree(&RuleSet {
             watch: paths(&["A"]),
             reinclude: paths(&["A/b/Foo.xcarchive"]),
             ignore_globs: vec!["**/*.xcarchive".to_owned()],
@@ -368,7 +376,7 @@ mod tests {
     /// which is deeper than the reinclude at d3.
     #[test]
     fn row_8_a_glob_on_a_filename_outranks_a_reincluded_directory() {
-        let tree = tree(RuleSet {
+        let tree = tree(&RuleSet {
             watch: paths(&["A"]),
             ignore_paths: paths(&["A/s"]),
             reinclude: paths(&["A/s/keep"]),
@@ -386,7 +394,7 @@ mod tests {
     }
 
     fn tree_with_file_reincluded() -> RuleTree {
-        tree(RuleSet {
+        tree(&RuleSet {
             watch: paths(&["A"]),
             ignore_paths: paths(&["A/s"]),
             reinclude: paths(&["A/s/keep", "A/s/keep/a.log"]),
@@ -401,7 +409,7 @@ mod tests {
     /// design will be asked.
     #[test]
     fn a_reincluded_directory_does_not_rescue_files_a_deeper_junk_glob_matches() {
-        let tree = tree(RuleSet {
+        let tree = tree(&RuleSet {
             watch: paths(&["A"]),
             reinclude: paths(&["A/p/target"]),
             junk: DEFAULT_JUNK.iter().map(|s| (*s).to_owned()).collect(),
@@ -418,7 +426,7 @@ mod tests {
     /// at `~/A/s` and lose the re-included subtree entirely.
     #[test]
     fn a_skipped_directory_still_reports_that_it_may_contain_captures() {
-        let tree = tree(RuleSet {
+        let tree = tree(&RuleSet {
             watch: paths(&["A"]),
             ignore_paths: paths(&["A/s"]),
             reinclude: paths(&["A/s/keep"]),
@@ -438,7 +446,7 @@ mod tests {
 
     #[test]
     fn hits_record_every_pattern_that_matched_anywhere() {
-        let tree = tree(RuleSet {
+        let tree = tree(&RuleSet {
             watch: paths(&["A"]),
             ignore_globs: vec!["*.log".to_owned(), "*.never".to_owned()],
             junk: vec!["target".to_owned(), "node_modules".to_owned()],
@@ -454,7 +462,7 @@ mod tests {
 
     #[test]
     fn a_path_no_rule_matches_is_skipped() {
-        let tree = tree(RuleSet {
+        let tree = tree(&RuleSet {
             watch: paths(&["A"]),
             ..RuleSet::default()
         });
@@ -463,7 +471,7 @@ mod tests {
 
     #[test]
     fn a_watch_at_a_shallow_depth_never_rescues_a_deeper_ignore() {
-        let tree = tree(RuleSet {
+        let tree = tree(&RuleSet {
             watch: paths(&["A"]),
             junk: vec!["node_modules".to_owned()],
             ..RuleSet::default()
@@ -471,12 +479,16 @@ mod tests {
         assert!(!captured(&tree, "A/b/c/d/e/f/node_modules/pkg/index.js"));
     }
 
+    /// Unix only because a path that is not UTF-8 cannot exist on Windows: the
+    /// filesystem stores UTF-16 and Rust round-trips it through WTF-8, so there is no
+    /// name here for these bytes to be.
+    #[cfg(unix)]
     #[test]
     fn a_glob_matches_a_path_that_is_not_utf_8() {
         use std::ffi::OsStr;
         use std::os::unix::ffi::OsStrExt;
 
-        let tree = tree(RuleSet {
+        let tree = tree(&RuleSet {
             watch: paths(&["A"]),
             ignore_globs: vec!["*.log".to_owned()],
             ..RuleSet::default()

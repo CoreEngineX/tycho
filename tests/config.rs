@@ -7,16 +7,53 @@ use tycho::config::{
     parse_interval, parse_with,
 };
 
+/// A path is only absolute on Windows with a drive prefix, so the fixture home
+/// carries one there.
+#[cfg(unix)]
+const HOME: &str = "/h";
+#[cfg(windows)]
+const HOME: &str = r"C:\h";
+
+/// The expanded form of `~/<rest>`, in the host's own separator - which is what
+/// `AbsPath` normalises to and therefore what a diagnostic prints.
+fn under_home(rest: &str) -> String {
+    let mut path = std::path::PathBuf::from(HOME);
+    path.extend(rest.split('/'));
+    path.display().to_string()
+}
+
+/// A drive letter is what makes a path absolute on Windows, and forward slashes are
+/// what let it sit in a TOML basic string without escaping. `/x` there is relative to
+/// whichever drive the process is on, so it is rejected rather than expanded.
+#[cfg(unix)]
+const DRIVE: &str = "";
+#[cfg(windows)]
+const DRIVE: &str = "C:";
+
+/// A path outside the fixture home, as written in a config.
+fn outside(rest: &str) -> String {
+    format!("{DRIVE}/{rest}")
+}
+
+/// The same path as `AbsPath` prints it, which is the host separator.
+fn outside_shown(rest: &str) -> String {
+    Path::new(&outside(rest))
+        .components()
+        .collect::<std::path::PathBuf>()
+        .display()
+        .to_string()
+}
+
 fn env(name: &str) -> Option<String> {
     match name {
-        "HOME" => Some("/h".to_owned()),
+        "HOME" => Some(HOME.to_owned()),
         "USER" => Some("tester".to_owned()),
         _ => None,
     }
 }
 
 fn parse(text: &str) -> Parsed {
-    parse_with(text, Some(Path::new("/h")), env).expect("the text is TOML")
+    parse_with(text, Some(Path::new(HOME)), env).expect("the text is TOML")
 }
 
 /// A minimal valid profile, so each test can add exactly the one thing it is about.
@@ -84,7 +121,13 @@ remotes = [
 
 schedule = { weekly = { day = "sunday", at = "12:00" } }
 "#;
-    let parsed = parse(text);
+    // `config.md`'s example names an external drive the way macOS mounts one. There
+    // is no `/Volumes` on Windows and no drive-less absolute path either, so the
+    // example is read here with the one line that cannot be platform-neutral
+    // substituted. `config.md` section 3 now says so rather than implying the example
+    // is portable.
+    let text = text.replace("/Volumes/T7/tycho", &outside("Volumes/T7/tycho"));
+    let parsed = parse(&text);
     assert!(
         !parsed.has_errors(),
         "the documented example should be clean: {:#?}",
@@ -130,7 +173,7 @@ fn every_unknown_key_is_reported_rather_than_the_first() {
 
 #[test]
 fn a_newer_version_says_so_rather_than_naming_a_key() {
-    let error = parse_with("version = 99\n", Some(Path::new("/h")), env)
+    let error = parse_with("version = 99\n", Some(Path::new(HOME)), env)
         .expect_err("a newer config is refused");
     let ConfigError::Version { found, understood } = error else {
         panic!("expected a version error, got {error}");
@@ -169,9 +212,11 @@ local_only = true
         },
     );
 
-    let parsed = parse(&valid(
-        "remotes = [{ name = \"gd\", path = \"/r/one\" }, { name = \"gd\", path = \"/r/two\" }]\n",
-    ));
+    let parsed = parse(&valid(&format!(
+        "remotes = [{{ name = \"gd\", path = \"{}\" }}, {{ name = \"gd\", path = \"{}\" }}]\n",
+        outside("r/one"),
+        outside("r/two")
+    )));
     assert_has(
         &parsed,
         &DiagnosticKind::DuplicateRemote {
@@ -214,8 +259,8 @@ fn an_alias_collision_is_an_error_that_suggests_the_named_form() {
         &parsed,
         &DiagnosticKind::AliasCollision {
             alias: "docs".to_owned(),
-            first: "/h/w/docs".to_owned(),
-            second: "/h/p/docs".to_owned(),
+            first: under_home("w/docs"),
+            second: under_home("p/docs"),
         },
     );
     let hint = parsed
@@ -259,8 +304,8 @@ fn a_watched_root_inside_another_is_an_error() {
     assert_has(
         &parsed,
         &DiagnosticKind::NestedWatchedRoot {
-            inner: "/h/A/inner".to_owned(),
-            outer: "/h/A".to_owned(),
+            inner: under_home("A/inner"),
+            outer: under_home("A"),
         },
     );
 }
@@ -271,7 +316,7 @@ fn a_path_that_is_both_ignored_and_reincluded_is_an_error() {
     assert_has(
         &parsed,
         &DiagnosticKind::ConflictingRules {
-            path: "/h/A/s".to_owned(),
+            path: under_home("A/s"),
         },
     );
 }
@@ -301,20 +346,23 @@ fn the_store_or_a_remote_inside_a_watched_root_is_an_error() {
 
 #[test]
 fn two_profiles_sharing_a_store_path_is_an_error() {
-    let text = "version = 1
+    let store = outside("s");
+    let text = format!(
+        "version = 1
 [[profile]]
 name = \"one\"
 watch = [\"~/A\"]
 local_only = true
-store_path = \"/s\"
+store_path = \"{store}\"
 [[profile]]
 name = \"two\"
 watch = [\"~/B\"]
 local_only = true
-store_path = \"/s\"
-";
+store_path = \"{store}\"
+"
+    );
     assert!(
-        errors(&parse(text))
+        errors(&parse(&text))
             .iter()
             .any(|kind| matches!(kind, DiagnosticKind::DuplicateStorePath { .. })),
     );
@@ -356,7 +404,7 @@ fn schedules_are_exactly_one_of_the_three() {
         "schedule = { daily = { at = \"18:00\" }, weekly = { day = \"sunday\", at = \"12:00\" } }\n",
     );
     assert!(
-        parse_with(&text, Some(Path::new("/h")), env).is_err(),
+        parse_with(&text, Some(Path::new(HOME)), env).is_err(),
         "a schedule with two keys must not parse"
     );
 }
@@ -406,13 +454,16 @@ fn intervals_take_a_whole_number_and_one_unit() {
 #[test]
 fn warnings_are_warnings_and_do_not_make_the_config_invalid() {
     // No schedule, and an ignore that can never fire.
-    let parsed = parse(&valid("ignore = [\"/elsewhere\"]\n"));
+    let parsed = parse(&valid(&format!(
+        "ignore = [\"{}\"]\n",
+        outside("elsewhere")
+    )));
     assert!(!parsed.has_errors(), "{:#?}", errors(&parsed));
     assert_has(&parsed, &DiagnosticKind::NoSchedule);
     assert_has(
         &parsed,
         &DiagnosticKind::IgnoreOutsideEveryRoot {
-            path: "/elsewhere".to_owned(),
+            path: outside_shown("elsewhere"),
         },
     );
 }
@@ -439,10 +490,7 @@ watch = [\"~/w/docs\", \"~/p/docs\"]
             .any(|kind| matches!(kind, DiagnosticKind::AliasCollision { .. })),
         "{found:#?}"
     );
-    assert!(
-        found.iter().any(|kind| *kind == DiagnosticKind::NoRemotes),
-        "{found:#?}"
-    );
+    assert!(found.contains(&DiagnosticKind::NoRemotes), "{found:#?}");
     assert!(found.len() >= 3, "expected several errors, got {found:#?}");
 }
 

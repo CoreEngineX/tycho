@@ -4,10 +4,8 @@
 //! unit test written from a reading of git's parser proves only that the reading is
 //! self-consistent. These tests ask git.
 
-use std::ffi::OsString;
 use std::fs::File;
 use std::io::Write;
-use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
@@ -45,11 +43,45 @@ fn bare_repo() -> TempDir {
     dir
 }
 
-fn path_of(dir: &Path, name: &[u8]) -> PathBuf {
-    let mut raw = dir.as_os_str().as_encoded_bytes().to_vec();
-    raw.push(b'/');
-    raw.extend_from_slice(name);
-    PathBuf::from(OsString::from_vec(raw))
+/// `None` when the platform has no name for these bytes at all, which is a different
+/// thing from a filesystem that has one and refuses it.
+#[cfg(unix)]
+fn path_from_bytes(raw: &[u8]) -> Option<PathBuf> {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    Some(PathBuf::from(OsString::from_vec(raw.to_vec())))
+}
+
+#[cfg(windows)]
+fn path_from_bytes(raw: &[u8]) -> Option<PathBuf> {
+    std::str::from_utf8(raw).ok().map(PathBuf::from)
+}
+
+fn path_of(dir: &Path, name: &[u8]) -> Option<PathBuf> {
+    path_from_bytes(name).map(|name| dir.join(name))
+}
+
+/// Whether this platform's filesystem can hold the name at all.
+///
+/// APFS enforces valid UTF-8, so that is the only row of `capture.md`'s matrix macOS
+/// cannot reach.
+#[cfg(unix)]
+fn nameable_here(name: &[u8]) -> bool {
+    std::str::from_utf8(name).is_ok()
+}
+
+/// NTFS needs UTF-16, and additionally refuses `<>:"|?*`, both separators, and every
+/// byte below `0x20` - the control characters are the part `config.md` section 10 did
+/// not list, and a newline in a name is refused with `InvalidFilename` rather than
+/// stored. Six rows of the matrix are therefore unreachable here rather than one,
+/// measured by this test rather than read from a table.
+#[cfg(windows)]
+fn nameable_here(name: &[u8]) -> bool {
+    std::str::from_utf8(name).is_ok_and(|text| {
+        !text.contains(['<', '>', ':', '"', '|', '?', '*', '\\', '/'])
+            && !text.chars().any(|c| (c as u32) < 0x20)
+    })
 }
 
 /// `hash-object --stdin-paths` must hash the file we meant, for every hostile name.
@@ -65,25 +97,28 @@ fn stdin_paths_survives_every_hostile_filename() {
     let mut expected = Vec::new();
     let mut refused = Vec::new();
     for (index, name) in HOSTILE.iter().enumerate() {
-        let file = path_of(work.path(), name);
         let content = format!("content of file {index}\n");
-        match File::create(&file) {
-            Ok(mut handle) => {
+        let created = path_of(work.path(), name).and_then(|file| {
+            File::create(&file)
+                .map(|handle| (file, handle))
+                .map_err(|error| {
+                    // A name the platform can hold and the filesystem still refuses
+                    // is a bug in this test's model of the filesystem, not a skip.
+                    assert!(
+                        !nameable_here(name),
+                        "the filesystem refused a name this platform can hold, {:?}: {error}",
+                        String::from_utf8_lossy(name)
+                    );
+                })
+                .ok()
+        });
+        match created {
+            Some((file, mut handle)) => {
                 handle.write_all(content.as_bytes()).expect("write");
                 batch.extend_from_slice(&stdin_paths_line(&file));
                 expected.push(content);
             }
-            Err(error) => {
-                // APFS enforces valid UTF-8 in filenames, so the non-UTF-8 row of
-                // capture.md's matrix is unreachable end to end on macOS. The
-                // encoder still handles those bytes; encode.rs covers them purely.
-                assert!(
-                    std::str::from_utf8(name).is_err(),
-                    "the filesystem refused a valid UTF-8 name {:?}: {error}",
-                    String::from_utf8_lossy(name)
-                );
-                refused.push(name);
-            }
+            None => refused.push(name),
         }
     }
     assert_eq!(
@@ -175,18 +210,25 @@ fn index_info_round_trips_raw_path_bytes() {
     assert!(empty.status.success());
     let oid = Oid::parse(String::from_utf8_lossy(&empty.stdout).trim()).expect("valid oid");
 
-    let names: Vec<&[u8]> = vec![
-        b"plain.md",
+    // On Unix a path is an index entry and never a file, so every hostile name is
+    // fair game. Git for Windows refuses to hold any name NTFS could not - the same
+    // predicate the filesystem answers with - and drops it at exit 0, which
+    // `a_reserved_name_is_dropped_at_exit_zero` pins separately.
+    let names: Vec<&[u8]> = [
+        b"plain.md".as_slice(),
         b"new\nline.md",
         b"\"leading-quote.md",
-        b"back\\slash.md",
         b"caf\xc3\xa9.md",
         b"looks.git.md",
-    ];
+        b"back\\slash.md",
+    ]
+    .into_iter()
+    .filter(|name| nameable_here(name))
+    .collect();
 
     let mut batch = Vec::new();
     for name in &names {
-        let path = PathBuf::from(OsString::from_vec(name.to_vec()));
+        let path = path_from_bytes(name).expect("an index path this platform can build");
         batch.extend_from_slice(&index_info_line(FileMode::Regular, oid, &path));
     }
 
@@ -230,4 +272,79 @@ fn index_info_round_trips_raw_path_bytes() {
 
     assert_eq!(got.len(), want.len(), "an entry was silently discarded");
     assert_eq!(got, want, "a path's bytes were altered in the index");
+}
+
+/// The ground truth the whole of `TreePath`'s separator contract rests on.
+///
+/// Git for Windows refuses to put a path holding any character NTFS reserves into the
+/// index. It prints `Ignoring path` on **stderr** and exits **0**, and `write-tree`
+/// then yields a tree short of that entry - the empty tree, if every path was
+/// refused. `\` is in that set, and a `PathBuf` built from components is
+/// `\`-separated here, so an unfixed run commits an empty backup and reports success.
+///
+/// Pinned per character rather than argued from one case, because the exit status is
+/// what a caller would otherwise trust.
+#[cfg(windows)]
+#[test]
+fn a_reserved_name_is_dropped_at_exit_zero() {
+    let work = tempfile::tempdir().expect("temp dir");
+    let store = bare_repo();
+
+    let empty = git(
+        store.path(),
+        &["hash-object", "-w", "-t", "blob", "--stdin"],
+    );
+    assert!(empty.status.success());
+    let oid = Oid::parse(String::from_utf8_lossy(&empty.stdout).trim()).expect("valid oid");
+
+    for (index, name) in [
+        r"sub\file.md",
+        "star*.md",
+        "colon:x.md",
+        "q?.md",
+        "pipe|x.md",
+        "quote\".md",
+        "tab\there.md",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let index_file = work.path().join(format!("index{index}"));
+        let batch = index_info_line(FileMode::Regular, oid, Path::new(name));
+        let batch_file = work.path().join(format!("batch{index}"));
+        File::create(&batch_file)
+            .expect("create batch")
+            .write_all(&batch)
+            .expect("write batch");
+
+        let out = Command::new("git")
+            .current_dir(store.path())
+            .env("GIT_INDEX_FILE", &index_file)
+            .args(["update-index", "-z", "--index-info"])
+            .stdin(Stdio::from(File::open(&batch_file).expect("open batch")))
+            .output()
+            .expect("run update-index");
+
+        assert!(
+            out.status.success(),
+            "the danger is precisely that this succeeds: {name:?}"
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("Ignoring path"),
+            "git changed how it reports a rejected path {name:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let listed = Command::new("git")
+            .current_dir(store.path())
+            .env("GIT_INDEX_FILE", &index_file)
+            .args(["ls-files", "-z"])
+            .output()
+            .expect("run ls-files");
+        assert!(listed.status.success());
+        assert!(
+            listed.stdout.is_empty(),
+            "{name:?} was dropped, so nothing may be listed"
+        );
+    }
 }

@@ -4,6 +4,12 @@
 //! A hand-written plist that had drifted from what the script needed is a large part
 //! of how the old system failed unnoticed, so these are generated - and a generator
 //! nobody validated is the same problem one layer down.
+//!
+//! macOS only, and deliberately: the whole point is that `plutil` and not this crate
+//! decides whether a plist is a plist. There is no Windows stand-in for that, so the
+//! file is skipped rather than weakened into a string comparison. `tests/schtasks.rs`
+//! is the equivalent for the Windows lifecycle, checked by `schtasks` itself.
+#![cfg(target_os = "macos")]
 
 use std::fs;
 use std::path::Path;

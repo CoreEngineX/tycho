@@ -21,8 +21,15 @@ fn write(path: &Path, text: &str) {
     fs::write(path, text).expect("write");
 }
 
+/// A path inside a TOML basic string needs every `\` escaped, and on Windows every
+/// separator is one. A person writing a config by hand would use a literal string;
+/// a fixture that interpolates a real path has to escape instead.
+fn toml_path(path: &Path) -> String {
+    path.display().to_string().replace('\\', "\\\\")
+}
+
 fn profile(dir: &Path) -> Profile {
-    let root = dir.display().to_string();
+    let root = toml_path(dir);
     let text = format!(
         "version = 1\n[[profile]]\nname = \"demo\"\nwatch = [\"{root}/A\"]\nlocal_only = true\n"
     );
@@ -170,7 +177,14 @@ fn the_run_is_recorded_for_the_next_gate() {
 fn history_reads_the_store_rather_than_the_state_file() {
     let mut fixture = fixture();
     fixture.run().expect("first run");
-    write(&fixture.dir.path().join("A/three.md"), "three\n");
+    // Big enough to move the figure after compression: `count-objects -v` reports
+    // whole KiB, so a run whose new objects total under one of them records `0 B
+    // written` truthfully. Six bytes of `three\n` did, and this test passed on macOS
+    // by luck of what the surrounding fixture happened to weigh.
+    let bulky: String = (0..4000)
+        .map(|line| format!("line {line} carries its own number so it does not fold away\n"))
+        .collect();
+    write(&fixture.dir.path().join("A/three.md"), &bulky);
     fixture.run().expect("second run");
 
     let state_path = fixture.dir.path().join("state.json");
@@ -317,6 +331,7 @@ fn the_store_is_created_where_the_profile_says() {
 /// `hash-object` follows a symlink and stores what it points at. Storing that under
 /// mode 120000 would fabricate a file on restore that never existed on the source
 /// machine, and a dangling link fails the batch outright.
+#[cfg(unix)]
 #[test]
 fn a_symlink_stores_its_target_rather_than_the_target_s_content() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -354,5 +369,59 @@ fn a_symlink_stores_its_target_rather_than_the_target_s_content() {
     assert_eq!(
         fixture.git(&["show", "HEAD:A/real.md"]),
         "THE TARGET CONTENT\n"
+    );
+}
+
+/// The same property against the link a Windows account can create without a
+/// privilege. What the blob holds is `read_link`'s answer rather than a literal, so
+/// this pins the rule - a link stores its target - without asserting a form of the
+/// target that is Windows' business and not Tycho's.
+#[cfg(windows)]
+#[test]
+fn a_junction_stores_its_target_rather_than_the_target_s_content() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    write(&dir.path().join("A/real.md"), "THE TARGET CONTENT\n");
+    std::fs::create_dir_all(dir.path().join("A/elsewhere")).expect("mkdir");
+    write(&dir.path().join("A/elsewhere/hidden.md"), "HIDDEN\n");
+
+    // Each component joined separately: `join("A/link")` keeps the forward slash on
+    // Windows, and `cmd` then reads `/link` as a switch.
+    let junction = dir.path().join("A").join("link");
+    let made = std::process::Command::new("cmd")
+        .args(["/c", "mklink", "/J"])
+        .arg(&junction)
+        .arg(dir.path().join("A").join("elsewhere"))
+        .output()
+        .expect("mklink runs");
+    assert!(
+        made.status.success(),
+        "mklink /J: {}",
+        String::from_utf8_lossy(&made.stderr)
+    );
+    let target = std::fs::read_link(&junction).expect("read_link");
+
+    let store = Store::open_or_init(&abs(&dir.path().join("demo.git"))).expect("init");
+    let profile = profile(dir.path());
+    let mut fixture = Fixture {
+        dir,
+        store,
+        profile,
+        state: State::default(),
+    };
+    fixture.run().expect("a junction must not fail the run");
+
+    let listed = fixture.git(&["ls-tree", "-r", "HEAD"]);
+    assert!(
+        listed.contains("120000 blob") && listed.contains("A/link"),
+        "the junction should be stored as a link: {listed}"
+    );
+    assert_eq!(
+        fixture.git(&["show", "HEAD:A/link"]),
+        target.display().to_string(),
+        "the blob must be the junction's target, not what it points at"
+    );
+    assert!(
+        !listed.contains("A/link/"),
+        "the walk descended through the junction: {listed}"
     );
 }

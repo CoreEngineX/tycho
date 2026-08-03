@@ -4,9 +4,13 @@
 //! **A CLI has no notification identity of its own**, on any platform. macOS wants an
 //! installed app bundle and Windows wants a registered `AppUserModelID`; a binary in
 //! `~/.cargo/bin` has neither. The pattern that works on both is the same: shell out
-//! to the platform's scripting host and borrow its identity. Here that is `osascript`,
-//! so the banner is attributed to Script Editor and its delivery depends on Script
-//! Editor's own notification permission. `doctor` reports that rather than hiding it.
+//! to the platform's scripting host and borrow its identity.
+//!
+//! On macOS that is `osascript`, so the banner is attributed to Script Editor and its
+//! delivery depends on Script Editor's own notification permission. On Windows it is
+//! `powershell.exe`, whose AUMID the toast is raised under, so the banner says
+//! "Windows PowerShell" and Focus Assist or that entry's own notification setting can
+//! suppress it. `doctor` reports the borrowed identity rather than hiding it.
 //!
 //! A crate does not fix this. `notify-rust` hits the same AUMID requirement on Windows
 //! and binds the deprecated `NSUserNotification` on macOS; it moves the caveat behind
@@ -80,16 +84,104 @@ pub fn notify(urgency: Urgency, body: &str) -> Result<(), NotifyError> {
     ))
 }
 
-/// The Windows arm is a decision recorded in `scheduling.md` section 10, not code:
-/// a toast raised through `powershell` with PowerShell's own `AppUserModelID`. It is
-/// deliberately unwritten until there is a Windows machine to run it on, because
-/// unverified code that compiles is exactly the kind of thing this project keeps
-/// finding was wrong.
+/// Windows PowerShell's own `AppUserModelID`, which is what the toast is attributed
+/// to and whose notification setting decides whether it is shown.
+///
+/// `powershell.exe` and not `pwsh`: the WinRT projection these types need is in
+/// Windows PowerShell 5.1, and PowerShell 7 reaches it only through a compatibility
+/// shim that is not installed by default.
+#[cfg(windows)]
+const POWERSHELL_AUMID: &str =
+    r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe";
+
+/// Sends one notification.
 ///
 /// # Errors
 ///
+/// If PowerShell cannot be run or refuses. **Callers should not fail a run over
+/// this**: Focus Assist suppresses delivery, which is expected.
+#[cfg(windows)]
+pub fn notify(urgency: Urgency, body: &str) -> Result<(), NotifyError> {
+    let out = command(
+        "powershell",
+        &[
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &toast_script(urgency.title(), body),
+        ],
+        Timeout::QUICK,
+    )?;
+    if out.status.success() {
+        return Ok(());
+    }
+    Err(NotifyError::Rejected(
+        "powershell".to_owned(),
+        String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+    ))
+}
+
+/// The script that raises the toast.
+///
+/// The text crosses two parsers on its way in, so it is escaped for both: XML,
+/// because it becomes element content, and PowerShell, because the XML then sits in a
+/// single-quoted literal. Escaping for one and not the other is how a remote named
+/// `it's` or a path holding `&` would turn the document into a syntax error - or
+/// worse, into script.
+#[cfg(windows)]
+fn toast_script(title: &str, body: &str) -> String {
+    let toast = format!(
+        "<toast><visual><binding template=\"ToastText02\"><text id=\"1\">{}</text>\
+         <text id=\"2\">{}</text></binding></visual></toast>",
+        xml_escape(title),
+        xml_escape(body)
+    );
+    format!(
+        "$ErrorActionPreference = 'Stop'\n\
+         [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, \
+         ContentType = WindowsRuntime] | Out-Null\n\
+         $xml = [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, \
+         ContentType = WindowsRuntime]::new()\n\
+         $xml.LoadXml('{}')\n\
+         $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)\n\
+         [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{}')\
+         .Show($toast)\n",
+        powershell_literal(&toast),
+        POWERSHELL_AUMID
+    )
+}
+
+/// The five characters XML gives meaning to, plus the control characters XML 1.0
+/// cannot carry at all - a `\u{1}` in a remote name would otherwise make the document
+/// unparsable rather than making the banner look odd.
+#[cfg(windows)]
+fn xml_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            c if (c as u32) < 0x20 && !matches!(c, '\t' | '\n' | '\r') => out.push(' '),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// A single-quoted PowerShell string ends at the next `'`, and doubling is the only
+/// escape it has.
+#[cfg(windows)]
+fn powershell_literal(text: &str) -> String {
+    text.replace('\'', "''")
+}
+
+/// # Errors
+///
 /// Always [`NotifyError::Unsupported`].
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 pub fn notify(_urgency: Urgency, _body: &str) -> Result<(), NotifyError> {
     Err(NotifyError::Unsupported)
 }
@@ -99,11 +191,100 @@ pub fn notify(_urgency: Urgency, _body: &str) -> Result<(), NotifyError> {
 /// Deliberately **not** a delivery test: sending a notification to find out whether
 /// notifications work is a side effect nobody asked a health check for. `doctor
 /// --deep` sends one, and says so.
+#[cfg(target_os = "macos")]
 #[must_use]
 pub fn available() -> bool {
-    cfg!(target_os = "macos")
-        && command("osascript", &["-e", "return 1"], Timeout::QUICK)
-            .is_ok_and(|out| out.status.success())
+    command("osascript", &["-e", "return 1"], Timeout::QUICK).is_ok_and(|out| out.status.success())
+}
+
+/// As the macOS arm. Asks only that PowerShell runs - whether a toast is *shown*
+/// depends on Focus Assist and on the notification setting for PowerShell's own
+/// AppUserModelID, which is the same borrowed-identity caveat `doctor` reports there.
+#[cfg(windows)]
+#[must_use]
+pub fn available() -> bool {
+    command(
+        "powershell",
+        &["-NoProfile", "-NonInteractive", "-Command", "exit 0"],
+        Timeout::QUICK,
+    )
+    .is_ok_and(|out| out.status.success())
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+#[must_use]
+pub fn available() -> bool {
+    false
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::{Urgency, notify, toast_script, xml_escape};
+
+    /// Both parsers, in the order the text meets them.
+    #[test]
+    fn a_hostile_body_survives_xml_and_then_powershell() {
+        let script = toast_script("Tycho: backup failed", "remote 't7' & <drive> failed");
+        // XML first: nothing that could close an element is left as itself.
+        assert!(script.contains("&amp;"), "{script}");
+        assert!(script.contains("&lt;drive&gt;"), "{script}");
+        // Then PowerShell: the apostrophes XML turned into `&apos;` are gone, and the
+        // literal's own quotes are the only bare ones left.
+        assert!(!script.contains("'t7'"), "{script}");
+        assert_eq!(
+            script.matches("&apos;").count(),
+            2,
+            "both quotes became entities: {script}"
+        );
+    }
+
+    #[test]
+    fn a_control_character_cannot_reach_the_document() {
+        assert_eq!(xml_escape("a\u{1}b"), "a b");
+        assert_eq!(
+            xml_escape("keeps\tthe\nallowed\rones"),
+            "keeps\tthe\nallowed\rones"
+        );
+    }
+
+    /// The one that had never been run. Raising it is the whole point of the arm, and
+    /// a toast that compiles and is never fired is the mistake this project keeps
+    /// finding it made.
+    ///
+    /// Delivery is not asserted: Focus Assist may suppress it, which is expected and
+    /// is why the notification is the convenience rather than the contract. What is
+    /// asserted is that Windows accepted it - and `toast_script` is proved to fail
+    /// loudly by the malformed case below, so acceptance is not vacuous.
+    #[test]
+    fn a_toast_is_accepted_by_windows() {
+        notify(
+            Urgency::Info,
+            "tycho self-test: this banner came from the test suite",
+        )
+        .expect("Windows accepted the toast");
+    }
+
+    /// So that the test above means something: a document Windows will not parse
+    /// comes back as an error rather than as silence.
+    #[test]
+    fn a_document_windows_rejects_is_reported() {
+        let broken = "$ErrorActionPreference = 'Stop'\n\
+             [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, \
+             ContentType = WindowsRuntime] | Out-Null\n\
+             $xml = [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, \
+             ContentType = WindowsRuntime]::new()\n\
+             $xml.LoadXml('<toast><visual>')\n";
+        let out = crate::sys::process::command(
+            "powershell",
+            &["-NoProfile", "-NonInteractive", "-Command", broken],
+            crate::sys::process::Timeout::QUICK,
+        )
+        .expect("powershell runs");
+        assert!(
+            !out.status.success(),
+            "a malformed toast must not pass for a sent one"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -112,6 +293,7 @@ mod tests {
 
     /// A body carrying a quote would otherwise end the AppleScript literal early and
     /// turn the remainder into script. Remote names and paths reach this text.
+    #[cfg(target_os = "macos")]
     #[test]
     fn the_escape_rule_is_what_applescript_actually_accepts() {
         let escape = |text: &str| text.replace('\\', r"\\").replace('"', "\\\"");

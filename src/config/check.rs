@@ -520,8 +520,25 @@ fn validate_profile(
     Some(profile)
 }
 
+/// `~`, `$` and a leading separator on every platform; a drive letter as well on
+/// Windows, where `C:/backups` is the ordinary way to write an absolute path.
+///
+/// Without the drive case such an entry falls through to the glob arm, where it
+/// matches nothing and fires never - an ignore rule that silently does not apply,
+/// which is the failure mode this whole classification exists to avoid.
 fn looks_like_path(entry: &str) -> bool {
-    entry.starts_with('~') || entry.starts_with('$') || entry.starts_with('/')
+    if entry.starts_with(['~', '$', '/']) {
+        return true;
+    }
+    cfg!(windows) && (entry.starts_with('\\') || has_drive_letter(entry))
+}
+
+fn has_drive_letter(entry: &str) -> bool {
+    let mut chars = entry.chars();
+    matches!(
+        (chars.next(), chars.next()),
+        (Some(letter), Some(':')) if letter.is_ascii_alphabetic()
+    )
 }
 
 fn resolve(

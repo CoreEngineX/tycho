@@ -15,6 +15,13 @@ use tycho::restore::resolve::{self, Resolved};
 use tycho::state::State;
 use tycho::store::{Store, run};
 
+/// A path inside a TOML basic string needs every `\` escaped, and on Windows every
+/// separator is one. A person writing a config by hand would use a literal string;
+/// a fixture that interpolates a real path has to escape instead.
+fn toml_path(path: &Path) -> String {
+    path.display().to_string().replace('\\', "\\\\")
+}
+
 fn write(path: &Path, text: &str) {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).expect("mkdir");
@@ -50,7 +57,7 @@ fn fixture() -> Fixture {
     write(&repo.join("tracked.md"), "committed and untouched\n");
     write(&repo.join("edited.md"), "committed\n");
     write(&repo.join(".gitignore"), "secret.env\n");
-    git(&repo, &["init", "-q"]);
+    git(&repo, &["init", "-q", "-b", "main"]);
     git(&repo, &["add", "-A"]);
     git(
         &repo,
@@ -69,7 +76,7 @@ fn fixture() -> Fixture {
 
     let text = format!(
         "version = 1\n[[profile]]\nname = \"demo\"\nwatch = [\"{}\"]\nlocal_only = true\n",
-        root.display()
+        toml_path(&root)
     );
     let parsed = tycho::config::parse_with(&text, Some(Path::new("/nowhere")), |_| None)
         .expect("valid TOML");
@@ -204,7 +211,7 @@ fn the_longest_matching_repository_key_wins() {
     for name in ["proj", "proj/nested"] {
         let repo = root.join(name);
         write(&repo.join("f.txt"), &format!("{name}\n"));
-        git(&repo, &["init", "-q"]);
+        git(&repo, &["init", "-q", "-b", "main"]);
         git(&repo, &["add", "-A"]);
         git(
             &repo,
@@ -222,7 +229,7 @@ fn the_longest_matching_repository_key_wins() {
 
     let text = format!(
         "version = 1\n[[profile]]\nname = \"demo\"\nwatch = [\"{}\"]\nlocal_only = true\n",
-        root.display()
+        toml_path(&root)
     );
     let parsed = tycho::config::parse_with(&text, Some(Path::new("/nowhere")), |_| None)
         .expect("valid TOML");

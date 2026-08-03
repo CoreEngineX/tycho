@@ -403,8 +403,10 @@ fn rebuild(
 }
 
 fn read_recorded(store: &Store, backup: &Backup, key: &str) -> Result<Recorded, RestoreError> {
-    let path = Path::new(REPOS_PREFIX).join(key).join("REPO.txt");
-    let bytes = store.repo().blob_at(backup.commit(), &path)?;
+    // Assembled the way `capture` writes it rather than with `join`, which separates
+    // with `\` on Windows and asks git for a path the tree does not hold.
+    let path = format!("{REPOS_PREFIX}{key}/REPO.txt");
+    let bytes = store.repo().blob_at(backup.commit(), Path::new(&path))?;
     Ok(parse_repo_txt(&String::from_utf8_lossy(&bytes)))
 }
 

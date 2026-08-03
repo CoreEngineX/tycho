@@ -134,6 +134,29 @@ pub fn index_info_line(mode: FileMode, oid: Oid, path: &Path) -> Vec<u8> {
     line
 }
 
+/// Reads a path back out of git's `-z` output.
+///
+/// The inverse of what [`index_info_line`] writes, and the only place the two
+/// platforms genuinely differ. A Unix path is bytes, so any byte string is a path.
+/// A Windows path is UTF-16, and Git for Windows speaks UTF-8 on stdout, so bytes
+/// that are not UTF-8 name nothing the filesystem can hold - `None` rather than a
+/// lossy substitution, because a path that round-trips to a different name is how a
+/// restore writes to the wrong file.
+#[cfg(unix)]
+#[must_use]
+pub fn path_from_git(raw: &[u8]) -> Option<&Path> {
+    use std::os::unix::ffi::OsStrExt;
+
+    Some(Path::new(std::ffi::OsStr::from_bytes(raw)))
+}
+
+/// As the Unix arm; see it for why this is fallible here and not there.
+#[cfg(windows)]
+#[must_use]
+pub fn path_from_git(raw: &[u8]) -> Option<&Path> {
+    std::str::from_utf8(raw).ok().map(Path::new)
+}
+
 fn unhex(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
@@ -145,14 +168,15 @@ fn unhex(byte: u8) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FileMode, index_info_line, percent_component, percent_decode, stdin_paths_line};
+    use super::{
+        FileMode, index_info_line, path_from_git, percent_component, percent_decode,
+        stdin_paths_line,
+    };
     use crate::primitives::oid::Oid;
-    use std::ffi::OsStr;
-    use std::os::unix::ffi::OsStrExt;
     use std::path::Path;
 
     fn path(raw: &[u8]) -> &Path {
-        Path::new(OsStr::from_bytes(raw))
+        path_from_git(raw).expect("the fixture names something this platform can hold")
     }
 
     fn line(text: &[u8]) -> Vec<u8> {
@@ -243,7 +267,20 @@ mod tests {
             stdin_paths_line(path(b"caf\xc3\xa9")),
             line(br#""caf\303\251""#)
         );
+    }
+
+    /// A byte that is not UTF-8 names a file on Unix and names nothing on Windows,
+    /// which is why [`path_from_git`] is fallible on one platform and not the other.
+    #[cfg(unix)]
+    #[test]
+    fn a_path_that_is_not_utf8_still_encodes() {
         assert_eq!(stdin_paths_line(path(b"a\xffb")), line(br#""a\377b""#));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_path_that_is_not_utf8_is_refused_rather_than_mangled() {
+        assert!(path_from_git(b"a\xffb").is_none());
     }
 
     #[test]

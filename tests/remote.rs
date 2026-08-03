@@ -45,12 +45,19 @@ struct Fixture {
     state: State,
 }
 
+/// A path inside a TOML basic string needs every `\` escaped, and on Windows every
+/// separator is one. A person writing a config by hand would use a literal string;
+/// a fixture that interpolates a real path has to escape instead.
+fn toml_path(path: &Path) -> String {
+    path.display().to_string().replace('\\', "\\\\")
+}
+
 fn fixture(remote: &str) -> Fixture {
     let dir = tempfile::tempdir().expect("temp dir");
     write(&dir.path().join("A/one.md"), "one\n");
     write(&dir.path().join("A/sub/two.md"), "two\n");
 
-    let root = dir.path().display().to_string();
+    let root = toml_path(dir.path());
     let extra = if remote.is_empty() {
         "local_only = true\n"
     } else {
@@ -90,7 +97,7 @@ fn missing(name: &str, optional: bool) -> Fixture {
 /// The remote's path has to name the fixture's own temp directory, which only exists
 /// once the fixture does.
 fn rebuild(fixture: Fixture, name: &str, suffix: &str, optional: bool) -> Fixture {
-    let root = fixture.dir.path().display().to_string();
+    let root = toml_path(fixture.dir.path());
     let text = format!(
         "version = 1\n[[profile]]\nname = \"demo\"\nwatch = [\"{root}/A\"]\n\
          remotes = [{{ name = \"{name}\", path = \"{root}/{suffix}\", \
@@ -384,7 +391,7 @@ fn the_recovery_instructions_rebuild_a_repository_that_never_had_a_stash() {
     fs::create_dir_all(&source).expect("mkdir");
     write(&source.join("tracked.txt"), "committed content\n");
     for args in [
-        vec!["init", "-q"],
+        vec!["init", "-q", "-b", "main"],
         vec!["add", "-A"],
         vec![
             "-c",
@@ -421,7 +428,7 @@ fn the_recovery_instructions_rebuild_a_repository_that_never_had_a_stash() {
 
     // Step 4: the main fetch, exactly as the file writes it.
     let rebuilt = recovery.join("proj");
-    checked(&recovery, &["init", "-q", "proj"]);
+    checked(&recovery, &["init", "-q", "-b", "main", "proj"]);
     checked(
         &rebuilt,
         &["symbolic-ref", "HEAD", "refs/heads/__tycho_restore"],
@@ -444,10 +451,21 @@ fn the_recovery_instructions_rebuild_a_repository_that_never_had_a_stash() {
         "a fetch of globs must survive every one of them matching nothing: {out:?}"
     );
     checked(&rebuilt, &["checkout", "-q", "main"]);
-    assert_eq!(
-        fs::read_to_string(rebuilt.join("tracked.txt")).expect("the file came back"),
+    // The stored bytes, which is what the recovery has to have preserved. The working
+    // file is the operator's own `core.autocrlf`, and these instructions are followed
+    // with plain git rather than through Tycho's pins - so on Windows, where that
+    // setting defaults to `true`, the checkout lands CRLF. `disaster-recovery.md`
+    // records that; it is git's documented behaviour, not lost content.
+    let blob = checked(&rebuilt, &["cat-file", "blob", "HEAD:tracked.txt"]);
+    assert_eq!(blob, "committed content\n");
+
+    let working = fs::read_to_string(rebuilt.join("tracked.txt")).expect("the file came back");
+    let expected = if cfg!(windows) {
+        "committed content\r\n"
+    } else {
         "committed content\n"
-    );
+    };
+    assert_eq!(working, expected);
 
     // And the trap itself: the exact-ref stash refspec, on a repository with none.
     let out = git(
@@ -520,6 +538,27 @@ fn a_catch_up_push_yields_to_a_run_in_progress() {
     drop(held);
 }
 
+/// Ejecting a drive is simulated by renaming its folder, and Windows refuses to
+/// rename a directory while any handle under it is still open. Git leaves one for a
+/// moment after a push, so the first attempt can fail with `Access is denied` on a
+/// tree nothing is actually using.
+///
+/// Only the simulation needs this. Tycho never renames a remote - a real ejection is
+/// the volume going away, which needs no handle to be released.
+fn rename_when_windows_lets_go(from: &Path, to: &Path) {
+    let mut last = None;
+    for attempt in 0..50 {
+        match fs::rename(from, to) {
+            Ok(()) => return,
+            Err(error) => {
+                last = Some(error);
+                std::thread::sleep(std::time::Duration::from_millis(20 * (attempt + 1)));
+            }
+        }
+    }
+    panic!("plug it back in: {:?}", last.expect("at least one attempt"));
+}
+
 /// A remote that goes away and comes back is caught up by the next push, without the
 /// run having to know anything happened.
 ///
@@ -543,7 +582,7 @@ fn a_remote_that_returns_is_synced_again_by_the_next_push() {
         done[0].state
     );
 
-    fs::rename(&unplugged, &mount).expect("plug it back in");
+    rename_when_windows_lets_go(&unplugged, &mount);
     let done = fixture.push().expect("the lock was free");
     assert!(
         matches!(done[0].state, RemoteState::Synced { .. }),

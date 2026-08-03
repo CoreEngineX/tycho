@@ -2,6 +2,7 @@
 //! one.
 
 use std::borrow::Borrow;
+use std::ffi::OsString;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
@@ -125,9 +126,16 @@ impl Borrow<Path> for AbsPath {
     }
 }
 
-/// A path inside the store's tree: relative, with no `.git` component. Invariant 8
-/// says such a path is never written into the tree "asserted rather than assumed",
-/// so the assertion lives in this constructor and nowhere else.
+/// A path inside the store's tree: relative, separated by `/`, with no `.git`
+/// component. Invariant 8 says such a path is never written into the tree "asserted
+/// rather than assumed", so the assertion lives in this constructor and nowhere else.
+///
+/// The separator is part of the type's contract because a git tree path is always
+/// `/`-separated, on every platform. A `PathBuf` built from components is not: it
+/// uses the host separator, which on Windows is `\`, and `update-index --index-info`
+/// answers a `\` in a path by printing `Ignoring path` to stderr and **exiting 0**.
+/// That turns a whole run into an empty tree at exit 0, so the normalisation is here
+/// rather than at the three call sites that encode one.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TreePath(PathBuf);
 
@@ -174,7 +182,7 @@ impl TreePath {
         if components == 0 {
             return Err(TreePathError::Empty);
         }
-        Ok(Self(path.components().collect()))
+        Ok(Self(PathBuf::from(join_with_slash(path))))
     }
 
     #[must_use]
@@ -187,6 +195,24 @@ impl fmt::Display for TreePath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.pad(&self.0.to_string_lossy())
     }
+}
+
+/// Joins already-validated `Normal` components with `/`, never rewriting a byte
+/// inside one.
+///
+/// That distinction is the whole reason this is not a `replace('\\', "/")`: a
+/// backslash is a legal byte in a Unix filename and a reserved one in an NTFS name,
+/// so rewriting bytes would corrupt a Unix path to fix a Windows one. Joining leaves
+/// both correct, and on Unix produces exactly what `components().collect()` did.
+fn join_with_slash(path: &Path) -> OsString {
+    let mut out = OsString::new();
+    for (index, component) in path.components().enumerate() {
+        if index > 0 {
+            out.push("/");
+        }
+        out.push(component.as_os_str());
+    }
+    out
 }
 
 /// Whether any component is a `.git` marker, which must never reach the store tree.
@@ -243,20 +269,37 @@ fn expand_vars(input: &str, var: &impl Fn(&str) -> Option<String>) -> Result<Str
 #[cfg(test)]
 mod tests {
     use super::{AbsPath, PathError, TreePath, TreePathError, has_git_component};
-    use std::ffi::OsStr;
-    use std::os::unix::ffi::OsStrExt;
     use std::path::Path;
 
     fn env(name: &str) -> Option<String> {
         match name {
-            "HOME" => Some("/Users/tester".to_owned()),
+            "HOME" => Some(HOME.to_owned()),
             "USER" => Some("tester".to_owned()),
             _ => None,
         }
     }
 
+    /// A path needs a drive prefix to be absolute on Windows, so the fixtures carry
+    /// one and the expectations are written in the host's own separator - which is
+    /// what `AbsPath` normalises to and therefore what it must print.
+    #[cfg(unix)]
+    const HOME: &str = "/Users/tester";
+    #[cfg(windows)]
+    const HOME: &str = r"C:\Users\tester";
+
+    #[cfg(unix)]
+    const ROOT: &str = "/data";
+    #[cfg(windows)]
+    const ROOT: &str = r"C:\data";
+
+    fn joined(parts: &[&str]) -> String {
+        let mut out = std::path::PathBuf::from(HOME);
+        out.extend(parts);
+        out.display().to_string()
+    }
+
     fn parse(input: &str) -> Result<AbsPath, PathError> {
-        AbsPath::parse_with(input, Some(Path::new("/Users/tester")), env)
+        AbsPath::parse_with(input, Some(Path::new(HOME)), env)
     }
 
     fn parsed(input: &str) -> String {
@@ -265,16 +308,23 @@ mod tests {
 
     #[test]
     fn expands_tilde() {
-        assert_eq!(parsed("~/Books"), "/Users/tester/Books");
-        assert_eq!(parsed("~"), "/Users/tester");
-        assert_eq!(parsed("~/"), "/Users/tester");
+        assert_eq!(parsed("~/Books"), joined(&["Books"]));
+        assert_eq!(parsed("~"), HOME);
+        assert_eq!(parsed("~/"), HOME);
     }
 
     #[test]
     fn expands_only_the_allowed_variables() {
-        assert_eq!(parsed("$HOME/Books"), "/Users/tester/Books");
-        assert_eq!(parsed("${HOME}/Books"), "/Users/tester/Books");
-        assert_eq!(parsed("/data/${USER}/x"), "/data/tester/x");
+        assert_eq!(parsed("$HOME/Books"), joined(&["Books"]));
+        assert_eq!(parsed("${HOME}/Books"), joined(&["Books"]));
+        assert_eq!(
+            parsed(&format!("{ROOT}/${{USER}}/x")),
+            std::path::PathBuf::from(ROOT)
+                .join("tester")
+                .join("x")
+                .display()
+                .to_string()
+        );
     }
 
     #[test]
@@ -288,11 +338,11 @@ mod tests {
     #[test]
     fn an_unset_or_empty_variable_never_becomes_an_empty_string() {
         assert_eq!(
-            AbsPath::parse_with("$HOME/code", Some(Path::new("/h")), |_| Some(String::new())),
+            AbsPath::parse_with("$HOME/code", Some(Path::new(HOME)), |_| Some(String::new())),
             Err(PathError::VariableUnset("HOME".to_owned()))
         );
         assert_eq!(
-            AbsPath::parse_with("$HOME/code", Some(Path::new("/h")), |_| None),
+            AbsPath::parse_with("$HOME/code", Some(Path::new(HOME)), |_| None),
             Err(PathError::VariableUnset("HOME".to_owned()))
         );
     }
@@ -324,25 +374,43 @@ mod tests {
 
     #[test]
     fn normalises_redundant_components() {
-        assert_eq!(parsed("/a//b/"), "/a/b");
-        assert_eq!(parsed("/a/./b"), "/a/b");
+        let want = std::path::PathBuf::from(ROOT)
+            .join("b")
+            .display()
+            .to_string();
+        assert_eq!(parsed(&format!("{ROOT}//b/")), want);
+        assert_eq!(parsed(&format!("{ROOT}/./b")), want);
     }
 
     #[test]
     fn containment_compares_components_not_prefixes() {
-        let a = parse("/a").expect("valid");
-        assert!(a.contains(&parse("/a/b").expect("valid")));
+        let a = parse(ROOT).expect("valid");
+        assert!(a.contains(&parse(&format!("{ROOT}/b")).expect("valid")));
         assert!(a.contains(&a));
-        assert!(!a.contains(&parse("/ab").expect("valid")));
+        assert!(!a.contains(&parse(&format!("{ROOT}x")).expect("valid")));
     }
 
     #[test]
     fn from_absolute_takes_a_walked_path() {
-        let path = AbsPath::from_absolute(Path::new("/a/b")).expect("absolute");
-        assert_eq!(path.to_string(), "/a/b");
+        let full = std::path::PathBuf::from(ROOT).join("b");
+        let path = AbsPath::from_absolute(&full).expect("absolute");
+        assert_eq!(path.to_string(), full.display().to_string());
         assert_eq!(
             AbsPath::from_absolute(Path::new("b")),
             Err(PathError::Relative("b".to_owned()))
+        );
+    }
+
+    /// A rooted path with no drive is absolute on Unix and relative on Windows,
+    /// which is not a quirk to paper over: `\A` there names `A` on whichever drive
+    /// the process happens to be on, and a backup root that moves with the current
+    /// directory is exactly what `AbsPath` exists to refuse.
+    #[cfg(windows)]
+    #[test]
+    fn a_rooted_path_with_no_drive_is_refused() {
+        assert_eq!(
+            AbsPath::parse_with("/data/x", Some(Path::new(HOME)), env),
+            Err(PathError::Relative("/data/x".to_owned()))
         );
     }
 
@@ -375,11 +443,44 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_tree_path_keeps_hostile_bytes_intact() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
         let raw = OsStr::from_bytes(b"a\nb/c\td.md");
         let path = TreePath::parse(Path::new(raw)).expect("valid");
         assert_eq!(path.as_path().as_os_str(), raw);
+    }
+
+    /// A newline and a tab are legal in an NTFS name; `\` and `/` are not, so those
+    /// are the hostile bytes a Windows tree path can actually carry.
+    #[cfg(windows)]
+    #[test]
+    fn a_tree_path_keeps_hostile_bytes_intact() {
+        let path = TreePath::parse(Path::new("a\nb/c\td.md")).expect("valid");
+        assert_eq!(path.as_path().as_os_str(), "a\nb/c\td.md");
+    }
+
+    /// `update-index --index-info` answers a `\` separator by printing `Ignoring
+    /// path` and exiting 0, which turns a run into an empty tree at exit 0. A tree
+    /// path built from a native separator must never reach an encoder carrying one.
+    #[test]
+    fn a_tree_path_is_slash_separated_whatever_the_host_uses() {
+        let from_slash = TreePath::parse(Path::new("a/b/c.md")).expect("valid");
+        assert_eq!(from_slash.to_string(), "a/b/c.md");
+        assert!(
+            !from_slash
+                .as_path()
+                .as_os_str()
+                .as_encoded_bytes()
+                .contains(&b'\\')
+        );
+
+        let joined = Path::new("root").join("sub").join("c.md");
+        let from_join = TreePath::parse(&joined).expect("valid");
+        assert_eq!(from_join.to_string(), "root/sub/c.md");
     }
 
     #[test]

@@ -21,15 +21,28 @@ pub fn config_path() -> Result<AbsPath, PathError> {
     AbsPath::parse("~/.config/tycho/tycho.toml")
 }
 
-/// Where the data Apple's conventions do cover lives. Joined by hand rather than
-/// through `directories`, because `store.md`'s path table is the contract and a
+/// Where the data the platform's conventions do cover lives. Joined by hand rather
+/// than through `directories`, because `store.md`'s path table is the contract and a
 /// crate would have to be verified against it anyway.
 ///
+/// `~/AppData/Local` on Windows rather than `Roaming`: the store is a git repository
+/// that grows without bound, and Roaming is copied to a domain controller at every
+/// logon. `store.md` section 2 records the split.
+#[cfg(target_os = "macos")]
+const DATA_DIR: &str = "~/Library/Application Support/tycho";
+#[cfg(windows)]
+const DATA_DIR: &str = "~/AppData/Local/tycho";
+
+#[cfg(target_os = "macos")]
+const LOG_DIR: &str = "~/Library/Logs/tycho";
+#[cfg(windows)]
+const LOG_DIR: &str = "~/AppData/Local/tycho/logs";
+
 /// # Errors
 ///
 /// If there is no home directory.
 pub fn data_dir() -> Result<AbsPath, PathError> {
-    AbsPath::parse("~/Library/Application Support/tycho")
+    AbsPath::parse(DATA_DIR)
 }
 
 /// `<data>/store/<profile>.git`, unless the profile overrides the directory.
@@ -40,7 +53,7 @@ pub fn data_dir() -> Result<AbsPath, PathError> {
 pub fn store_path(profile: &str, override_dir: Option<&AbsPath>) -> Result<AbsPath, PathError> {
     let dir = match override_dir {
         Some(dir) => dir.clone(),
-        None => AbsPath::parse("~/Library/Application Support/tycho/store")?,
+        None => AbsPath::parse(&format!("{DATA_DIR}/store"))?,
     };
     AbsPath::from_absolute(&dir.as_path().join(format!("{profile}.git")))
 }
@@ -49,12 +62,12 @@ pub fn store_path(profile: &str, override_dir: Option<&AbsPath>) -> Result<AbsPa
 ///
 /// If there is no home directory.
 pub fn state_path() -> Result<AbsPath, PathError> {
-    AbsPath::parse("~/Library/Application Support/tycho/state.json")
+    AbsPath::parse(&format!("{DATA_DIR}/state.json"))
 }
 
 /// # Errors
 ///
 /// If there is no home directory.
 pub fn log_dir() -> Result<AbsPath, PathError> {
-    AbsPath::parse("~/Library/Logs/tycho")
+    AbsPath::parse(LOG_DIR)
 }

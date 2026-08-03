@@ -252,7 +252,16 @@ impl Store {
     pub fn index(&self, entries: &[IndexEntry]) -> Result<usize, StoreError> {
         let index = self.repo.scratch_index(self.index.clone())?;
         index.update(entries)?;
-        Ok(index.len()?)
+        // The count of what the run *meant* to store, not what the index reports
+        // back. Reading it back cannot detect an entry `update-index` dropped: the
+        // shortfall is then present in both numbers, `reconcile` compares them and
+        // finds them equal, and a run that stored nothing publishes at exit 0.
+        // Distinct paths, because two entries naming one path are one tree entry.
+        Ok(entries
+            .iter()
+            .map(|entry| &entry.path)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len())
     }
 
     /// Writes the index built by [`Store::index`] as a tree. Separate because the

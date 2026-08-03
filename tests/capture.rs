@@ -50,8 +50,15 @@ struct Fixture {
     state: State,
 }
 
+/// A path inside a TOML basic string needs every `\` escaped, and on Windows every
+/// separator is one. A person writing a config by hand would use a literal string;
+/// a fixture that interpolates a real path has to escape instead.
+fn toml_path(path: &Path) -> String {
+    path.display().to_string().replace('\\', "\\\\")
+}
+
 fn fixture(dir: TempDir) -> Fixture {
-    let root = dir.path().display().to_string();
+    let root = toml_path(dir.path());
     let text = format!(
         "version = 1\n[[profile]]\nname = \"demo\"\nwatch = [\"{root}/A\"]\nlocal_only = true\n"
     );

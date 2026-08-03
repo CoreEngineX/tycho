@@ -4,8 +4,8 @@
 //! silent backups, which is the failure this project exists to correct.
 
 use std::fs::{File, OpenOptions, TryLockError};
-use std::io::{self, Read, Write};
-use std::path::Path;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// What a contender learns about the run already in progress. Both fields are
@@ -33,6 +33,29 @@ pub enum LockError {
 #[derive(Debug)]
 pub struct LockGuard {
     _file: File,
+    stamp: PathBuf,
+}
+
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.stamp);
+    }
+}
+
+/// Where the holder records itself, beside the lock rather than inside it.
+///
+/// The lock file cannot carry its own holder's identity: a Windows lock is
+/// **mandatory**, so a contender reading the locked file gets `ERROR_LOCK_VIOLATION`
+/// rather than the stamp, and every contention message degrades to "a run is already
+/// in progress" with no pid and no time. Measured, not assumed - the read fails with
+/// raw OS error 33.
+///
+/// A stamp left behind by a process that died is never read: the lock it belonged to
+/// died with it, so the next contender takes the lock rather than asking who holds it.
+fn stamp_path(lock: &Path) -> PathBuf {
+    let mut name = lock.as_os_str().to_owned();
+    name.push(".holder");
+    PathBuf::from(name)
 }
 
 /// Takes the lock, or reports who holds it. Never blocks.
@@ -53,32 +76,30 @@ pub fn try_lock(path: &Path) -> Result<LockGuard, LockError> {
         .open(path)
         .map_err(io_error)?;
 
+    let stamp = stamp_path(path);
     match file.try_lock() {
         Ok(()) => {}
-        Err(TryLockError::WouldBlock) => return Err(LockError::Held(read_holder(path))),
+        Err(TryLockError::WouldBlock) => return Err(LockError::Held(read_holder(&stamp))),
         Err(TryLockError::Error(source)) => return Err(io_error(source)),
     }
 
-    // Recorded only once the lock is held, or a contender could read a file that
+    // Written only once the lock is held, so a contender never reads a stamp that
     // was truncated before its new contents landed.
-    file.set_len(0).map_err(io_error)?;
     let since = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or_default();
-    (&file)
+    let mut record = File::create(&stamp).map_err(io_error)?;
+    record
         .write_all(format!("{since} {}\n", std::process::id()).as_bytes())
         .map_err(io_error)?;
-    (&file).flush().map_err(io_error)?;
+    record.flush().map_err(io_error)?;
 
-    Ok(LockGuard { _file: file })
+    Ok(LockGuard { _file: file, stamp })
 }
 
-fn read_holder(path: &Path) -> Held {
-    let mut text = String::new();
-    if let Ok(mut file) = File::open(path) {
-        let _ = file.read_to_string(&mut text);
-    }
+fn read_holder(stamp: &Path) -> Held {
+    let text = std::fs::read_to_string(stamp).unwrap_or_default();
     let mut fields = text.split_whitespace();
     Held {
         since_unix: fields.next().and_then(|field| field.parse().ok()),

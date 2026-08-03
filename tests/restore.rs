@@ -15,6 +15,13 @@ use tycho::restore::{self, Wanted};
 use tycho::state::State;
 use tycho::store::{Store, run};
 
+/// A path inside a TOML basic string needs every `\` escaped, and on Windows every
+/// separator is one. A person writing a config by hand would use a literal string;
+/// a fixture that interpolates a real path has to escape instead.
+fn toml_path(path: &Path) -> String {
+    path.display().to_string().replace('\\', "\\\\")
+}
+
 /// The five gitattributes traps `store.md` section 3 names, plus the file that arms
 /// them. Every one is a file a user could plausibly have, and each defeats
 /// byte-exactness on the way *out* rather than the way in.
@@ -122,7 +129,7 @@ fn fixture() -> Fixture {
     let root = dir.path().join("A");
     let text = format!(
         "version = 1\n[[profile]]\nname = \"demo\"\nwatch = [\"{}\"]\nlocal_only = true\n",
-        root.display()
+        toml_path(&root)
     );
     let parsed = tycho::config::parse_with(&text, Some(Path::new("/nowhere")), |_| None)
         .expect("valid TOML");
@@ -264,7 +271,7 @@ fn a_repository_with_no_stash_comes_back_whole() {
     let mut fixture = fixture();
     let repo = fixture.root().join("proj");
     write(&repo.join("tracked.md"), b"committed\n");
-    checked(&repo, &["init", "-q"]);
+    checked(&repo, &["init", "-q", "-b", "main"]);
     commit(&repo, "first");
     checked(&repo, &["tag", "v1.0"]);
     checked(&repo, &["checkout", "-qb", "side"]);
@@ -312,7 +319,7 @@ fn a_repository_with_stashes_gets_all_of_them_back() {
     let mut fixture = fixture();
     let repo = fixture.root().join("proj");
     write(&repo.join("f.txt"), b"one\n");
-    checked(&repo, &["init", "-q"]);
+    checked(&repo, &["init", "-q", "-b", "main"]);
     commit(&repo, "first");
     for text in [b"two\n".as_slice(), b"three\n".as_slice()] {
         write(&repo.join("f.txt"), text);
@@ -341,6 +348,21 @@ fn a_repository_with_stashes_gets_all_of_them_back() {
     assert!(!rest.is_empty(), "the rest arrive as ordinary refs: {rest}");
 }
 
+/// A symlink, the shape `restore::overlay`'s conflict guard is written against.
+#[cfg(unix)]
+fn name_pointing_at_real_txt(at: &std::path::Path) {
+    std::os::unix::fs::symlink("real.txt", at).expect("symlink");
+}
+
+/// No symlink without a privilege here. What this test asserts is that the staging
+/// tree survives a restore, which does not turn on the link, so a regular file
+/// carrying the same name keeps the shape. The refusal itself is covered by
+/// `restore::overlay`'s own Windows test.
+#[cfg(windows)]
+fn name_pointing_at_real_txt(at: &std::path::Path) {
+    std::fs::write(at, "real.txt").expect("write");
+}
+
 /// The overlay refuses rather than resolves, and says what it refused. The refused
 /// file stays in the staging tree, which is why `.tycho/` is never deleted.
 #[test]
@@ -348,8 +370,8 @@ fn an_overlay_type_conflict_is_reported_and_the_material_is_still_there() {
     let mut fixture = fixture();
     let repo = fixture.root().join("proj");
     write(&repo.join("real.txt"), b"the link's target\n");
-    std::os::unix::fs::symlink("real.txt", repo.join("config")).expect("symlink");
-    checked(&repo, &["init", "-q"]);
+    name_pointing_at_real_txt(&repo.join("config"));
+    checked(&repo, &["init", "-q", "-b", "main"]);
     commit(&repo, "a symlink named config");
 
     // The same name, as an untracked regular file, is impossible on one machine - so
@@ -401,7 +423,7 @@ fn a_single_file_lands_where_you_named_it_whichever_source_answered() {
     let repo = fixture.root().join("proj");
     write(&repo.join("tracked.md"), b"committed\n");
     write(&repo.join(".gitignore"), b"secret.env\n");
-    checked(&repo, &["init", "-q"]);
+    checked(&repo, &["init", "-q", "-b", "main"]);
     commit(&repo, "first");
     write(&repo.join("secret.env"), b"TOKEN=hunter2\n");
     fixture.run();
@@ -455,7 +477,7 @@ fn a_bundle_clones_to_a_working_tree() {
     let mut fixture = fixture();
     let repo = fixture.root().join("proj");
     write(&repo.join("tracked.md"), b"committed\n");
-    checked(&repo, &["init", "-q"]);
+    checked(&repo, &["init", "-q", "-b", "main"]);
     commit(&repo, "first");
     fixture.run();
 
@@ -488,10 +510,24 @@ fn a_bundle_clones_to_a_working_tree() {
             .success(),
         "the bundle must clone"
     );
-    assert_eq!(
-        fs::read(cloned.join("tracked.md")).expect("read"),
-        b"committed\n"
-    );
+    // The blob, not the checkout. What Tycho guarantees is the bytes in the bundle;
+    // what a working tree ends up holding is the recipient's `core.autocrlf`, which
+    // defaults to `true` in Git for Windows and rewrites LF to CRLF on the way out.
+    // `cat-file blob` applies no filters, so this asks the guarantee on both.
+    let blob = checked(&cloned, &["cat-file", "blob", "HEAD:tracked.md"]);
+    assert_eq!(blob, "committed\n");
+
+    // And the checkout is what it is, recorded rather than hidden: on Windows a
+    // default clone of a byte-exact bundle still lands CRLF in the working tree.
+    let working = fs::read(cloned.join("tracked.md")).expect("read");
+    if cfg!(windows) {
+        assert_eq!(
+            working, b"committed\r\n",
+            "Git for Windows rewrites on checkout; if this changed, say so in store.md"
+        );
+    } else {
+        assert_eq!(working, b"committed\n");
+    }
 }
 
 /// `--at` selects the newest backup at or before the moment, which is what makes

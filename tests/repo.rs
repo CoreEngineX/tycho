@@ -3,7 +3,6 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use tycho::git::refs::{PushOutcome, Refspec};
@@ -16,6 +15,52 @@ use tycho::sys::process::{Git, Timeout};
 
 fn abs(path: &Path) -> AbsPath {
     AbsPath::from_absolute(path).expect("temp paths are absolute")
+}
+
+/// Makes the store readable by someone other than its owner.
+#[cfg(unix)]
+fn expose(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, PermissionsExt::from_mode(0o755)).expect("chmod");
+}
+
+/// `BUILTIN\Users` by SID, because `icacls` takes and prints localised account names
+/// and the SID is the same on every install.
+#[cfg(windows)]
+fn expose(path: &Path) {
+    icacls(&[
+        &path.display().to_string(),
+        "/grant",
+        "*S-1-5-32-545:(OI)(CI)(RX)",
+    ]);
+}
+
+/// Denies `Everyone`, which includes the owner, so the file genuinely cannot be
+/// opened - the NTFS equivalent of `chmod 000` and verified to refuse a read.
+#[cfg(windows)]
+fn make_unreadable(path: &Path) {
+    icacls(&[&path.display().to_string(), "/deny", "*S-1-1-0:(R)"]);
+}
+
+#[cfg(unix)]
+fn make_unreadable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, PermissionsExt::from_mode(0o000)).expect("chmod");
+}
+
+#[cfg(windows)]
+fn icacls(args: &[&str]) {
+    let out = std::process::Command::new("icacls")
+        .args(args)
+        .output()
+        .expect("icacls runs");
+    assert!(
+        out.status.success(),
+        "icacls {args:?}: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 fn new_store(dir: &TempDir, name: &str) -> Repo {
@@ -74,16 +119,26 @@ fn init_bare_writes_every_setting_store_md_requires() {
         "* -text -diff -filter -ident -export-subst -export-ignore\n"
     );
 
-    let mode = fs::metadata(repo.path().as_path())
-        .expect("stat")
-        .permissions()
-        .mode()
-        & 0o777;
-    assert_eq!(
-        mode & 0o077,
-        0,
-        "the store is readable by others: {mode:04o}"
-    );
+    // The same guarantee, asked in each platform's own terms: no group or other bits
+    // on Unix, no DACL trustee beyond the owner, SYSTEM and Administrators on NTFS.
+    // `Repo::open` is what enforces it, so opening is what proves it.
+    Repo::open(&abs(repo.path().as_path())).expect("a store only its owner can read opens");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mode = fs::metadata(repo.path().as_path())
+            .expect("stat")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "the store is readable by others: {mode:04o}"
+        );
+    }
 }
 
 #[test]
@@ -92,9 +147,9 @@ fn open_refuses_a_store_others_can_read() {
     let repo = new_store(&dir, "exposed.git");
     let path = abs(repo.path().as_path());
 
-    Repo::open(&path).expect("a 0700 store opens");
-    fs::set_permissions(path.as_path(), PermissionsExt::from_mode(0o755)).expect("chmod");
-    let error = Repo::open(&path).expect_err("a 0755 store is refused");
+    Repo::open(&path).expect("a store only its owner can read opens");
+    expose(path.as_path());
+    let error = Repo::open(&path).expect_err("a store others can read is refused");
     assert!(
         error.to_string().contains("gitignored"),
         "the refusal should say why: {error}"
@@ -115,7 +170,7 @@ fn a_batch_names_the_file_it_could_not_read_and_keeps_going() {
         paths.push(abs(&path));
     }
     // The middle one, because a naive implementation truncates everything after it.
-    fs::set_permissions(work.join("file2.txt"), PermissionsExt::from_mode(0o000)).expect("chmod");
+    make_unreadable(&work.join("file2.txt"));
 
     let outcomes = repo.hash_object_batch(&paths).expect("the batch completes");
     assert_eq!(
@@ -147,7 +202,16 @@ fn an_index_becomes_a_tree_that_holds_hostile_paths() {
     let repo = new_store(&dir, "store.git");
     let oid = repo.hash_blob(b"body\n").expect("blob");
 
-    let entries: Vec<IndexEntry> = ["plain.md", "a\nb.md", "dir/with space.md", "quote\".md"]
+    // `a\nb.md` and `quote".md` hold characters NTFS reserves, and git for Windows
+    // will not put such a path in the index. They stay in the Unix list because there
+    // they are ordinary names; `a_path_git_will_not_index_is_an_error_not_a_shortfall`
+    // covers what Windows does with them.
+    let hostile: &[&str] = if cfg!(windows) {
+        &["plain.md", "dir/with space.md"]
+    } else {
+        &["plain.md", "a\nb.md", "dir/with space.md", "quote\".md"]
+    };
+    let entries: Vec<IndexEntry> = hostile
         .iter()
         .map(|name| IndexEntry {
             mode: FileMode::Regular,
@@ -176,12 +240,50 @@ fn an_index_becomes_a_tree_that_holds_hostile_paths() {
         .iter()
         .map(|change| change.path.to_string())
         .collect();
+    assert!(names.contains(&"dir/with space.md".to_owned()), "{names:?}");
+    #[cfg(unix)]
     assert!(names.contains(&"a\nb.md".to_owned()), "{names:?}");
 
     let name = RefName::parse("refs/heads/main").expect("valid");
     repo.update_ref(&name, commit).expect("update-ref");
     let refs = repo.for_each_ref("refs/heads/").expect("for-each-ref");
     assert_eq!(refs.get(&name), Some(&commit));
+}
+
+/// The trapdoor under every capture on Windows.
+///
+/// `update-index --index-info` answers a path holding a character NTFS reserves by
+/// printing `Ignoring path` and **exiting 0**. A caller reading only the status
+/// writes a tree short of its plan - the empty tree, if every path was refused - and
+/// publishes it as a backup. `\` is in that set, and a `PathBuf` built by `join` is
+/// `\`-separated here, so this is one `TreePath` slip away rather than exotic.
+#[cfg(windows)]
+#[test]
+fn a_path_git_will_not_index_is_an_error_not_a_shortfall() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let repo = new_store(&dir, "store.git");
+    let oid = repo.hash_blob(b"body\n").expect("blob");
+
+    let index = repo
+        .scratch_index(dir.path().join("scratch-index"))
+        .expect("index");
+    let error = index
+        .update(&[IndexEntry {
+            mode: FileMode::Regular,
+            oid,
+            path: tree_path("quote\".md"),
+        }])
+        .expect_err("a refused path must not pass for a stored one");
+
+    assert!(
+        error.to_string().contains("did not fail doing it"),
+        "the refusal must name itself: {error}"
+    );
+    assert_eq!(
+        index.len().expect("count"),
+        0,
+        "nothing was stored, which is what the error is about"
+    );
 }
 
 #[test]

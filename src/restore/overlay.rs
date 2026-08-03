@@ -28,6 +28,14 @@ pub enum Reason {
     WouldWriteThroughSymlink,
     /// One side is a file and the other a directory.
     TypeMismatch,
+    /// Windows refused the link: creating one needs `SeCreateSymbolicLinkPrivilege`,
+    /// which a normal account holds only under Developer Mode or elevation.
+    ///
+    /// Reported rather than written as a regular file holding the target path. That
+    /// substitution is what Git for Windows does under `core.symlinks=false`, and it
+    /// is the one thing this module exists to refuse: it puts a file where a link
+    /// belonged, and the next capture would store it as one.
+    SymlinkNotPermitted,
 }
 
 impl std::fmt::Display for Reason {
@@ -35,6 +43,9 @@ impl std::fmt::Display for Reason {
         f.pad(match self {
             Self::WouldWriteThroughSymlink => "a symlink in the checkout has this name",
             Self::TypeMismatch => "one side is a file and the other a directory",
+            Self::SymlinkNotPermitted => {
+                "creating a symlink needs Developer Mode or an elevated process"
+            }
         })
     }
 }
@@ -94,13 +105,21 @@ fn walk(from: &Path, to: &Path, applied: &mut Applied) -> std::io::Result<()> {
             FileKind::Symlink => {
                 let target = fs::read_link(&source)?;
                 if destination.symlink_metadata().is_ok() {
-                    fs::remove_file(&destination)?;
+                    remove_existing(&destination)?;
                 }
                 if let Some(parent) = destination.parent() {
                     fs::create_dir_all(parent)?;
                 }
-                std::os::unix::fs::symlink(&target, &destination)?;
-                applied.files += 1;
+                match symlink(&source, &target, &destination) {
+                    Ok(()) => applied.files += 1,
+                    Err(error) if refused_for_privilege(&error) => {
+                        applied.conflicts.push(Conflict {
+                            path: destination,
+                            reason: Reason::SymlinkNotPermitted,
+                        });
+                    }
+                    Err(error) => return Err(error),
+                }
             }
             FileKind::Regular { .. } => {
                 if let Some(parent) = destination.parent() {
@@ -114,6 +133,51 @@ fn walk(from: &Path, to: &Path, applied: &mut Applied) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// A directory symlink is removed by `remove_dir` on Windows and `remove_file`
+/// everywhere else, and neither call touches what the link points at.
+fn remove_existing(destination: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTypeExt;
+
+        if destination.symlink_metadata()?.file_type().is_symlink_dir() {
+            return fs::remove_dir(destination);
+        }
+    }
+    fs::remove_file(destination)
+}
+
+#[cfg(unix)]
+fn symlink(_source: &Path, target: &Path, destination: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, destination)
+}
+
+/// Windows needs to be told at creation time whether the link names a directory, and
+/// a dangling link cannot be probed for it - so the answer comes from what the source
+/// link itself is, which is the only reading that survives a target that is not there.
+#[cfg(windows)]
+fn symlink(source: &Path, target: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::fs::FileTypeExt;
+
+    if source.symlink_metadata()?.file_type().is_symlink_dir() {
+        std::os::windows::fs::symlink_dir(target, destination)
+    } else {
+        std::os::windows::fs::symlink_file(target, destination)
+    }
+}
+
+#[cfg(unix)]
+const fn refused_for_privilege(_error: &std::io::Error) -> bool {
+    false
+}
+
+/// `ERROR_PRIVILEGE_NOT_HELD`. Matched on the raw code because `io::ErrorKind` maps
+/// it to `Uncategorized`, which is measured rather than assumed.
+#[cfg(windows)]
+fn refused_for_privilege(error: &std::io::Error) -> bool {
+    error.raw_os_error() == Some(1314)
 }
 
 /// What is already at the destination decides, and `symlink_metadata` is what asks
@@ -150,8 +214,40 @@ mod tests {
         fs::write(path, text).expect("write");
     }
 
+    /// A junction, because `SeCreateSymbolicLinkPrivilege` is not held by a normal
+    /// account and a junction is the link a Windows user has without it. `std`
+    /// reports one as `is_symlink`, which is what these tests turn on.
+    #[cfg(windows)]
+    fn link_to_dir(link: &Path, target: &Path) {
+        use crate::sys::process::{Timeout, command};
+
+        let made = command(
+            "cmd",
+            &[
+                "/c",
+                "mklink",
+                "/J",
+                link.to_str().expect("temp paths are utf-8"),
+                target.to_str().expect("temp paths are utf-8"),
+            ],
+            Timeout::QUICK,
+        )
+        .expect("mklink runs");
+        assert!(
+            made.status.success(),
+            "mklink /J: {}",
+            String::from_utf8_lossy(&made.stdout)
+        );
+    }
+
+    #[cfg(unix)]
+    fn link_to_dir(link: &Path, target: &Path) {
+        std::os::unix::fs::symlink(target, link).expect("symlink");
+    }
+
     /// The failure `cp -R` produces silently: the link's target gets the content and a
     /// file appears where none existed on the source machine.
+    #[cfg(unix)]
     #[test]
     fn a_symlink_in_the_checkout_is_never_written_through() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -197,6 +293,7 @@ mod tests {
         assert_eq!(applied.files, 1);
     }
 
+    #[cfg(unix)]
     #[test]
     fn an_overlay_symlink_is_recreated_as_a_symlink() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -211,6 +308,38 @@ mod tests {
         );
     }
 
+    /// Without `SeCreateSymbolicLinkPrivilege` the link cannot be recreated. What
+    /// must not happen is a silent skip, or a regular file holding the target path
+    /// where a link belonged - so this asserts the conflict is reported and that
+    /// nothing was written at the name.
+    #[cfg(windows)]
+    #[test]
+    fn a_link_windows_will_not_recreate_is_reported_rather_than_skipped() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (from, to) = (dir.path().join("overlay"), dir.path().join("checkout"));
+        let target = dir.path().join("real");
+        fs::create_dir_all(&target).expect("mkdir");
+        fs::create_dir_all(&from).expect("mkdir");
+        link_to_dir(&from.join("link"), &target);
+
+        let applied = apply(&from, &to).expect("apply");
+        assert_eq!(
+            applied.conflicts.len(),
+            1,
+            "a refused link must be reported: {applied:?}"
+        );
+        assert_eq!(
+            applied.conflicts[0].reason,
+            Reason::SymlinkNotPermitted,
+            "{applied:?}"
+        );
+        assert_eq!(applied.files, 0);
+        assert!(
+            to.join("link").symlink_metadata().is_err(),
+            "nothing may be written where the link belonged"
+        );
+    }
+
     /// A symlink to a directory must not be walked into, or the copy fabricates the
     /// target's contents at a path that never held them.
     #[test]
@@ -222,18 +351,15 @@ mod tests {
             "should not be copied\n",
         );
         fs::create_dir_all(&from).expect("mkdir");
-        std::os::unix::fs::symlink(dir.path().join("real"), from.join("link")).expect("symlink");
+        link_to_dir(&from.join("link"), &dir.path().join("real"));
 
         let applied = apply(&from, &to).expect("apply");
-        assert!(
-            to.join("link")
-                .symlink_metadata()
-                .expect("stat")
-                .is_symlink()
-        );
+        // Windows refuses to recreate the link, which is its own reported outcome.
+        // What both platforms must agree on is that the target was never walked.
         assert_eq!(
-            applied.files, 1,
-            "walking the link would have copied the target's contents too"
+            applied.files + applied.conflicts.len(),
+            1,
+            "walking the link would have copied the target's contents too: {applied:?}"
         );
         // The path `to/link/inside.txt` resolves *through* the link, so its existence
         // proves nothing. What proves it is that nothing was written into the target.

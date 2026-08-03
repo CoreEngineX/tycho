@@ -154,6 +154,19 @@ pub fn classify(path: &Path) -> Result<RemoteKind, RemoteError> {
 /// # Errors
 ///
 /// If the glob matches more than one directory, or none at all.
+/// Splitting on `/` alone finds no parent in `C:\Users\me\GoogleDrive-*\Backups`, so
+/// the search reads the current directory instead and every glob remote resolves to
+/// nothing. `std::path::is_separator` is what knows which characters count here.
+fn rsplit_separator(text: &str) -> Option<(&str, &str)> {
+    text.rfind(std::path::is_separator)
+        .map(|at| (&text[..at], &text[at + 1..]))
+}
+
+fn split_separator(text: &str) -> Option<(&str, &str)> {
+    text.find(std::path::is_separator)
+        .map(|at| (&text[..at], &text[at + 1..]))
+}
+
 pub fn resolve(path: &AbsPath) -> Result<PathBuf, RemoteError> {
     let text = path.as_path().to_string_lossy().into_owned();
     if !text.contains('*') {
@@ -162,8 +175,8 @@ pub fn resolve(path: &AbsPath) -> Result<PathBuf, RemoteError> {
 
     let mut matches: Vec<PathBuf> = Vec::new();
     if let Some((before, after)) = text.split_once('*') {
-        let (parent, prefix) = before.rsplit_once('/').unwrap_or((".", before));
-        let (suffix, rest) = after.split_once('/').unwrap_or((after, ""));
+        let (parent, prefix) = rsplit_separator(before).unwrap_or((".", before));
+        let (suffix, rest) = split_separator(after).unwrap_or((after, ""));
         if let Ok(listing) = std::fs::read_dir(parent) {
             for entry in listing.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();

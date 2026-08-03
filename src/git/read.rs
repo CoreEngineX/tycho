@@ -1,11 +1,10 @@
 //! Reading back what was stored.
 
 use crate::git::repo::{Repo, RepoError};
+use crate::primitives::encode::path_from_git;
 use crate::primitives::oid::Oid;
 use crate::primitives::path::TreePath;
 use crate::sys::process::Timeout;
-use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,8 +107,9 @@ impl Repo {
                     )));
                 }
             };
-            let path = TreePath::parse(Path::new(OsStr::from_bytes(path)))
-                .map_err(|error| RepoError::Unparsable(error.to_string()))?;
+            let path = path_from_git(path).ok_or_else(|| unreadable_path(path))?;
+            let path =
+                TreePath::parse(path).map_err(|error| RepoError::Unparsable(error.to_string()))?;
             changes.push(Change { status, path });
         }
         Ok(changes)
@@ -142,8 +142,8 @@ impl Repo {
             .split(|&byte| byte == 0)
             .filter(|field| !field.is_empty())
             .map(|field| {
-                TreePath::parse(Path::new(OsStr::from_bytes(field)))
-                    .map_err(|error| RepoError::Unparsable(error.to_string()))
+                let path = path_from_git(field).ok_or_else(|| unreadable_path(field))?;
+                TreePath::parse(path).map_err(|error| RepoError::Unparsable(error.to_string()))
             })
             .collect()
     }
@@ -250,6 +250,13 @@ impl Scope<'_> {
             Self::Glob(pattern) => format!("--glob={pattern}"),
         }
     }
+}
+
+fn unreadable_path(raw: &[u8]) -> RepoError {
+    RepoError::Unparsable(format!(
+        "git printed a path this platform cannot name: {}",
+        String::from_utf8_lossy(raw)
+    ))
 }
 
 /// One commit of a captured repository's own history, for `history --path`.

@@ -15,8 +15,7 @@ use crate::primitives::refs::find_collisions;
 use crate::store::Store;
 use crate::sys::fs::{FileKind, classify_path};
 use crate::sys::process::{Git, RunError, Timeout};
-use std::ffi::{OsStr, OsString};
-use std::os::unix::ffi::OsStrExt as _;
+use std::ffi::OsString;
 use std::path::Path;
 
 /// What a repository looks like right now, for the dry run's head and state columns.
@@ -299,7 +298,15 @@ fn overlay(source: &Path, repo: &RepoRoot, rules: &RuleTree, nested: &[AbsPath])
         if status.starts_with(b"R") || status.starts_with(b"C") {
             let _ = fields.next();
         }
-        let full = source.join(Path::new(OsStr::from_bytes(path)));
+        let Some(relative) = crate::primitives::encode::path_from_git(path) else {
+            contribution.warnings.push(format!(
+                "{}: git named a path this platform cannot represent: {}",
+                source.display(),
+                String::from_utf8_lossy(path)
+            ));
+            continue;
+        };
+        let full = source.join(relative);
         if path.ends_with(b"/") {
             expand(&mut contribution, &full, source, repo, rules, nested);
         } else {

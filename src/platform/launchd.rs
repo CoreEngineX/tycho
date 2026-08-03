@@ -27,6 +27,8 @@ pub enum LaunchdError {
         label: String,
         detail: String,
     },
+    #[error("launchd is not the scheduler on this platform")]
+    Unavailable,
 }
 
 /// The publisher's namespace, not the person running it. `com.apple.*` and
@@ -92,6 +94,7 @@ pub fn agents_dir() -> Result<AbsPath, PathError> {
 /// # Errors
 ///
 /// If there is no home directory, or it cannot be read.
+#[cfg(unix)]
 pub fn uid() -> Result<u32, LaunchdError> {
     use std::os::unix::fs::MetadataExt as _;
     let home = std::env::home_dir().ok_or(PathError::NoHome)?;
@@ -100,6 +103,18 @@ pub fn uid() -> Result<u32, LaunchdError> {
         source,
     })?;
     Ok(meta.uid())
+}
+
+/// There is no uid here and no `launchctl` to hand one to. The plist generation above
+/// is pure text and stays compiled so `tests/launchd.rs` still checks it, but nothing
+/// that talks to launchd can run - `platform::schtasks` is the Windows lifecycle.
+///
+/// # Errors
+///
+/// Always [`LaunchdError::Unavailable`].
+#[cfg(not(unix))]
+pub fn uid() -> Result<u32, LaunchdError> {
+    Err(LaunchdError::Unavailable)
 }
 
 /// Escapes the five characters XML gives meaning to.
@@ -428,18 +443,18 @@ mod tests {
 
     /// launchd sends output to `/dev/null` when the path is absent, which is a
     /// silent-failure surface in a tool whose thesis is that failure is loud.
+    ///
+    /// The literal path is macOS' own, so this asks only that both streams are named
+    /// and that they are named differently - the part that is about the generator
+    /// rather than about where this machine keeps its logs.
     #[test]
     fn both_output_paths_are_set() {
         let agent = Agent::Backup("demo".to_owned());
         let plist = backup_plist(&job(&agent, &["run", "demo"]), sunday_noon());
-        assert!(
-            plist.contains("/Library/Logs/tycho/demo.out.log"),
-            "{plist}"
-        );
-        assert!(
-            plist.contains("/Library/Logs/tycho/demo.err.log"),
-            "{plist}"
-        );
+        assert!(plist.contains("demo.out.log"), "{plist}");
+        assert!(plist.contains("demo.err.log"), "{plist}");
+        assert!(plist.contains("<key>StandardOutPath</key>"), "{plist}");
+        assert!(plist.contains("<key>StandardErrorPath</key>"), "{plist}");
     }
 
     #[test]
