@@ -7,14 +7,33 @@ use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-/// The mark: a T crossed by an orbit. ASCII only, because `--help` is read through
-/// pipes and log files as often as on a terminal.
-const LOGO: &str = r"  ___________
-       |
-    .--+--.
-   (   |   )
-    `--+--'
-       |";
+/// The mark from `docs/logo.svg`, rendered. ASCII only, because `--help` is read
+/// through pipes and log files as often as on a terminal.
+const LOGO: &str = r"
+                      :-=*##%%%%%%%%#**=-:
+                  +#%@@@@%%%%@@@@@@%%%@@@@@%#=
+ .-===--:..       =%+=:.     .%@@%.     .-=*%.
+#@@+..                        +@@+
++@@-                          +@@+
+ -%@*.                        *@@+
+   =%@#:                      *@@+          ......
+     :#@@+.                   *@@*       ...:::-=+##+.
+        =#@%+:                *@@*                 =@@-
+           =#@@*-             *@@*                 -@@=
+              -*@@#=.         *@@*                =@@+
+                 .+#@@*-.     *@@*              =%@#:
+                     :*%@%*-.  :*+           :*@@*:
+             .:          -*%@%*-.        .-*@@#=        ..
+            +-              .-+#%@#+-.   +##-             :-
+           %-                   ..-*%@%#+-.                 =+
+          #@.              .-*%@@*-   .-*%%@%*+-.            -%.
+          *@@*-:....:-=+#%@@@%*-:.         .-+*%%%%#*+-::...:+@%
+           -*%@@@@@@@@%#*=-.  .=*=                :-=+*##%%%%#+.
+                              *@@*
+                              *@@+
+                              *@@+
+                              *@@+
+                              +@@+";
 
 #[derive(Debug, Parser)]
 #[command(name = "tycho", version, about, before_help = LOGO)]

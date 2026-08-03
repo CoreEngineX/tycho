@@ -1,5 +1,7 @@
 # tycho
 
+<img src="docs/logo.svg" alt="Tycho" width="132">
+
 A backup daemon that treats git as the storage format rather than as one of the
 things being backed up.
 
