@@ -1,12 +1,16 @@
 # Walkthrough: install to disaster and back
 
-The whole lifecycle as terminal sessions - install, first backup, a month of
-ordinary use, recovering one damaged file, and recovering from a destroyed machine.
+The whole lifecycle as terminal sessions - install, first backup, ordinary use,
+recovering one damaged file, and recovering from a destroyed machine.
 
 **This is the designed interface, not a recording of working software.** No code
 exists yet. It is here so the UX can be argued with before it is built, and so the
-build has something concrete to match. The git mechanics underneath every step in
-part 6 have been executed for real and are recorded in `disaster-recovery.md`.
+build has something concrete to match. The git mechanics underneath section 8 have
+been executed for real and are recorded in `disaster-recovery.md`, with that
+document's verification scope stated precisely at its top.
+
+Timeline for every example below: installed Saturday 2026-08-01, weekly schedule on
+Sunday at 12:00, "now" in sections 5 onward is Monday 2026-11-02.
 
 ---
 
@@ -34,23 +38,26 @@ checkout, so deleting the source directory later breaks nothing.
 $ tycho config init
 wrote  ~/.config/tycho/tycho.toml
 
-detected cloud folders, added as commented-out remotes:
-  ~/Library/CloudStorage/GoogleDrive-Acct/My Drive
-  ~/Library/CloudStorage/OneDrive-Personal
+cloud folders found under ~/Library/CloudStorage, listed as commented-out remotes:
+  GoogleDrive-Acct/My Drive
+  OneDrive-Personal
+  OneDrive-Work
 
-skipped, looks like an institutional account:
-  ~/Library/CloudStorage/OneDrive-Work
+None are enabled. Uncomment the ones you intend to write to.
 
 edit the file, then run: tycho config check
 ```
 
-The Work account is detected and deliberately left out. A backup tool that
-helpfully starts writing company data into a university account would be doing
-something nobody asked for.
+Every detected folder is listed and **none is enabled**. An earlier draft had
+`config init` silently skip the university account as "looks like an institutional
+account" - an unspecified heuristic making a data-governance decision. Listing
+everything and enabling nothing puts that decision where it belongs.
 
 Edit it into shape:
 
 ```toml
+version = 1
+
 [[profile]]
 name = "coreenginex"
 
@@ -64,7 +71,7 @@ ignore = [
 ]
 
 remotes = [
-  { name = "gdrive",   path = "~/Library/CloudStorage/GoogleDrive-*/My Drive/CoreEngineX-Backups" },
+  { name = "gdrive",   path = "~/Library/CloudStorage/GoogleDrive-Acct/My Drive/CoreEngineX-Backups" },
   { name = "onedrive", path = "~/Library/CloudStorage/OneDrive-Personal/CoreEngineX-Backups" },
   { name = "t7",       path = "/Volumes/T7/tycho", optional = true },
 ]
@@ -72,9 +79,13 @@ remotes = [
 schedule = { weekly = { day = "sunday", at = "12:00" } }
 ```
 
+The Google Drive path is written out in full rather than globbed. A glob matching
+more than one account directory is a hard error, and this machine has two OneDrive
+accounts, so the habit is worth forming.
+
 ```text
 $ tycho config check
-coreenginex    2 roots, 1 ignore, 3 remotes, weekly Sun 12:00
+coreenginex    2 roots, 1 ignore, 0 reincludes, 3 remotes, weekly Sun 12:00
 
 ok, no errors
 ```
@@ -97,6 +108,7 @@ repositories                        head          state
   CoreEngineX/org                   main aef686f  1 untracked
   CoreEngineX/org/handbook      main 1930b99  clean
   CoreEngineX/products/a sibling project   dev  41c8ee2  3 modified
+                                                  and 9 more
 
 excluded                                          reason
 ----------------------------------------------------------------------
@@ -105,21 +117,26 @@ excluded                                          reason
   **/target                                       default junk
 
 ----------------------------------------------------------------------
-  would write   12 repositories                       8,538    1.53 GB
+  to read      8,538 files in 12 repositories        1.53 GB
+  to write     estimated new objects                  412 MB
 ```
 
-**Do not skip this on a new profile.** The store keeps history forever, so a missing
-ignore rule cannot be fixed retroactively - only going forward. This is the moment
-to notice that a 38 GB build cache would have been included.
+**Do not skip this on a new profile.** The store keeps history, so a missing ignore
+rule cannot be fixed retroactively - only going forward. This is the moment to
+notice that a 38 GB build cache would have been included, or that an ignore path you
+typed is in the `matched nothing` list.
+
+Twelve repositories from two roots, because repository discovery is recursive:
+`org` is itself a repository and its four submodules are found inside it.
 
 ## 4. First backup
 
 ```text
 $ tycho run coreenginex
   capture   8,538 files in 12 repositories                     1.53 GB
-  commit    8f2a10c  backup 2026-08-02 14:22 UTC
-  push      gdrive      ok, verified                           1.53 GB
-  push      onedrive    ok, verified                           1.53 GB
+  commit    8f2a10c  backup 2026-08-01 14:22 UTC
+  push      gdrive      ok, all refs verified                  412 MB
+  push      onedrive    ok, all refs verified                  412 MB
   push      t7          skipped, not mounted
 
 done in 3m 41s, 1 remote behind
@@ -131,17 +148,22 @@ Put it on a schedule:
 
 ```text
 $ tycho service install coreenginex
-wrote   ~/Library/LaunchAgents/com.coreenginex.tycho.coreenginex.plist
+created ~/Library/Logs/tycho/
+wrote   ~/Library/LaunchAgents/com.coreenginex.tycho.profile.coreenginex.plist
 wrote   ~/Library/LaunchAgents/com.coreenginex.tycho.catchup.plist
 loaded  both agents
 
-next backup   Sunday 2026-08-09 12:00
+next backup   Sunday 2026-08-02 12:00
 catch-up      on every mount, and hourly
 ```
 
-Two agents. The first captures on the schedule. The second only pushes what already
-exists, and exists so an unplugged drive catches up when you plug it in rather than
-at the next weekly backup.
+Two agents. The first captures on the schedule, one per profile. The second only
+pushes what already exists, so an unplugged drive catches up when you plug it in
+rather than at the next weekly backup.
+
+The `profile.` infix in the label is not decoration - without it a profile named
+`catchup` would produce exactly the second agent's label and one would silently
+displace the other.
 
 ## 5. Ordinary use
 
@@ -151,27 +173,25 @@ Plug the T7 in. Nothing is typed - `StartOnMount` fires the catch-up agent:
 $ tycho status coreenginex
 tycho 1.0.0
 
-coreenginex                                   next run  Sun 12:00, in 6d 21h
-  1 backup since 2026-08-02, newest today 14:22, store 1.4 GB
+coreenginex                                    next run  Sun 12:00, in 6d 2h
+  14 backups since 2026-08-02, newest yesterday 12:00, store 1.2 GB
 
-  gdrive     ok          pushed today 14:22            verified
-  onedrive   ok          pushed today 14:22            verified
-  t7         ok          pushed today 14:31            verified
+  gdrive     ok             pushed yesterday 12:00                  verified
+  onedrive   ok             pushed yesterday 12:00                  verified
+  t7         ok             pushed today 09:31                      verified
 ```
-
-A month later:
 
 ```text
 $ tycho history coreenginex -n 4
 
 when                commit    summary                              written
 --------------------------------------------------------------------------
-  today 12:00       3e01aa9   14 changed, 2 added, 3 repos moved     41 MB
-  2026-08-23 12:00  b71f0c2   6 changed, 1 deleted                  8.2 MB
-  2026-08-16 12:00  aa7d4e1   no changes                                0 B
-  2026-08-09 12:00  1c93bb7   112 changed, 9 added                  204 MB
+  yesterday 12:00   8f2a10c   14 changed, 2 added, 3 repos moved     41 MB
+  2026-10-26 12:00  1c93bb7   no changes                               0 B
+  2026-10-19 12:00  aa7d4e1   112 changed, 9 added, 1 deleted       204 MB
+  2026-10-12 12:00  4e10f92   2 changed                             1.1 MB
 --------------------------------------------------------------------------
-                              5 backups since 2026-08-02             1.4 GB
+                              14 backups since 2026-08-02           1.2 GB
 ```
 
 The `no changes` row is deliberate. A week with nothing to say still gets a commit,
@@ -180,7 +200,7 @@ backup did not run" - and a year of the second going unnoticed is why this exist
 
 ## 6. One file goes wrong
 
-A bad redirect empties a file:
+A bad redirect empties a file inside the `org` repository:
 
 ```text
 $ > ~/Developer/CoreEngineX/org/notes.md
@@ -188,41 +208,49 @@ $ wc -c ~/Developer/CoreEngineX/org/notes.md
        0 /Users/you/Developer/CoreEngineX/org/notes.md
 ```
 
-Find which backups touched it:
+**This file lives inside a captured repository**, which is the normal case here and
+the case that decides how the restore works. Its committed content is not a path in
+the store tree at all - it is in the object database under `refs/tycho/*`. Tycho
+resolves that automatically, and says which of the three sources answered:
 
 ```text
 $ tycho history coreenginex --path CoreEngineX/org/notes.md
 
-when                commit    summary                              written
+resolved  CoreEngineX/org  is a captured repository
+          notes.md is tracked and clean, so this is that repository's history
+
+when                commit    summary
 --------------------------------------------------------------------------
-  today 12:00       3e01aa9   notes.md changed                      4.1 KB
-  2026-08-16 12:00  b71f0c2   notes.md changed                      3.8 KB
-  2026-08-09 12:00  1c93bb7   notes.md added                        3.2 KB
+  2026-10-28 16:41  3e01aa9   notes: add the Q4 filing dates
+  2026-09-14 09:02  b71f0c2   notes: correct the CRA reference
+  2026-08-11 11:20  1c93bb7   notes: first draft
 ```
 
-Today's backup ran at 12:00 and the mistake happened after it, so today's copy is
-good. Pull just that file out:
+Those are the repository's own commits, not backup runs - which is what you want,
+because "the version before I broke it" is a commit in your repo, not a Sunday.
 
 ```text
-$ tycho restore coreenginex CoreEngineX/org/notes.md ~/rescue
-restored  1 file from 3e01aa9, backup of today 12:00
-          ~/rescue/CoreEngineX/org/notes.md   4.1 KB
+$ tycho restore coreenginex -- CoreEngineX/org/notes.md --into ~/rescue
+resolved  repository CoreEngineX/org, tracked file, from 3e01aa9
+restored  1 file                                              4.1 KB
+          ~/rescue/CoreEngineX/org/notes.md
 
 $ diff ~/rescue/CoreEngineX/org/notes.md ~/Developer/CoreEngineX/org/notes.md
 $ cp ~/rescue/CoreEngineX/org/notes.md ~/Developer/CoreEngineX/org/notes.md
 ```
 
-**Restore never writes back into your live tree.** It puts files in a destination
-you name, and you do the copy. A restore that overwrote in place would be one typo
-away from turning a one-file problem into a directory-sized one, and the whole point
-of the tool is to not be the second incident.
+Had the file been uncommitted, untracked or gitignored, the same command would have
+answered from the overlay instead and said so - `from the overlay, backup of
+2026-11-01 12:00`. That distinction matters: the overlay holds what was on disk at
+backup time, while repository history holds what you committed.
 
-Had the mistake happened before today's backup, the same command with `--at` picks
-the last good one:
+**Restore never writes back into your live tree.** It puts files where you name and
+you do the copy. A restore that overwrote in place would be one typo away from
+turning a one-file problem into a directory-sized one.
 
-```text
-$ tycho restore coreenginex --at "2026-08-16 12:00" CoreEngineX/org/notes.md ~/rescue
-```
+Note what the copy does not carry back: **permissions, timestamps and extended
+attributes are not restored**. For a markdown file that is irrelevant; for a private
+key it means re-securing the file after the copy.
 
 ## 7. No internet on backup day
 
@@ -230,96 +258,106 @@ Sunday arrives, the machine is offline:
 
 ```text
 $ tycho status coreenginex
-coreenginex                                   next run  Sun 12:00, in 6d 23h
-  6 backups since 2026-08-02, newest today 12:00, store 1.4 GB
+coreenginex                                    next run  Sun 12:00, in 6d 2h
+  15 backups since 2026-08-02, newest today 12:00, store 1.2 GB
 
-  gdrive     ok          pushed today 12:00            verified
-  onedrive   ok          pushed today 12:00            verified
-  t7         behind 1    last seen 2026-08-24    optional, on next mount
+  gdrive     ok             pushed today 12:00                      verified
+  onedrive   ok             pushed today 12:00                      verified
+  t7         behind 1 of 4  last seen 2026-11-02     optional, on next mount
 ```
 
 Google Drive shows `ok` **because being offline did not stop the push**. The Drive
-folder is a path on local disk, so pushing to it is a file write. The Drive client
-holds the upload and sends it when the network returns. Nothing in Tycho retries,
-waits, or reports a problem, because from its side nothing went wrong.
+folder is a path on local disk, so pushing to it is a file write; the Drive client
+holds the upload and sends it when the network returns. Nothing in Tycho retries or
+reports a problem, because from its side nothing went wrong.
 
-The honest limit: `verified` means the folder has the commit, not that Google's
-servers do. There is no reliable way to ask a macOS file provider whether an upload
-finished. This is a reason to keep more than one remote, and specifically to keep the
-external drive - there is no sync client between Tycho and that disk.
+The honest limit: `verified` means every ref is present in the folder at the right
+sha, not that Google's servers have it. There is no reliable way to ask a macOS file
+provider whether an upload finished. That is a reason to keep more than one remote,
+and specifically to keep the external drive, which has no client in between.
 
-The T7 is genuinely behind because it is unplugged. It catches up on mount:
+The T7 is genuinely behind because it is unplugged, and `behind 1 of 4` shows the
+distance to failure. It catches up on mount:
 
 ```text
 $ # plug the drive in, type nothing
 $ tycho status coreenginex
-  t7         ok          pushed today 16:04            verified
+  t7         ok             pushed today 16:04                      verified
 ```
 
-If it had been a signed-out cloud account instead, the hourly catch-up agent would
-have covered it. Neither trigger ever captures - **capture happens on the backup
-schedule and nowhere else**, so what is in a backup never depends on when you
-happened to plug something in.
+If it had been a signed-out cloud account, the hourly catch-up would have covered
+it. Neither trigger ever captures - **capture happens on the backup schedule and
+nowhere else**, so what is in a backup never depends on when you plugged something
+in.
+
+And if the machine had been **powered off** rather than asleep across Sunday noon,
+launchd would not have fired at all - its catch-up promise covers sleep only. The
+next invocation of any agent notices the backup is overdue and says so:
+
+```text
+$ tycho status coreenginex
+coreenginex                                     OVERDUE  last run 9d ago
+  expected weekly, last successful run 2026-10-25 12:00
+```
 
 ## 8. The machine is destroyed
 
-New laptop, nothing on it. Sign into the Drive account and let the folder sync, or
-download it from the web interface.
+New laptop, nothing on it. Sign into the Drive account and let the folder sync.
 
 ### With the binary
 
 ```text
 $ cargo install --git https://github.com/CoreEngineX/tycho
 
-$ tycho restore coreenginex \
-    --store "~/Library/CloudStorage/GoogleDrive-*/My Drive/CoreEngineX-Backups/coreenginex.git" \
-    ~/recovered
+$ tycho restore --store ~/"Library/CloudStorage/GoogleDrive-Acct/My Drive/CoreEngineX-Backups/coreenginex.git" \
+                --into ~/recovered
 
-reading   coreenginex.git   6 backups, 2026-08-02 to 2026-08-30
-using     3e01aa9  backup of 2026-08-30 12:00
+reading   coreenginex.git   15 backups, 2026-08-02 to 2026-11-08
+using     3e01aa9  backup of 2026-11-08 12:00 -0400  (16:00 UTC)
 
 restored  8,538 files                                          1.53 GB
 restored  12 repositories with full history
-          CoreEngineX/org                   main aef686f  + 1 untracked
-          CoreEngineX/org/handbook      main 1930b99  clean
-          CoreEngineX/products/a sibling project   dev  41c8ee2  + 3 modified
-          ...
+          CoreEngineX/org                   main aef686f  overlay: 1 untracked
+          CoreEngineX/org/handbook      main 1930b99  overlay: clean
+          CoreEngineX/products/a sibling project   dev  41c8ee2  overlay: 3 modified
+          and 9 more
+
+note      file permissions, timestamps and extended attributes are not
+          restored - re-secure anything secret-bearing
 
 done in 4m 12s. ~/recovered
 ```
 
-`--store` points at a remote rather than a local store, which is the whole recovery
-case: there is no local store, because there is no local anything.
+`--store` points at a remote rather than a local store and reads no config file at
+all, which is the whole recovery case: there is no local store, because there is no
+local anything. The per-repository overlay counts come from each `REPO.txt`.
 
 ### Without the binary
 
-Everything above is plain git, and this path is verified in `disaster-recovery.md`:
+Everything is plain git, and the full procedure is `disaster-recovery.md`. The
+outline:
 
 ```text
-$ git clone --mirror ".../CoreEngineX-Backups/coreenginex.git" ~/store.git
+$ find ~/Library/CloudStorage/GoogleDrive-Acct/My\ Drive/CoreEngineX-Backups -type f -exec cat {} + > /dev/null
+$ git clone --mirror ~/"Library/CloudStorage/GoogleDrive-Acct/My Drive/CoreEngineX-Backups/coreenginex.git" ~/store.git
 $ git -C ~/store.git fsck
-$ mkdir ~/recovered && git -C ~/store.git archive HEAD | tar -x -C ~/recovered
+$ printf '* -text -diff -filter -ident -export-subst -export-ignore\n' > ~/store.git/info/attributes
+$ mkdir ~/recovered && git -C ~/store.git archive HEAD > ~/store.tar && tar -xf ~/store.tar -C ~/recovered
 ```
 
-That is every plain file plus every repository's overlay. Then per repository:
+Five things bite if skipped, and all five were found by actually running this:
 
-```text
-$ git init ~/recovered-repos/handbook
-$ git -C ~/recovered-repos/handbook symbolic-ref HEAD refs/heads/__tycho_restore
-$ git -C ~/recovered-repos/handbook fetch ~/store.git \
-    "+refs/tycho/CoreEngineX/org/handbook/heads/*:refs/heads/*" \
-    "+refs/tycho/CoreEngineX/org/handbook/tags/*:refs/tags/*"
-$ git -C ~/recovered-repos/handbook checkout main
-$ cp -R ~/recovered/CoreEngineX/org/handbook/overlay/. ~/recovered-repos/handbook/
-```
-
-Two things that will bite if skipped, both found by actually running this:
-
-- **`--mirror`, never a plain `git clone`.** Plain clone takes `refs/heads/*` and
-  `refs/tags/*` only, so every captured repository is silently left behind and you
-  get a repo that looks fine.
-- **The `symbolic-ref` line.** `git init` leaves HEAD on an unborn `refs/heads/main`
-  and git refuses to fetch into a checked-out branch.
+- **The `find` materialisation pass.** CloudStorage files are dataless placeholders,
+  so a copy taken mid-download silently produces a store with missing objects.
+- **`--mirror`, never plain `git clone`.** Plain clone takes `refs/heads/*` and
+  `refs/tags/*` only, so every captured repository is left behind and you get a
+  repository that looks fine.
+- **`fsck`, not `git log`.** `log` exits 0 on a store whose objects are missing.
+- **`info/attributes` before extracting.** It does not survive a mirror clone, and
+  without it a backed-up `.gitattributes` can make `archive` drop files and rewrite
+  line endings at exit 0.
+- **`archive > file && tar`, never a pipe.** A pipeline reports only the last
+  command's status, so a broken store extracts zero files and still exits 0.
 
 `RECOVERY.md` sits beside the repository in the folder with these commands already
 filled in for your profile, because in a real disaster every other copy of them was
@@ -328,10 +366,16 @@ on the disk that died.
 ### Back to normal
 
 ```text
-$ tycho config init          # or restore your own config from ~/recovered
+$ tycho config init          # or restore your own from ~/recovered/.tycho/config.toml
 $ tycho run coreenginex --dry-run
 $ tycho service install coreenginex
 ```
 
-The new machine's first run pushes to the same remotes and continues the same
-history, because the store it clones is the history.
+The config that produced these backups is itself in the store at
+`.tycho/config.toml`, so the definition of what was being protected survives with
+the data.
+
+The new machine's first run continues the same history, because the store it clones
+is the history. Give it a **different profile name** if the old machine still exists
+and still pushes - one profile name means one machine, and two machines pushing the
+same name into one folder is a rejected push, not a merge.
