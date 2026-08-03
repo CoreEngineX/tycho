@@ -2,3 +2,7 @@
 //! writes, and `st_mode` classification. No other module spawns a process, which is
 //! what makes the pinned config and the per-child timeout unavoidable rather than
 //! remembered.
+
+pub mod fs;
+pub mod lock;
+pub mod process;

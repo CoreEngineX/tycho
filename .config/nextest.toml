@@ -1,0 +1,4 @@
+[profile.default]
+# A wedged pipe or a lock that is never released would otherwise hang the gate
+# rather than fail it, which is the wrong failure mode for this project above all.
+slow-timeout = { period = "30s", terminate-after = 4 }
