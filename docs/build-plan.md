@@ -304,7 +304,19 @@ gitlink, and on this machine nearly everything is a submodule.
 
 Post-`write-tree` reconciliation: count tree entries against the planned file count
 and fail loudly on a shortfall. One check that catches the short-batch class, the
-silently-discarded-path class, and future variants together.
+silently-discarded-path class, and future variants together. It counts the **tree**,
+not the index - the index count is one step too early and would miss anything
+`write-tree` itself dropped.
+
+**A fixed sequence of steps is enforced at compile time.** The run spine is a
+type-state chain with sealed `After`/`Before` markers and one `advance` chokepoint,
+declared through a `run_spine!` macro so it reads as the pipeline rather than as a
+wall of impls. `toolkit`'s `crates/cex-release` is the reference; its
+`release_stages!` proc macro, `Reaches<Target, P>` gate and raw-bound guard test are
+what a second pipeline or a per-platform detour would migrate onto, and are overkill
+for one linear spine. The same treatment is owed to restore's
+`init -> symbolic-ref HEAD -> fetch` and to a remote's `init -> configure -> push`,
+both of which are load-bearing orders rather than conventions.
 
 ---
 

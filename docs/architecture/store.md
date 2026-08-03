@@ -240,6 +240,18 @@ git -C <store> update-ref refs/heads/main <commit>
 `GIT_INDEX_FILE` points at a temporary index built from scratch each run, so a stale
 index can never contribute a stale entry.
 
+**The order of those five commands is enforced by the type system**, not by the fact
+that they appear in this order. Each step consumes the previous step's state and
+produces the next, and every transition goes through one `advance` bounded on a
+sealed `After` marker - so publishing a ref before the tree has been reconciled is
+not a bug to catch in review but a program that does not compile. The chain is
+declared once, as a chain:
+
+```text
+Locked -> Planned -> Hashed -> Indexed -> Treed -> Reconciled
+       -> Committed -> Published -> Recorded
+```
+
 ### The two legs use different path encodings, deliberately
 
 This is the sharpest edge in the whole pipeline and it must be stated rather than
@@ -380,6 +392,17 @@ git -c core.quotePath=false -C <store> diff-tree -r -z --no-commit-id --name-sta
 
 `-r` is required or the output is directory-level and the per-file list is wrong.
 On the first run there is no parent tree, so everything is listed as added.
+
+**The body is parsed back.** `history` needs the `written` figure per backup, and
+there is no way to derive it from git afterwards without walking object graphs. One
+function renders this body and its inverse reads it, which keeps the store
+self-describing: `history` works from a bare clone on a replacement machine, where
+the state file is already gone. A commit Tycho did not write parses to nothing and
+renders as such, rather than being reported as something it is not.
+
+`written` is measured before anything is hashed and again once the tree exists, so
+it deliberately excludes the run's own commit object - which is what lets the
+`no changes` row read `0 B` honestly.
 
 An empty run - nothing changed anywhere - still commits, with a body reading
 `no changes`. A gap in the history would otherwise be ambiguous between "nothing

@@ -139,7 +139,9 @@ when                commit    summary                              written
 
 `written` is new objects for that run, rounded to the displayed unit - so the
 `no changes` row reads `0 B` honestly even though the run did write a commit object
-of a couple of hundred bytes.
+of a couple of hundred bytes. It is read out of each commit's own message rather
+than from the state file, so this command works from a bare clone on a replacement
+machine; `store.md` section 8 covers why.
 
 Recent timestamps render as `today` and `yesterday`, older ones as dates.
 
