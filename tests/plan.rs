@@ -64,16 +64,38 @@ fn repo_keys(plan: &tycho::plan::Plan) -> Vec<String> {
         .collect()
 }
 
-/// Marks a directory as a repository. `bare_file` makes the submodule form, where
-/// `.git` is a file holding a gitdir pointer rather than a directory.
+/// A real repository, because the walk asks git to confirm a `.git` marker rather
+/// than trusting it - a stale worktree pointer looks identical and is not one.
+/// `as_file` produces the submodule shape, where `.git` is a file holding a gitdir
+/// pointer.
 fn make_repo(dir: &Path, as_file: bool) {
     fs::create_dir_all(dir).expect("mkdir");
+    let mut args = vec![
+        "init".to_owned(),
+        "--quiet".to_owned(),
+        "-b".to_owned(),
+        "main".to_owned(),
+    ];
     if as_file {
-        fs::write(dir.join(".git"), "gitdir: ../../.git/modules/x\n").expect("write");
-    } else {
-        fs::create_dir_all(dir.join(".git")).expect("mkdir");
-        fs::write(dir.join(".git").join("HEAD"), "ref: refs/heads/main\n").expect("write");
+        let gitdir = dir.with_file_name(format!(
+            "{}-gitdir",
+            dir.file_name().and_then(|n| n.to_str()).unwrap_or("x")
+        ));
+        args.push("--separate-git-dir".to_owned());
+        args.push(gitdir.display().to_string());
     }
+    args.push(".".to_owned());
+    let out = std::process::Command::new("git")
+        .current_dir(dir)
+        .args(&args)
+        .output()
+        .expect("git runs");
+    assert!(out.status.success(), "git init: {out:?}");
+    assert_eq!(
+        dir.join(".git").is_file(),
+        as_file,
+        "the fixture must produce the shape it claims"
+    );
 }
 
 #[test]

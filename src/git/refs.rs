@@ -154,6 +154,23 @@ impl Repo {
     }
 }
 
+/// Every ref in a repository Tycho does not own.
+///
+/// A free function rather than a method, because [`Repo::open`] refuses anything not
+/// mode `0700` - right for a store that holds gitignored content, wrong for a source
+/// repository that is simply somebody's working copy.
+///
+/// # Errors
+///
+/// If git fails or prints a line this cannot parse.
+pub fn list_refs(repo: &Path) -> Result<BTreeMap<RefName, Oid>, RepoError> {
+    let out = crate::sys::process::Git::at(repo).checked(
+        &["for-each-ref", "--format=%(objectname)\t%(refname)"],
+        Timeout::QUICK,
+    )?;
+    parse_ref_lines(&out.stdout)
+}
+
 /// Both `for-each-ref` and `ls-remote` print `<oid><tab><refname>`. `HEAD` and the
 /// `^{}` peel lines are skipped: neither is a ref that is ever pushed, and neither
 /// is a name `RefName` accepts.

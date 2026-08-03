@@ -1,10 +1,22 @@
 //! Layer 4. Hashing plain files, fetching each repository's refs into the store, and
 //! building the overlay of what git history alone cannot restore.
+//!
+//! The overlay is why this project exists. A sync incident in July 2026 deleted files
+//! under a repository, and git restored every one of them except `CLAUDE.md`, which
+//! was gitignored: the only unprotected file was the one git could not resurrect.
 
-use crate::plan::RepoHead;
-use crate::primitives::names::BranchName;
+use crate::config::rules::RuleTree;
+use crate::git::refs::{Refspec, list_refs};
+use crate::plan::{Plan, RepoHead, RepoRoot, RootPlan};
+use crate::primitives::names::{BranchName, RefName};
 use crate::primitives::oid::Oid;
+use crate::primitives::path::{AbsPath, TreePath, has_git_component};
+use crate::primitives::refs::find_collisions;
+use crate::store::Store;
+use crate::sys::fs::{FileKind, classify_path};
 use crate::sys::process::{Git, RunError, Timeout};
+use std::ffi::{OsStr, OsString};
+use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 
 /// What a repository looks like right now, for the dry run's head and state columns.
@@ -29,6 +41,42 @@ impl Inspection {
             (modified, 0) => format!("{modified} modified"),
             (modified, untracked) => format!("{modified} modified, {untracked} untracked"),
         }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CaptureError {
+    #[error(transparent)]
+    Run(#[from] RunError),
+    #[error(transparent)]
+    Repo(#[from] crate::git::RepoError),
+    #[error(
+        "{repo} uses the {found} object format and this store is sha1; it cannot be fetched, and skipping it would lose it silently"
+    )]
+    ObjectFormat { repo: String, found: String },
+    #[error(
+        "{repo} has refs that collide once stored: {detail}; fetching both would let the second silently clobber the first"
+    )]
+    RefCollision { repo: String, detail: String },
+    #[error("'{path}' cannot be stored in the tree: {reason}")]
+    NotStorable { path: String, reason: String },
+}
+
+/// One repository's contribution to the backup tree.
+#[derive(Debug, Default)]
+pub struct Contribution {
+    /// Files on disk to hash: the overlay.
+    pub files: Vec<(AbsPath, TreePath)>,
+    /// Content Tycho generates rather than reads: `REPO.txt`.
+    pub generated: Vec<(TreePath, Vec<u8>)>,
+    pub warnings: Vec<String>,
+}
+
+impl Contribution {
+    fn absorb(&mut self, other: Self) {
+        self.files.extend(other.files);
+        self.generated.extend(other.generated);
+        self.warnings.extend(other.warnings);
     }
 }
 
@@ -93,6 +141,324 @@ pub fn inspect(repo: &Path) -> Result<Inspection, RunError> {
         untracked,
         objects: object_bytes(&git)?,
     })
+}
+
+/// Everything one repository contributes: its history into the store's refs, its
+/// overlay, and its provenance.
+///
+/// # Errors
+///
+/// If the object format differs, refs collide, or git fails. All three fail the run
+/// rather than skipping the repository, because a repository silently left out is
+/// indistinguishable from one that was never there.
+pub fn capture(
+    store: &Store,
+    repo: &RepoRoot,
+    rules: &RuleTree,
+    nested: &[AbsPath],
+) -> Result<Contribution, CaptureError> {
+    let source = repo.source.as_path();
+    let git = Git::at(source);
+
+    check_object_format(&git, source)?;
+    check_collisions(source, &repo.key)?;
+
+    store.repo().fetch_refs(
+        source,
+        &Refspec::forced("refs/*", &format!("refs/tycho/{}/*", repo.key)),
+    )?;
+
+    let mut contribution = capture_stashes(store, &git, repo);
+    contribution.absorb(overlay(source, repo, rules, nested));
+
+    let inspection = inspect(source)?;
+    contribution.generated.push((
+        tree_path(&format!(".tycho/repos/{}/REPO.txt", repo.key))?,
+        repo_txt(&git, &inspection, source).into_bytes(),
+    ));
+    Ok(contribution)
+}
+
+/// A SHA-256 repository cannot be fetched into a SHA-1 store, and the reverse is
+/// equally true. `store.md` makes this a hard per-repo error rather than a warning.
+fn check_object_format(git: &Git<'_>, source: &Path) -> Result<(), CaptureError> {
+    let out = git.run(&["rev-parse", "--show-object-format"], Timeout::QUICK)?;
+    let found = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    if out.status.success() && found != "sha1" {
+        return Err(CaptureError::ObjectFormat {
+            repo: source.display().to_string(),
+            found,
+        });
+    }
+    Ok(())
+}
+
+/// Loose refs are files, so on a case-insensitive volume a repository carrying both
+/// `Feature` and `feature` maps two branches onto one path. Git errors on first
+/// exposure and the *next* fetch is silent, clobbering the captured tip - so this
+/// runs before the fetch rather than relying on git to notice.
+fn check_collisions(source: &Path, key: &str) -> Result<(), CaptureError> {
+    let refs = list_refs(source)?;
+    let destinations: Vec<RefName> = refs
+        .keys()
+        .filter_map(|name| {
+            let rest = name.as_str().strip_prefix("refs/")?;
+            RefName::parse(&format!("refs/tycho/{key}/{rest}")).ok()
+        })
+        .collect();
+
+    let collisions = find_collisions(&destinations);
+    if collisions.is_empty() {
+        return Ok(());
+    }
+    let detail = collisions
+        .iter()
+        .map(|group| {
+            group
+                .names
+                .iter()
+                .map(RefName::as_str)
+                .collect::<Vec<_>>()
+                .join(" and ")
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(CaptureError::RefCollision {
+        repo: source.display().to_string(),
+        detail,
+    })
+}
+
+/// `refs/*` already carried `refs/stash`, which is the top entry. The rest of the
+/// stack lives in a reflog that fetch never transfers, so each is fetched by object
+/// id - which works over local transport even though nothing references them.
+///
+/// They land under `stashes/` rather than `stash/`: `refs/tycho/<key>/stash` is
+/// already a leaf ref, and git's ref store refuses to hold a leaf and a directory of
+/// the same name.
+fn capture_stashes(store: &Store, git: &Git<'_>, repo: &RepoRoot) -> Contribution {
+    let mut contribution = Contribution::default();
+    for index in 0.. {
+        let entry = format!("stash@{{{index}}}");
+        let Ok(out) = git.run(
+            &["rev-parse", "--verify", "--quiet", &entry],
+            Timeout::QUICK,
+        ) else {
+            break;
+        };
+        if !out.status.success() {
+            break;
+        }
+        let Ok(oid) = Oid::parse(String::from_utf8_lossy(&out.stdout).trim()) else {
+            break;
+        };
+        let spec = Refspec::forced(
+            &oid.to_string(),
+            &format!("refs/tycho/{}/stashes/{index}", repo.key),
+        );
+        if let Err(error) = store.repo().fetch_refs(repo.source.as_path(), &spec) {
+            contribution
+                .warnings
+                .push(format!("{}: {entry}: {error}", repo.key));
+            break;
+        }
+    }
+    contribution
+}
+
+/// The part git cannot restore from history: uncommitted, untracked and gitignored
+/// files, filtered through the profile's rule tree.
+fn overlay(source: &Path, repo: &RepoRoot, rules: &RuleTree, nested: &[AbsPath]) -> Contribution {
+    let mut contribution = Contribution::default();
+    let Ok(out) = Git::at(source).run(
+        &[
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--ignored=traditional",
+        ],
+        Timeout::WORK,
+    ) else {
+        contribution
+            .warnings
+            .push(format!("{}: could not read status", repo.key));
+        return contribution;
+    };
+
+    let mut fields = out
+        .stdout
+        .split(|&byte| byte == 0)
+        .filter(|field| !field.is_empty());
+    while let Some(record) = fields.next() {
+        if record.len() < 4 {
+            continue;
+        }
+        let (status, path) = record.split_at(3);
+        // A rename record is followed by its old path, which is not a second entry.
+        if status.starts_with(b"R") || status.starts_with(b"C") {
+            let _ = fields.next();
+        }
+        let full = source.join(Path::new(OsStr::from_bytes(path)));
+        if path.ends_with(b"/") {
+            expand(&mut contribution, &full, source, repo, rules, nested);
+        } else {
+            take(&mut contribution, &full, source, repo, rules);
+        }
+    }
+    contribution
+}
+
+/// Git reports an untracked directory - including an untracked nested repository -
+/// as one collapsed entry and does not descend into it. Copying that wholesale would
+/// put the nested repository's `.git` into the store tree as loose files, so Tycho
+/// walks it itself and stops at any repository root the plan already found.
+fn expand(
+    contribution: &mut Contribution,
+    dir: &Path,
+    source: &Path,
+    repo: &RepoRoot,
+    rules: &RuleTree,
+    nested: &[AbsPath],
+) {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        if nested.iter().any(|root| root.as_path() == current) {
+            continue;
+        }
+        let Ok(listing) = std::fs::read_dir(&current) else {
+            contribution.warnings.push(format!(
+                "{}: could not read {}",
+                repo.key,
+                current.display()
+            ));
+            continue;
+        };
+        for item in listing.flatten() {
+            let path = item.path();
+            if has_git_component(&path) {
+                continue;
+            }
+            match classify_path(&path) {
+                Ok(FileKind::Directory) => {
+                    if rules.captures(&path) || rules.may_contain_captures(&path) {
+                        stack.push(path);
+                    }
+                }
+                Ok(_) => take(contribution, &path, source, repo, rules),
+                Err(_) => contribution.warnings.push(format!(
+                    "{}: could not read {}",
+                    repo.key,
+                    path.display()
+                )),
+            }
+        }
+    }
+}
+
+fn take(
+    contribution: &mut Contribution,
+    path: &Path,
+    source: &Path,
+    repo: &RepoRoot,
+    rules: &RuleTree,
+) {
+    // `--ignored` reports every gitignored path, which on this machine includes tens
+    // of gigabytes of build output. This filter is the only reason the overlay does
+    // not swallow it.
+    if !rules.captures(path) {
+        return;
+    }
+    let Ok(kind) = classify_path(path) else {
+        return;
+    };
+    if kind.mode().is_none() {
+        return;
+    }
+    let Ok(relative) = path.strip_prefix(source) else {
+        return;
+    };
+    let mut joined = OsString::from(format!(".tycho/repos/{}/overlay/", repo.key));
+    joined.push(relative.as_os_str());
+
+    match (
+        TreePath::parse(Path::new(&joined)),
+        AbsPath::from_absolute(path),
+    ) {
+        (Ok(stored), Ok(source)) => contribution.files.push((source, stored)),
+        (Err(error), _) => contribution
+            .warnings
+            .push(format!("{}: {error}", path.display())),
+        (_, Err(error)) => contribution
+            .warnings
+            .push(format!("{}: {error}", path.display())),
+    }
+}
+
+/// One screen of plain text, carrying the branch list because nothing is ever pruned:
+/// liveness is recorded here rather than by a ref disappearing.
+fn repo_txt(git: &Git<'_>, inspection: &Inspection, source: &Path) -> String {
+    let field = |args: &[&str]| {
+        git.run(args, Timeout::QUICK)
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+            .unwrap_or_default()
+    };
+    let list = |args: &[&str]| {
+        let text = field(args);
+        let names: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        if names.is_empty() {
+            "none".to_owned()
+        } else {
+            names.join(", ")
+        }
+    };
+
+    let origin = field(&["config", "--get", "remote.origin.url"]);
+    let head = match &inspection.head {
+        RepoHead::Branch { name, sha } => format!("{name} @ {}", sha.short()),
+        RepoHead::Detached { sha } => format!("detached @ {}", sha.short()),
+        RepoHead::Unborn => "unborn".to_owned(),
+    };
+    let stashes = field(&["stash", "list"])
+        .lines()
+        .filter(|line| !line.is_empty())
+        .count();
+
+    format!(
+        "origin    {}\npath      {}\nhead      {head}\nstate     {}\nbranches  {}\ntags      {}\nstash     {stashes} entries\nseen      {}\n",
+        if origin.is_empty() { "none" } else { &origin },
+        source.display(),
+        inspection.state(),
+        list(&["for-each-ref", "--format=%(refname:short)", "refs/heads"]),
+        list(&["for-each-ref", "--format=%(refname:short)", "refs/tags"]),
+        jiff::Timestamp::now()
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .strftime("%F %H:%M UTC"),
+    )
+}
+
+fn tree_path(text: &str) -> Result<TreePath, CaptureError> {
+    TreePath::parse(Path::new(text)).map_err(|error| CaptureError::NotStorable {
+        path: text.to_owned(),
+        reason: error.to_string(),
+    })
+}
+
+/// Every path the plan found as a repository root, for the overlay expansion to stop
+/// at.
+#[must_use]
+pub fn nested_roots(plan: &Plan) -> Vec<AbsPath> {
+    plan.roots
+        .iter()
+        .flat_map(RootPlan::repos)
+        .map(|repo| repo.source.clone())
+        .collect()
 }
 
 /// `count-objects -v` reports `size` and `size-pack` in kibibytes.

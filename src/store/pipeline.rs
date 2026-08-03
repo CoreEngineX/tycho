@@ -87,12 +87,28 @@ pub struct Hashed {
     pub unreadable: Vec<String>,
 }
 
+/// Every repository's history is in `refs/tycho/*`, its overlay and `REPO.txt` are
+/// hashed, and the config is captured alongside them.
+///
+/// Those refs move here, before the commit, so an interrupted run can leave captured
+/// refs ahead of the last backup commit. That is safe only because nothing is ever
+/// pruned, which is why the absence of `--prune` is an invariant rather than a
+/// preference.
+#[derive(Debug)]
+pub struct Captured {
+    pub plan: crate::plan::Plan,
+    pub entries: Vec<crate::git::IndexEntry>,
+    pub unreadable: Vec<String>,
+    pub repos_captured: usize,
+}
+
 /// The scratch index holds those entries.
 #[derive(Debug)]
 pub struct Indexed {
     pub plan: crate::plan::Plan,
     pub planned: usize,
     pub unreadable: Vec<String>,
+    pub repos_captured: usize,
 }
 
 /// A tree exists.
@@ -101,6 +117,7 @@ pub struct Treed {
     pub plan: crate::plan::Plan,
     pub planned: usize,
     pub unreadable: Vec<String>,
+    pub repos_captured: usize,
     pub tree: Oid,
 }
 
@@ -110,6 +127,7 @@ pub struct Treed {
 pub struct Reconciled {
     pub plan: crate::plan::Plan,
     pub unreadable: Vec<String>,
+    pub repos_captured: usize,
     pub tree: Oid,
 }
 
@@ -141,7 +159,7 @@ pub struct Recorded {
 }
 
 run_spine! {
-    Locked -> Planned -> Hashed -> Indexed -> Treed
+    Locked -> Planned -> Hashed -> Captured -> Indexed -> Treed
            -> Reconciled -> Committed -> Published -> Recorded
 }
 

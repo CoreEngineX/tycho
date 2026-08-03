@@ -11,7 +11,7 @@ use std::fs;
 use std::path::PathBuf;
 
 pub fn run(args: &RunArgs) -> Exit {
-    let Some(parsed) = load(args.config.clone()) else {
+    let Some((parsed, config_text)) = load(args.config.clone()) else {
         return Exit::Failure;
     };
     if parsed.has_errors() {
@@ -65,6 +65,7 @@ pub fn run(args: &RunArgs) -> Exit {
     let run_paths = store::run::Paths {
         lock: paths.lock.as_path(),
         state: paths.state.as_path(),
+        config_text: Some(&config_text),
     };
     let done = match store::run::execute(profile, &store, &run_paths, &mut state, args.allow_shrink)
     {
@@ -80,14 +81,16 @@ pub fn run(args: &RunArgs) -> Exit {
         eprintln!("warn  {warning}");
     }
 
-    // Repository capture and push are not built yet, so this store holds a fraction
-    // of what the profile watches and nothing has left the machine. Saying so is the
-    // point: a quiet green run over an incomplete backup is the exact failure this
-    // project exists to correct.
+    // A quiet green run over an incomplete backup is the exact failure this project
+    // exists to correct, so anything the run did not manage to take is said out loud.
     let mut incomplete = Exit::Ok;
-    if done.summary.repos_found > 0 {
+    let missed = done
+        .summary
+        .repos_found
+        .saturating_sub(done.summary.repos_captured);
+    if missed > 0 {
         eprintln!(
-            "warn  {} repositories were found and not captured; repository capture is not built yet",
+            "warn  {missed} of {} repositories were not captured",
             done.summary.repos_found
         );
         incomplete = Exit::Warning;
@@ -137,7 +140,7 @@ fn locations(profile: &Profile) -> Option<Locations> {
 }
 
 pub fn history(args: &crate::cli::HistoryArgs) -> Exit {
-    let Some(parsed) = load(args.config.clone()) else {
+    let Some((parsed, _)) = load(args.config.clone()) else {
         return Exit::Failure;
     };
     let Some(profile) = select(&parsed.config, args.profile.as_deref()) else {
@@ -179,7 +182,7 @@ pub fn config(args: &ConfigArgs) -> Exit {
         return Exit::Ok;
     }
 
-    let Some(parsed) = load(args.config.clone()) else {
+    let Some((parsed, _)) = load(args.config.clone()) else {
         return Exit::Failure;
     };
     let summaries: Vec<String> = parsed.config.profiles.iter().map(summarise).collect();
@@ -229,7 +232,7 @@ fn resolve(override_path: Option<PathBuf>) -> Result<PathBuf, String> {
     }
 }
 
-fn load(override_path: Option<PathBuf>) -> Option<Parsed> {
+fn load(override_path: Option<PathBuf>) -> Option<(Parsed, String)> {
     let path = match resolve(override_path) {
         Ok(path) => path,
         Err(error) => {
@@ -245,7 +248,7 @@ fn load(override_path: Option<PathBuf>) -> Option<Parsed> {
         }
     };
     match crate::config::parse(&text) {
-        Ok(parsed) => Some(parsed),
+        Ok(parsed) => Some((parsed, text)),
         Err(error) => {
             eprintln!("tycho: {error}");
             None

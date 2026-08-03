@@ -65,6 +65,7 @@ impl Fixture {
         let paths = run::Paths {
             lock: &lock,
             state: &state_path,
+            config_text: None,
         };
         run::execute(&self.profile, &self.store, &paths, &mut self.state, false)
     }
@@ -310,5 +311,48 @@ fn the_store_is_created_where_the_profile_says() {
         store.head().expect("head"),
         None,
         "a new store has no backup"
+    );
+}
+
+/// `hash-object` follows a symlink and stores what it points at. Storing that under
+/// mode 120000 would fabricate a file on restore that never existed on the source
+/// machine, and a dangling link fails the batch outright.
+#[test]
+fn a_symlink_stores_its_target_rather_than_the_target_s_content() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    write(&dir.path().join("A/real.md"), "THE TARGET CONTENT\n");
+    std::os::unix::fs::symlink("real.md", dir.path().join("A/link.md")).expect("symlink");
+    std::os::unix::fs::symlink("nowhere.md", dir.path().join("A/dangling.md")).expect("symlink");
+
+    let store = Store::open_or_init(&abs(&dir.path().join("demo.git"))).expect("init");
+    let profile = profile(dir.path());
+    let mut fixture = Fixture {
+        dir,
+        store,
+        profile,
+        state: State::default(),
+    };
+    fixture
+        .run()
+        .expect("a dangling link must not fail the run");
+
+    let listed = fixture.git(&["ls-tree", "-r", "HEAD"]);
+    assert!(
+        listed.contains("120000 blob") && listed.contains("A/link.md"),
+        "the link should be stored as a link: {listed}"
+    );
+    assert_eq!(
+        fixture.git(&["show", "HEAD:A/link.md"]),
+        "real.md",
+        "the blob must be the link target, not what it points at"
+    );
+    assert_eq!(
+        fixture.git(&["show", "HEAD:A/dangling.md"]),
+        "nowhere.md",
+        "a dangling link is still a link, and still worth keeping"
+    );
+    assert_eq!(
+        fixture.git(&["show", "HEAD:A/real.md"]),
+        "THE TARGET CONTENT\n"
     );
 }

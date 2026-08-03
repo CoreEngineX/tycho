@@ -14,6 +14,13 @@ use crate::sys::process::Timeout;
 use message::Summary;
 use std::path::PathBuf;
 
+/// A file to hash: where it is, where it is stored, and what it is.
+pub type Item = (
+    AbsPath,
+    crate::primitives::path::TreePath,
+    crate::primitives::encode::FileMode,
+);
+
 /// The one ref a backup lives on.
 pub const BACKUP_REF: &str = "refs/heads/main";
 
@@ -98,32 +105,105 @@ impl Store {
     ///
     /// If git fails.
     pub fn hash(&self, plan: &Plan) -> Result<(Vec<IndexEntry>, Vec<String>), StoreError> {
-        let files: Vec<&crate::plan::PlainFile> = plan
+        let items: Vec<Item> = plan
             .roots
             .iter()
             .flat_map(|root| &root.entries)
             .filter_map(|entry| match entry {
-                Entry::Plain(file) => Some(file),
+                Entry::Plain(file) => Some((file.source.clone(), file.stored.clone(), file.mode)),
                 Entry::Repo(_) => None,
             })
             .collect();
+        self.hash_paths(&items)
+    }
 
-        let paths: Vec<AbsPath> = files.iter().map(|file| file.source.clone()).collect();
-        let outcomes = self.repo.hash_object_batch(&paths)?;
+    /// Hashes files that are not part of the plan's plain-file set - the overlay.
+    ///
+    /// # Errors
+    ///
+    /// If git fails.
+    pub fn hash_files(
+        &self,
+        files: &[(AbsPath, crate::primitives::path::TreePath)],
+    ) -> Result<(Vec<IndexEntry>, Vec<String>), StoreError> {
+        let items: Vec<Item> = files
+            .iter()
+            .filter_map(|(source, stored)| {
+                let mode = crate::sys::fs::classify_path(source.as_path())
+                    .ok()
+                    .and_then(crate::sys::fs::FileKind::mode)?;
+                Some((source.clone(), stored.clone(), mode))
+            })
+            .collect();
+        self.hash_paths(&items)
+    }
 
-        let mut entries = Vec::with_capacity(files.len());
+    /// The one hashing path.
+    ///
+    /// Symlinks are hashed from their target *string* rather than by path, because
+    /// `hash-object` follows a link and stores what it points at. Storing that under
+    /// mode `120000` would fabricate a file on restore that never existed on the
+    /// source machine, and a dangling link would fail the batch outright.
+    ///
+    /// # Errors
+    ///
+    /// If git fails.
+    pub fn hash_paths(&self, items: &[Item]) -> Result<(Vec<IndexEntry>, Vec<String>), StoreError> {
+        let mut entries = Vec::with_capacity(items.len());
         let mut unreadable = Vec::new();
-        for (file, outcome) in files.iter().zip(outcomes) {
+        let mut batched = Vec::new();
+
+        for (source, stored, mode) in items {
+            if *mode != crate::primitives::encode::FileMode::Symlink {
+                batched.push((source.clone(), stored.clone(), *mode));
+                continue;
+            }
+            match std::fs::read_link(source.as_path()) {
+                Ok(target) => {
+                    let oid = self.repo.hash_blob(target.as_os_str().as_encoded_bytes())?;
+                    entries.push(IndexEntry {
+                        mode: *mode,
+                        oid,
+                        path: stored.clone(),
+                    });
+                }
+                Err(error) => unreadable.push(format!("{source}: {error}")),
+            }
+        }
+
+        let paths: Vec<AbsPath> = batched.iter().map(|(source, ..)| source.clone()).collect();
+        for ((_, stored, mode), outcome) in batched.iter().zip(self.repo.hash_object_batch(&paths)?)
+        {
             match outcome {
                 HashOutcome::Object(oid) => entries.push(IndexEntry {
-                    mode: file.mode,
+                    mode: *mode,
                     oid,
-                    path: file.stored.clone(),
+                    path: stored.clone(),
                 }),
                 HashOutcome::Unreadable { reason } => unreadable.push(reason),
             }
         }
         Ok((entries, unreadable))
+    }
+
+    /// Hashes content Tycho generates rather than reads: `REPO.txt`, the config.
+    ///
+    /// # Errors
+    ///
+    /// If git fails.
+    pub fn hash_generated(
+        &self,
+        items: &[(crate::primitives::path::TreePath, Vec<u8>)],
+    ) -> Result<Vec<IndexEntry>, StoreError> {
+        let mut entries = Vec::with_capacity(items.len());
+        for (path, bytes) in items {
+            entries.push(IndexEntry {
+                mode: crate::primitives::encode::FileMode::Regular,
+                oid: self.repo.hash_blob(bytes)?,
+                path: path.clone(),
+            });
+        }
+        Ok(entries)
     }
 
     /// Builds the index from nothing and returns how many entries it holds.

@@ -8,6 +8,7 @@ use crate::primitives::names::{AliasError, BranchName, RootAlias};
 use crate::primitives::oid::Oid;
 use crate::primitives::path::{AbsPath, TreePath, TreePathError};
 use crate::sys::fs::{FileKind, SkipReason, classify_path};
+use crate::sys::process::{Git, Timeout};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
@@ -58,9 +59,24 @@ pub enum RepoHead {
 /// warnings: one unreadable file is not a reason to lose the other fifty thousand.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Warning {
-    Unreadable { path: String, reason: String },
-    Skipped { path: String, reason: SkipReason },
-    NotStorable { path: String, reason: String },
+    Unreadable {
+        path: String,
+        reason: String,
+    },
+    Skipped {
+        path: String,
+        reason: SkipReason,
+    },
+    NotStorable {
+        path: String,
+        reason: String,
+    },
+    /// A `.git` marker git will not open: a stale worktree pointer, or a submodule
+    /// whose gitdir has been removed. Not a repository, so its contents are treated
+    /// as ordinary files rather than being left to a fetch that cannot happen.
+    BrokenRepo {
+        path: String,
+    },
 }
 
 #[derive(Clone, Debug, thiserror::Error)]
@@ -323,17 +339,24 @@ fn walk_root(
                         continue;
                     }
                 }
-                if is_repository(&path) {
-                    match repo_root(&path, root, alias) {
-                        Ok(repo) => plan.entries.push(Entry::Repo(repo)),
-                        Err(reason) => plan.warnings.push(Warning::NotStorable {
-                            path: path.display().to_string(),
-                            reason,
-                        }),
+                match is_repository(&path) {
+                    Some(true) => {
+                        match repo_root(&path, root, alias) {
+                            Ok(repo) => plan.entries.push(Entry::Repo(repo)),
+                            Err(reason) => plan.warnings.push(Warning::NotStorable {
+                                path: path.display().to_string(),
+                                reason,
+                            }),
+                        }
+                        stack.push((path, true));
                     }
-                    stack.push((path, true));
-                } else {
-                    stack.push((path, inside_repo));
+                    Some(false) => {
+                        plan.warnings.push(Warning::BrokenRepo {
+                            path: path.display().to_string(),
+                        });
+                        stack.push((path, inside_repo));
+                    }
+                    None => stack.push((path, inside_repo)),
                 }
                 continue;
             }
@@ -435,14 +458,25 @@ fn repo_root(path: &Path, root: &AbsPath, alias: &RootAlias) -> Result<RepoRoot,
     Ok(RepoRoot { source, key })
 }
 
-/// Both forms count. Every platform repository on this machine is a submodule, so
-/// its `.git` is a *file* holding a `gitdir:` pointer, and detecting only the
-/// directory form would miss all of them.
-fn is_repository(dir: &Path) -> bool {
-    matches!(
+/// Both forms of the marker count, because every platform repository on this machine
+/// is a submodule whose `.git` is a *file* holding a `gitdir:` pointer.
+///
+/// The marker alone is not enough, though. A stale worktree pointer - a `.git` file
+/// naming a gitdir that has since been removed - looks exactly like a submodule and
+/// is not a repository at all. Treating one as a boundary would stop the content walk
+/// there *and* fail its fetch, so everything underneath would be captured by nothing.
+/// Git is asked to confirm.
+fn is_repository(dir: &Path) -> Option<bool> {
+    if !matches!(
         classify_path(&dir.join(".git")),
         Ok(FileKind::Directory | FileKind::Regular { .. })
-    )
+    ) {
+        return None;
+    }
+    let usable = Git::at(dir)
+        .run(&["rev-parse", "--git-dir"], Timeout::QUICK)
+        .is_ok_and(|out| out.status.success());
+    Some(usable)
 }
 
 fn is_git_marker(path: &Path) -> bool {
