@@ -2,8 +2,8 @@
 
 use crate::cli::{DoctorArgs, Exit, ProbeArgs, render};
 use crate::doctor::{self, Scope, Verdict};
-use crate::platform::launchd::{self, Agent, Job};
 use crate::platform::log_dir;
+use crate::platform::{Agent, Job, scheduler};
 use crate::state::State;
 use std::path::PathBuf;
 
@@ -129,11 +129,11 @@ fn probe_through_launchd(config: &crate::config::Config) -> Option<doctor::Check
 
     // Transient by design: bootstrapped, observed, booted out. Leaving it loaded would
     // put a job on the machine that exists only to answer one question.
-    if crate::service::write_and_load(&agent, &launchd::probe_plist(&job)).is_err() {
+    if crate::service::write_and_load(&agent, &scheduler::probe_definition(&job)).is_err() {
         return None;
     }
     let found = wait_for(&out);
-    let _ = launchd::bootout(&agent);
+    let _ = scheduler::deregister(&agent);
     let _ = std::fs::remove_file(&out);
     // The plist goes too, not just the loaded job. Booting out leaves the file, and a
     // health check that litters ~/Library/LaunchAgents with a job nobody installed is

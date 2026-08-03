@@ -393,6 +393,56 @@ fn an_overlay_type_conflict_is_reported_and_the_material_is_still_there() {
     );
 }
 
+/// A restore that could not write everything says which paths, rather than counting
+/// the backup and calling it the result.
+///
+/// On Windows this is not hypothetical: `tar` cannot create a symlink without
+/// `SeCreateSymbolicLinkPrivilege`, prints `Can't create ... Invalid argument`,
+/// **carries on with the rest of the archive**, and exits 1. The count previously
+/// came from the backup's tree, so every one of those restores reported success.
+#[cfg(windows)]
+#[test]
+fn a_restore_short_of_its_backup_names_what_is_missing() {
+    let mut fixture = fixture();
+    write(&fixture.root().join("ordinary.txt"), b"plain\n");
+    write(&fixture.root().join("elsewhere").join("inside.txt"), b"x\n");
+
+    // A junction is stored as a link, and a link is what `tar` cannot write here.
+    let made = Command::new("cmd")
+        .args(["/c", "mklink", "/J"])
+        .arg(fixture.root().join("link"))
+        .arg(fixture.root().join("elsewhere"))
+        .output()
+        .expect("mklink runs");
+    assert!(
+        made.status.success(),
+        "mklink /J: {}",
+        String::from_utf8_lossy(&made.stdout)
+    );
+
+    fixture.run();
+    let into = fixture.dest("recovered");
+    let done = fixture.restore(&into, &Wanted::default());
+
+    assert!(
+        done.missing.iter().any(|path| path.ends_with("link")),
+        "the link tar could not create must be named: {:?}",
+        done.missing
+    );
+    assert!(
+        into.join("A").join("ordinary.txt").exists(),
+        "one refused link must not cost the rest of the restore"
+    );
+    assert!(
+        done.files > 0,
+        "the rest of the backup still landed and is counted"
+    );
+    assert_eq!(
+        fs::read(into.join("A").join("ordinary.txt")).expect("read"),
+        b"plain\n"
+    );
+}
+
 /// Restore never writes into a destination that already holds things.
 #[test]
 fn a_non_empty_destination_is_refused_without_force() {

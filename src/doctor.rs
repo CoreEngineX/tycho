@@ -6,7 +6,7 @@
 pub mod artifacts;
 
 use crate::config::{Config, Profile};
-use crate::platform::launchd::{Agent, Loaded};
+use crate::platform::{Agent, Loaded};
 use crate::platform::{log_dir, notify};
 use crate::remote;
 use crate::service;

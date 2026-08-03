@@ -2,7 +2,7 @@
 
 use crate::cli::{Exit, ServiceAction, ServiceArgs, render};
 use crate::config::Profile;
-use crate::platform::launchd::Agent;
+use crate::platform::Agent;
 use crate::service;
 
 pub fn dispatch(args: &ServiceArgs) -> Exit {
@@ -139,7 +139,7 @@ fn status(config: &crate::config::Config) -> Exit {
     let broken = rows.iter().any(|(installed, wanted)| {
         matches!(
             installed.loaded,
-            crate::platform::launchd::Loaded::Yes { last, .. } if !last.is_clean()
+            crate::platform::Loaded::Yes { last, .. } if !last.is_clean()
         ) || wanted.is_some_and(|wanted| installed.matches(wanted) == Some(false))
     });
     if broken { Exit::Failure } else { Exit::Ok }

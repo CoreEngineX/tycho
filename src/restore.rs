@@ -39,6 +39,8 @@ pub enum RestoreError {
     NoBackup(String),
     #[error("{path} already has things in it; --force to restore into it anyway")]
     NotEmpty { path: String },
+    #[error("extracting the backup failed and left nothing to blame it on: {detail}")]
+    Extract { detail: String },
 }
 
 fn io(context: String) -> impl FnOnce(std::io::Error) -> RestoreError {
@@ -95,6 +97,13 @@ pub struct Done {
     /// A single-file restore names what answered for each path.
     pub resolved: Vec<(PathBuf, Resolved)>,
     pub bundle: Option<PathBuf>,
+    /// Tree paths the extraction did not put on disk.
+    ///
+    /// Named rather than counted, and measured from the filesystem rather than taken
+    /// from `tar`'s report: on Windows `tar` cannot create a symlink without a
+    /// privilege, says so, and **carries on with the rest**, so the only honest
+    /// account of what a restore produced is what is actually there.
+    pub missing: Vec<String>,
 }
 
 impl Done {
@@ -316,11 +325,28 @@ fn extract_all(
 
     let archive = tar.display().to_string();
     let destination = into.display().to_string();
-    crate::sys::process::command("tar", &["-xf", &archive, "-C", &destination], Timeout::WORK)?;
+    let out =
+        crate::sys::process::command("tar", &["-xf", &archive, "-C", &destination], Timeout::WORK)?;
     std::fs::remove_file(&tar).map_err(io(format!("removing {}", tar.display())))?;
 
-    done.files = backup.tree().len();
+    // `command` hands back the output whatever the status, so a non-zero exit here
+    // was previously discarded entirely. It is not fatal - `tar` extracts what it can
+    // and reports the rest - but it must not pass for success, and what it could not
+    // write is established by looking rather than by parsing its complaints.
+    done.missing = backup
+        .tree()
+        .iter()
+        .filter(|path| into.join(path.as_path()).symlink_metadata().is_err())
+        .map(ToString::to_string)
+        .collect();
+    done.files = backup.tree().len() - done.missing.len();
     done.bytes = tree_bytes(into)?;
+
+    if !out.status.success() && done.missing.is_empty() {
+        return Err(RestoreError::Extract {
+            detail: String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+        });
+    }
     Ok(())
 }
 

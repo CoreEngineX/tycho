@@ -557,7 +557,7 @@ pub fn doctor(report: &crate::doctor::Report) -> String {
 /// into the plist verbatim, and a plist pointing at a binary you later moved is a
 /// scheduled backup that silently stops.
 #[must_use]
-pub fn service_installed(agents: &[crate::platform::launchd::Agent], program: &Path) -> String {
+pub fn service_installed(agents: &[crate::platform::Agent], program: &Path) -> String {
     let mut out = String::new();
     for agent in agents {
         let _ = writeln!(out, "installed {}", agent.label());
@@ -573,10 +573,12 @@ pub fn service_installed(agents: &[crate::platform::launchd::Agent], program: &P
 /// `service status`: whether each agent is loaded, its last exit, and its schedule.
 #[must_use]
 pub fn service_status(rows: &[(crate::service::Installed, Option<Option<Schedule>>)]) -> String {
-    use crate::platform::launchd::Loaded;
+    use crate::platform::Loaded;
 
     let mut out = String::new();
-    let _ = writeln!(out, "{:<48}{:<10}schedule", "agent", "state");
+    // 12 rather than 10: "not yet run" is eleven characters and ran into the
+    // schedule column, and "not loaded" filled it exactly with no gap.
+    let _ = writeln!(out, "{:<46}{:<12}schedule", "agent", "state");
     rule(&mut out);
 
     for (installed, wanted) in rows {
@@ -603,8 +605,8 @@ pub fn service_status(rows: &[(crate::service::Installed, Option<Option<Schedule
         };
         let _ = writeln!(
             out,
-            "  {:<46}{:<10}{}",
-            fit(&installed.agent.label(), 45),
+            "  {:<44}{:<12}{}",
+            fit(&installed.agent.label(), 43),
             state,
             schedule
         );
@@ -667,6 +669,25 @@ pub fn restored(into: &std::path::Path, done: &crate::restore::Done) -> String {
         plural(done.files, "file"),
         size(done.bytes)
     );
+    // A restore that is short of its backup says which paths, because the count alone
+    // reads as a complete restore of a smaller backup.
+    if !done.missing.is_empty() {
+        let _ = writeln!(
+            out,
+            "missing   {} the extraction could not write",
+            plural(done.missing.len(), "path")
+        );
+        for path in done.missing.iter().take(REPO_TABLE_ROWS) {
+            let _ = writeln!(out, "          {}", fit(path, 46));
+        }
+        if done.missing.len() > REPO_TABLE_ROWS {
+            let _ = writeln!(
+                out,
+                "          and {} more",
+                done.missing.len() - REPO_TABLE_ROWS
+            );
+        }
+    }
     if !done.repos.is_empty() {
         let _ = writeln!(
             out,

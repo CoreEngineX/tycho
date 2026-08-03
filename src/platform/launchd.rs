@@ -282,6 +282,13 @@ pub enum Loaded {
 pub enum Ended {
     Exit(i32),
     Signal(i32),
+    /// Registered, but not yet fired once.
+    ///
+    /// Task Scheduler says so outright, reporting `SCHED_S_TASK_HAS_NOT_RUN` rather
+    /// than an exit code. A freshly installed agent is in this state and must not
+    /// read as either a success or a failure - the distinction `service status` needs
+    /// in order to say "installed, waiting for Sunday" rather than "loaded".
+    NeverRun,
 }
 
 impl Ended {
@@ -296,9 +303,11 @@ impl Ended {
         }
     }
 
+    /// A task that has never run has nothing to be unclean about, so `status` does
+    /// not colour it red on the day it is installed.
     #[must_use]
     pub const fn is_clean(self) -> bool {
-        matches!(self, Self::Exit(0))
+        matches!(self, Self::Exit(0) | Self::NeverRun)
     }
 }
 
@@ -308,6 +317,7 @@ impl std::fmt::Display for Ended {
             Self::Exit(0) => f.pad("loaded"),
             Self::Exit(code) => f.pad(&format!("exit {code}")),
             Self::Signal(signal) => f.pad(&format!("killed {signal}")),
+            Self::NeverRun => f.pad("not yet run"),
         }
     }
 }
@@ -375,6 +385,119 @@ pub fn bootout(agent: &Agent) -> Result<(), LaunchdError> {
     let target = format!("gui/{}/{}", uid()?, agent.label());
     let _ = command("launchctl", &["bootout", &target], Timeout::WORK)?;
     Ok(())
+}
+
+fn integer(plist: &str, key: &str) -> Option<u32> {
+    between(plist, &format!("<key>{key}</key><integer>"), "</integer>")?
+        .parse()
+        .ok()
+}
+
+fn between<'a>(text: &'a str, open: &str, close: &str) -> Option<&'a str> {
+    let rest = text.split_once(open)?.1;
+    rest.split_once(close).map(|(value, _)| value)
+}
+
+const fn weekday(value: u8) -> Option<crate::config::Weekday> {
+    use crate::config::Weekday as Day;
+    match value {
+        0 => Some(Day::Sunday),
+        1 => Some(Day::Monday),
+        2 => Some(Day::Tuesday),
+        3 => Some(Day::Wednesday),
+        4 => Some(Day::Thursday),
+        5 => Some(Day::Friday),
+        6 => Some(Day::Saturday),
+        _ => None,
+    }
+}
+
+/// The names `service` calls a scheduler by, so its policy reads the same on both
+/// platforms. The launchd-flavoured names above stay as they are: a plist is a plist,
+/// and `tests/launchd.rs` is written against Apple's own vocabulary.
+pub use LaunchdError as Error;
+
+/// # Errors
+///
+/// If there is no home directory.
+pub fn definitions_dir() -> Result<AbsPath, PathError> {
+    agents_dir()
+}
+
+/// # Errors
+///
+/// If there is no home directory.
+pub fn definition_path(agent: &Agent) -> Result<PathBuf, PathError> {
+    agent.plist_path()
+}
+
+#[must_use]
+pub fn backup_definition(job: &Job<'_>, schedule: Schedule) -> String {
+    backup_plist(job, schedule)
+}
+
+#[must_use]
+pub fn catchup_definition(job: &Job<'_>) -> String {
+    catchup_plist(job)
+}
+
+#[must_use]
+pub fn probe_definition(job: &Job<'_>) -> String {
+    probe_plist(job)
+}
+
+/// A plist is UTF-8 and says so, so this is the identity. The seam exists because
+/// `schtasks` refuses a definition that does not declare UTF-16.
+#[must_use]
+pub fn encode(definition: &str) -> Vec<u8> {
+    definition.as_bytes().to_vec()
+}
+
+#[must_use]
+pub fn decode(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// # Errors
+///
+/// If `launchctl` fails.
+pub fn register(agent: &Agent, definition: &Path) -> Result<(), LaunchdError> {
+    bootstrap(agent, definition)
+}
+
+/// # Errors
+///
+/// If `launchctl` cannot be run at all.
+pub fn deregister(agent: &Agent) -> Result<(), LaunchdError> {
+    bootout(agent)
+}
+
+/// Reads the schedule back out of an installed plist.
+///
+/// Parsed from the generated shape rather than through a plist library: this is the
+/// reader for text this crate wrote, and `tests/launchd.rs` pins the two together
+/// through Apple's own parser.
+#[must_use]
+pub fn scheduled_in(plist: &str) -> Option<Schedule> {
+    if let Some(seconds) = between(plist, "<key>StartInterval</key><integer>", "</integer>")
+        && let Ok(seconds) = seconds.parse::<u64>()
+    {
+        return Some(Schedule::Every(std::time::Duration::from_secs(seconds)));
+    }
+
+    let hour = integer(plist, "Hour")?;
+    let minute = integer(plist, "Minute")?;
+    let at = crate::config::TimeOfDay {
+        hour: u8::try_from(hour).ok()?,
+        minute: u8::try_from(minute).ok()?,
+    };
+    match integer(plist, "Weekday") {
+        Some(day) => Some(Schedule::Weekly {
+            day: weekday(u8::try_from(day).ok()?)?,
+            at,
+        }),
+        None => Some(Schedule::Daily { at }),
+    }
 }
 
 #[cfg(test)]

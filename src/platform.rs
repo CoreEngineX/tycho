@@ -4,6 +4,24 @@
 pub mod launchd;
 pub mod log;
 pub mod notify;
+#[cfg(windows)]
+pub mod schtasks;
+
+/// The lifecycle vocabulary is Tycho's own, not any one scheduler's: which agent,
+/// what it runs, whether it is registered, and how its last invocation ended. It is
+/// declared in `launchd` for want of a better home and re-exported here so the
+/// Windows backend and `service` name it without importing the macOS module.
+pub use launchd::{Agent, Ended, Job, Loaded};
+
+/// The scheduler this platform actually has.
+///
+/// A `#[cfg]`-selected module rather than a trait: there is exactly one
+/// implementation per target and it is chosen at compile time, which is the same
+/// reasoning `notify` records.
+#[cfg(target_os = "macos")]
+pub use launchd as scheduler;
+#[cfg(windows)]
+pub use schtasks as scheduler;
 
 use crate::primitives::path::{AbsPath, PathError};
 

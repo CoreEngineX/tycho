@@ -9,14 +9,14 @@
 //! scheduler starts a run, it does its work, and it exits.
 
 use crate::config::{Config, Profile, Schedule};
-use crate::platform::launchd::{self, Agent, Job, LaunchdError, Loaded};
 use crate::platform::log_dir;
+use crate::platform::{Agent, Job, Loaded, scheduler};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServiceError {
     #[error(transparent)]
-    Launchd(#[from] LaunchdError),
+    Scheduler(#[from] scheduler::Error),
     #[error(transparent)]
     Path(#[from] crate::primitives::path::PathError),
     #[error("{context}: {source}")]
@@ -101,7 +101,7 @@ pub fn install(
     let logs = log_dir()?;
     std::fs::create_dir_all(logs.as_path())
         .map_err(io(format!("creating {}", logs.as_path().display())))?;
-    let agents = launchd::agents_dir()?;
+    let agents = scheduler::definitions_dir()?;
     std::fs::create_dir_all(agents.as_path())
         .map_err(io(format!("creating {}", agents.as_path().display())))?;
 
@@ -117,7 +117,7 @@ pub fn install(
         log_dir: logs.as_path(),
         log_stem: profile.name.to_string(),
     };
-    write_and_load(&backup, &launchd::backup_plist(&job, schedule))?;
+    write_and_load(&backup, &scheduler::backup_definition(&job, schedule))?;
 
     // One shared agent, so installing a second profile re-bootstraps rather than
     // duplicating it.
@@ -129,7 +129,7 @@ pub fn install(
         log_dir: logs.as_path(),
         log_stem: "catchup".to_owned(),
     };
-    write_and_load(&catchup, &launchd::catchup_plist(&job))?;
+    write_and_load(&catchup, &scheduler::catchup_definition(&job))?;
 
     Ok(vec![backup, catchup])
 }
@@ -142,12 +142,12 @@ pub fn install(
 /// # Errors
 ///
 /// If the plist cannot be written or launchd refuses.
-pub fn write_and_load(agent: &Agent, plist: &str) -> Result<(), ServiceError> {
-    let path = agent.plist_path()?;
-    let _ = launchd::bootout(agent);
-    crate::sys::fs::write_atomic(&path, plist.as_bytes())
+pub fn write_and_load(agent: &Agent, definition: &str) -> Result<(), ServiceError> {
+    let path = scheduler::definition_path(agent)?;
+    let _ = scheduler::deregister(agent);
+    crate::sys::fs::write_atomic(&path, &scheduler::encode(definition))
         .map_err(io(format!("writing {}", path.display())))?;
-    launchd::bootstrap(agent, &path)?;
+    scheduler::register(agent, &path)?;
     Ok(())
 }
 
@@ -167,8 +167,8 @@ pub fn uninstall(profile: &Profile, remaining: usize) -> Result<Vec<Agent>, Serv
     }
 
     for agent in &removed {
-        let _ = launchd::bootout(agent);
-        let path = agent.plist_path()?;
+        let _ = scheduler::deregister(agent);
+        let path = scheduler::definition_path(agent)?;
         match std::fs::remove_file(&path) {
             Ok(()) => {}
             // Already gone is the answer `uninstall` wants: after a crash, or after a
@@ -186,14 +186,16 @@ pub fn uninstall(profile: &Profile, remaining: usize) -> Result<Vec<Agent>, Serv
 ///
 /// If `launchctl` cannot be run.
 pub fn inspect(agent: Agent) -> Result<Installed, ServiceError> {
-    let loaded = launchd::state(&agent).map_err(LaunchdError::from)?;
-    let path = agent.plist_path()?;
-    let text = std::fs::read_to_string(&path).ok();
+    let loaded = scheduler::state(&agent).map_err(scheduler::Error::from)?;
+    let path = scheduler::definition_path(&agent)?;
+    let text = std::fs::read(&path)
+        .ok()
+        .map(|bytes| scheduler::decode(&bytes));
     Ok(Installed {
         agent,
         loaded,
         plist: text.as_ref().map(|_| path),
-        scheduled: text.as_deref().and_then(scheduled_in),
+        scheduled: text.as_deref().and_then(scheduler::scheduled_in),
     })
 }
 
@@ -209,67 +211,14 @@ pub fn agents_for(config: &Config) -> Vec<Agent> {
     agents
 }
 
-/// Reads the schedule back out of an installed plist.
-///
-/// Parsed from the generated shape rather than through a plist library: this is the
-/// reader for text this crate wrote, and `tests/launchd.rs` pins the two together
-/// through Apple's own parser.
-#[must_use]
-pub fn scheduled_in(plist: &str) -> Option<Schedule> {
-    if let Some(seconds) = between(plist, "<key>StartInterval</key><integer>", "</integer>")
-        && let Ok(seconds) = seconds.parse::<u64>()
-    {
-        return Some(Schedule::Every(std::time::Duration::from_secs(seconds)));
-    }
-
-    let hour = integer(plist, "Hour")?;
-    let minute = integer(plist, "Minute")?;
-    let at = crate::config::TimeOfDay {
-        hour: u8::try_from(hour).ok()?,
-        minute: u8::try_from(minute).ok()?,
-    };
-    match integer(plist, "Weekday") {
-        Some(day) => Some(Schedule::Weekly {
-            day: weekday(u8::try_from(day).ok()?)?,
-            at,
-        }),
-        None => Some(Schedule::Daily { at }),
-    }
-}
-
-fn integer(plist: &str, key: &str) -> Option<u32> {
-    between(plist, &format!("<key>{key}</key><integer>"), "</integer>")?
-        .parse()
-        .ok()
-}
-
-fn between<'a>(text: &'a str, open: &str, close: &str) -> Option<&'a str> {
-    let rest = text.split_once(open)?.1;
-    rest.split_once(close).map(|(value, _)| value)
-}
-
-const fn weekday(value: u8) -> Option<crate::config::Weekday> {
-    use crate::config::Weekday as Day;
-    match value {
-        0 => Some(Day::Sunday),
-        1 => Some(Day::Monday),
-        2 => Some(Day::Tuesday),
-        3 => Some(Day::Wednesday),
-        4 => Some(Day::Thursday),
-        5 => Some(Day::Friday),
-        6 => Some(Day::Saturday),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::scheduled_in;
     use crate::config::{Schedule, TimeOfDay, Weekday};
-    use crate::platform::launchd::{Agent, Job, backup_plist};
+    use crate::platform::{Agent, Job, scheduler};
+    use scheduler::scheduled_in;
     use std::path::Path;
 
-    fn plist(schedule: Schedule) -> String {
+    fn definition(schedule: Schedule) -> String {
         let agent = Agent::Backup("demo".to_owned());
         let job = Job {
             agent: &agent,
@@ -278,7 +227,7 @@ mod tests {
             log_dir: Path::new("/logs"),
             log_stem: "demo".to_owned(),
         };
-        backup_plist(&job, schedule)
+        scheduler::backup_definition(&job, schedule)
     }
 
     /// Writer and reader pinned to each other. `doctor` compares the installed plist
@@ -308,7 +257,7 @@ mod tests {
             Schedule::Every(std::time::Duration::from_secs(3600)),
         ] {
             assert_eq!(
-                scheduled_in(&plist(schedule)),
+                scheduled_in(&definition(schedule)),
                 Some(schedule),
                 "{schedule:?} did not survive the round trip"
             );
@@ -319,7 +268,7 @@ mod tests {
     /// that is not there - or worse, agreement that is not there.
     #[test]
     fn daily_is_not_read_as_a_weekly_on_sunday() {
-        let daily = plist(Schedule::Daily {
+        let daily = definition(Schedule::Daily {
             at: TimeOfDay {
                 hour: 12,
                 minute: 0,
@@ -329,7 +278,8 @@ mod tests {
     }
 
     #[test]
-    fn a_plist_that_is_not_ours_reads_as_no_schedule() {
+    fn a_document_that_is_not_ours_reads_as_no_schedule() {
         assert_eq!(scheduled_in("<plist><dict></dict></plist>"), None);
+        assert_eq!(scheduled_in("<Task><Triggers /></Task>"), None);
     }
 }
