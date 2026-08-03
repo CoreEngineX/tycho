@@ -2,11 +2,11 @@
 
 use crate::capture::{Inspection, inspect};
 use crate::cli::{ConfigAction, ConfigArgs, Exit, RunArgs, render};
-use crate::config::rules::RuleTree;
 use crate::config::{Config, Parsed, Profile};
-use crate::plan::{self, Plan};
+use crate::plan::Plan;
 use crate::platform;
-use std::collections::BTreeMap;
+use crate::state::State;
+use crate::store::{self, Store};
 use std::fs;
 use std::path::PathBuf;
 
@@ -23,40 +23,146 @@ pub fn run(args: &RunArgs) -> Exit {
         return Exit::Failure;
     };
 
-    if !args.dry_run {
-        eprintln!("tycho: only --dry-run is implemented yet");
+    let Some(paths) = locations(profile) else {
         return Exit::Failure;
-    }
-
-    let tree = match RuleTree::build(&profile.rule_set()) {
-        Ok(tree) => tree,
+    };
+    let mut state = match State::load(paths.state.as_path()) {
+        Ok(state) => state,
         Err(error) => {
             eprintln!("tycho: {error}");
             return Exit::Failure;
         }
     };
 
-    // No state file yet, so there is nothing to compare a shrink against.
-    let previous = BTreeMap::new();
-    let plan = match plan::build(profile, &tree, &previous, args.allow_shrink) {
-        Ok(plan) => plan,
+    if args.dry_run {
+        let previous = state.last_entries(profile.name.as_str());
+        let plan = match store::run::dry(profile, &previous, args.allow_shrink) {
+            Ok(plan) => plan,
+            Err(error) => {
+                eprintln!("tycho: {error}");
+                return Exit::Failure;
+            }
+        };
+        let repos = if args.quick {
+            Vec::new()
+        } else {
+            inspect_all(&plan)
+        };
+        print!("{}", render::dry_run(&plan, &repos, args.quick));
+        for warning in plan.warnings() {
+            eprintln!("warn  {warning:?}");
+        }
+        return Exit::Ok;
+    }
+
+    let store = match Store::open_or_init(&paths.store) {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("tycho: {error}");
+            return Exit::Failure;
+        }
+    };
+    let run_paths = store::run::Paths {
+        lock: paths.lock.as_path(),
+        state: paths.state.as_path(),
+    };
+    let done = match store::run::execute(profile, &store, &run_paths, &mut state, args.allow_shrink)
+    {
+        Ok(done) => done,
         Err(error) => {
             eprintln!("tycho: {error}");
             return Exit::Failure;
         }
     };
 
-    let repos = if args.quick {
-        Vec::new()
-    } else {
-        inspect_all(&plan)
-    };
-    print!("{}", render::dry_run(&plan, &repos, args.quick));
-
-    for warning in plan.warnings() {
-        eprintln!("warn  {warning:?}");
+    print!("{}", render::run_result(profile.name.as_str(), &done));
+    for warning in &done.warnings {
+        eprintln!("warn  {warning}");
     }
-    Exit::Ok
+
+    // Repository capture and push are not built yet, so this store holds a fraction
+    // of what the profile watches and nothing has left the machine. Saying so is the
+    // point: a quiet green run over an incomplete backup is the exact failure this
+    // project exists to correct.
+    let mut incomplete = Exit::Ok;
+    if done.summary.repos_found > 0 {
+        eprintln!(
+            "warn  {} repositories were found and not captured; repository capture is not built yet",
+            done.summary.repos_found
+        );
+        incomplete = Exit::Warning;
+    }
+    if !profile.remotes.is_empty() {
+        eprintln!("warn  nothing was pushed; remotes are not built yet");
+        incomplete = Exit::Warning;
+    }
+    incomplete
+}
+
+/// Where a profile's three files live.
+struct Locations {
+    store: crate::primitives::path::AbsPath,
+    state: crate::primitives::path::AbsPath,
+    lock: crate::primitives::path::AbsPath,
+}
+
+fn locations(profile: &Profile) -> Option<Locations> {
+    let store = platform::store_path(profile.name.as_str(), profile.store_path.as_ref());
+    let state = platform::state_path();
+    let lock = platform::data_dir();
+    match (store, state, lock) {
+        (Ok(store), Ok(state), Ok(dir)) => {
+            // First run on a machine: nothing has made the data directory yet, and
+            // the lock file cannot be created inside one that is not there.
+            if let Err(error) = std::fs::create_dir_all(dir.as_path()) {
+                eprintln!("tycho: creating {dir}: {error}");
+                return None;
+            }
+            let lock = crate::primitives::path::AbsPath::from_absolute(
+                &dir.as_path().join(format!("{}.lock", profile.name)),
+            );
+            match lock {
+                Ok(lock) => Some(Locations { store, state, lock }),
+                Err(error) => {
+                    eprintln!("tycho: {error}");
+                    None
+                }
+            }
+        }
+        (Err(error), ..) | (_, Err(error), _) | (_, _, Err(error)) => {
+            eprintln!("tycho: {error}");
+            None
+        }
+    }
+}
+
+pub fn history(args: &crate::cli::HistoryArgs) -> Exit {
+    let Some(parsed) = load(args.config.clone()) else {
+        return Exit::Failure;
+    };
+    let Some(profile) = select(&parsed.config, args.profile.as_deref()) else {
+        return Exit::Failure;
+    };
+    let Some(paths) = locations(profile) else {
+        return Exit::Failure;
+    };
+    let store = match Store::open_or_init(&paths.store) {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("tycho: {error}");
+            return Exit::Failure;
+        }
+    };
+    match store.history(args.count) {
+        Ok(backups) => {
+            print!("{}", render::history(&backups));
+            Exit::Ok
+        }
+        Err(error) => {
+            eprintln!("tycho: {error}");
+            Exit::Failure
+        }
+    }
 }
 
 pub fn config(args: &ConfigArgs) -> Exit {

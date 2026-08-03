@@ -306,6 +306,13 @@ impl Repo {
         }
         Ok(Index { repo: self, path })
     }
+
+    /// The same index without clearing it, for a caller that built it with
+    /// [`Repo::scratch_index`] and is now reading it back.
+    #[must_use]
+    pub const fn open_index(&self, path: PathBuf) -> Index<'_> {
+        Index { repo: self, path }
+    }
 }
 
 /// A scratch index, built from nothing.

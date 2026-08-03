@@ -33,6 +33,18 @@ pub struct RunArgs {
 }
 
 #[derive(Clone, Debug, Args)]
+pub struct HistoryArgs {
+    /// Which profile's store to read
+    pub profile: Option<String>,
+    /// How many backups to list
+    #[arg(short = 'n', default_value_t = 20)]
+    pub count: usize,
+    /// Read this config file instead of the default location
+    #[arg(long, value_name = "PATH")]
+    pub config: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Args)]
 pub struct ConfigArgs {
     #[command(subcommand)]
     pub action: ConfigAction,
@@ -58,7 +70,7 @@ pub enum Command {
     /// Per-profile schedule, store summary and remote health
     Status,
     /// The store's commits, rendered
-    History,
+    History(HistoryArgs),
     /// Recover to a destination directory
     Restore,
     /// Manage watched roots
@@ -108,7 +120,7 @@ impl Command {
             Self::Run(_) => "run",
             Self::Push => "push",
             Self::Status => "status",
-            Self::History => "history",
+            Self::History(_) => "history",
             Self::Restore => "restore",
             Self::Watch => "watch",
             Self::Ignore => "ignore",
@@ -153,6 +165,7 @@ pub fn dispatch(command: Command) -> Exit {
     match command {
         Command::Run(args) => run::run(&args),
         Command::Config(args) => run::config(&args),
+        Command::History(args) => run::history(&args),
         other => {
             eprintln!("tycho: {} is not implemented yet", other.name());
             Exit::Failure

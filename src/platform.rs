@@ -16,3 +16,41 @@ use crate::primitives::path::{AbsPath, PathError};
 pub fn config_path() -> Result<AbsPath, PathError> {
     AbsPath::parse("~/.config/tycho/tycho.toml")
 }
+
+/// Where the data Apple's conventions do cover lives. Joined by hand rather than
+/// through `directories`, because `store.md`'s path table is the contract and a
+/// crate would have to be verified against it anyway.
+///
+/// # Errors
+///
+/// If there is no home directory.
+pub fn data_dir() -> Result<AbsPath, PathError> {
+    AbsPath::parse("~/Library/Application Support/tycho")
+}
+
+/// `<data>/store/<profile>.git`, unless the profile overrides the directory.
+///
+/// # Errors
+///
+/// If there is no home directory.
+pub fn store_path(profile: &str, override_dir: Option<&AbsPath>) -> Result<AbsPath, PathError> {
+    let dir = match override_dir {
+        Some(dir) => dir.clone(),
+        None => AbsPath::parse("~/Library/Application Support/tycho/store")?,
+    };
+    AbsPath::from_absolute(&dir.as_path().join(format!("{profile}.git")))
+}
+
+/// # Errors
+///
+/// If there is no home directory.
+pub fn state_path() -> Result<AbsPath, PathError> {
+    AbsPath::parse("~/Library/Application Support/tycho/state.json")
+}
+
+/// # Errors
+///
+/// If there is no home directory.
+pub fn log_dir() -> Result<AbsPath, PathError> {
+    AbsPath::parse("~/Library/Logs/tycho")
+}

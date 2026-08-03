@@ -217,6 +217,110 @@ pub fn config_check(summaries: &[String], diagnostics: &[Diagnostic]) -> String 
     out
 }
 
+/// What a completed run says for itself.
+#[must_use]
+pub fn run_result(profile: &str, done: &crate::store::run::Completed) -> String {
+    let summary = &done.summary;
+    let mut out = format!("{profile}  {}\n", done.commit.short());
+    let _ = writeln!(
+        out,
+        "  {:<13}{:<40}{:>19}",
+        "captured",
+        counted(summary),
+        size(summary.tracked_bytes)
+    );
+    let _ = writeln!(
+        out,
+        "  {:<13}{:<40}{:>19}",
+        "written",
+        format!("in {}s", summary.seconds),
+        size(summary.written_bytes)
+    );
+    out
+}
+
+/// `cli.md` section 4. `written` is read back out of each commit's own message, so
+/// this renders from a bare clone with no state file - which is the disaster path.
+#[must_use]
+pub fn history(backups: &[crate::store::Backup]) -> String {
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{:<20}{:<10}{:<34}{:>10}",
+        "when", "commit", "summary", "written"
+    );
+    rule(&mut out);
+
+    let mut total = 0;
+    for backup in backups {
+        let (line, written) = backup.summary.as_ref().map_or_else(
+            || ("not written by tycho".to_owned(), None),
+            |summary| {
+                let text = counted(summary);
+                (text, Some(summary.written_bytes))
+            },
+        );
+        total += written.unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "  {:<18}{:<10}{:<34}{:>10}",
+            when(&backup.when),
+            backup.commit.short(),
+            fit(&line, 33),
+            written.map_or_else(|| "-".to_owned(), size)
+        );
+    }
+
+    rule(&mut out);
+    let _ = writeln!(
+        out,
+        "  {:<18}{:<10}{:<34}{:>10}",
+        "",
+        "",
+        format!("{} backups", count(backups.len())),
+        size(total)
+    );
+    out
+}
+
+/// Only the non-zero parts, so a run that only changed files reads `2 changed`
+/// rather than `2 changed, 0 added, 0 deleted`.
+#[must_use]
+pub fn counted(summary: &crate::store::message::Summary) -> String {
+    if summary.is_empty() {
+        return "no changes".to_owned();
+    }
+    let mut parts = Vec::new();
+    for (value, word) in [
+        (summary.changed, "changed"),
+        (summary.added, "added"),
+        (summary.deleted, "deleted"),
+    ] {
+        if value > 0 {
+            parts.push(format!("{} {word}", count(value)));
+        }
+    }
+    parts.join(", ")
+}
+
+/// Recent stamps read as `today` and `yesterday`, older ones as dates - and all of
+/// them in local time, because that is the clock the person reading them lives on.
+fn when(rfc3339: &str) -> String {
+    let Ok(stamp) = rfc3339.parse::<jiff::Timestamp>() else {
+        return rfc3339.to_owned();
+    };
+    let zoned = stamp.to_zoned(jiff::tz::TimeZone::system());
+    let today = jiff::Timestamp::now()
+        .to_zoned(jiff::tz::TimeZone::system())
+        .date();
+    let days = today.since(zoned.date()).map_or(99, |span| span.get_days());
+    match days {
+        0 => format!("today {}", zoned.strftime("%H:%M")),
+        1 => format!("yesterday {}", zoned.strftime("%H:%M")),
+        _ => zoned.strftime("%F %H:%M").to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{count, size};
