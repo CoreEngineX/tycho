@@ -82,9 +82,17 @@ an IPC protocol for the CLI to query.
 
 `man launchd.plist` states that unlike cron, launchd starts a missed
 `StartCalendarInterval` job when the machine wakes. That is the catch-up behaviour
-the daemon existed to provide. The proposal separately required the CLI to work
-fully with the daemon down, which means every code path has to exist without it
-regardless.
+the daemon existed to provide - **for a sleeping machine.** The man page promises
+nothing about a machine that was powered off across its scheduled time, and a grep
+of the page for boot, power or shutdown returns nothing on the subject.
+
+That gap is closed without a daemon: every invocation of every agent compares now
+against the last successful run in the state file and reports an overdue backup,
+so a Mac shut down over a weekend is noticed by the next hourly catch-up rather
+than silently skipped. `scheduling.md` section 1 specifies it.
+
+The proposal separately required the CLI to work fully with the daemon down, which
+means every code path has to exist without it regardless.
 
 Dropping it removes tokio, croner, `interprocess`, a socket protocol, a second
 lifecycle to install and debug, and a failure mode where the daemon is dead and
@@ -172,3 +180,80 @@ A run where nothing changed anywhere commits with a body reading `no changes`.
 A gap in the history would otherwise be ambiguous between "nothing changed" and
 "the backup did not run" - and a year of the latter being invisible is exactly what
 this project was built in response to.
+
+---
+
+The decisions below replaced earlier ones after the design audit of 2026-08-01,
+which ran four region auditors and four adversarial verifiers over the doc set and
+confirmed 57 of 58 Critical and High findings. Each records what the design used to
+say, because the old answer is the one a reader would otherwise assume.
+
+## D13. No `--prune` on the capture fetch
+
+**Rejected:** `git fetch --prune`, which the design specified until the audit.
+
+Captured history is reachable **only** through `refs/tycho/*` - the store's own
+commits hold plain files, the overlay and `REPO.txt`, not the captured repositories'
+commits. So a pruned ref does not leave its objects "reachable from older backup
+commits" as `store.md` used to claim; nothing references them and they become
+garbage. Verified: delete a merged feature branch upstream, re-run, and its unique
+commits are unreachable immediately, then destroyed by any `gc` past
+`gc.pruneExpire`.
+
+With git's two-week default that made "full history forever" true for a fortnight,
+for the most common operation in git. The `refs/tycho/*` set now grows monotonically,
+liveness is recorded in `REPO.txt` rather than by ref deletion, and the expiries are
+pinned to `never` at store creation so nothing inherits a default or a user's global
+config.
+
+**The cost:** ref sprawl in long-lived repositories. `pack-refs` keeps it cheap and
+`doctor` reports the count.
+
+## D14. The push forces `refs/tycho/*` only, and is atomic
+
+**Rejected:** `+` on both refspecs, which the design specified while its own failure
+table promised "never force-pushed" and "rejected rather than merged".
+
+Reproduced: a second machine's push printed `(forced update)` for both ref families,
+exited 0, and left the first machine's entire backup history unreachable -
+permanently, once the remote's default `receive.autogc` collected it.
+
+Tycho's own history is append-only by construction, so a non-fast-forward on
+`refs/heads/*` means a second machine is pushing the same profile name and must be
+rejected. `refs/tycho/*` keeps its `+` because those refs legitimately track a
+rewritten upstream. `--atomic` is required, because without it a rejection on heads
+still lets the forced tycho updates land.
+
+`receive.denyNonFastForwards` is **not** the mechanism - it protects `refs/heads/*`
+only and lets `refs/tycho/*` be clobbered anyway. It is set as defence in depth.
+
+## D15. Byte-exactness is enforced by three mechanisms, not assumed
+
+**Rejected:** trusting that `hash-object` stores what is on disk.
+
+It does not. It applies gitattributes and clean filters, so `core.autocrlf` stores a
+CRLF file LF-normalized and a git-lfs filter replaces content with a 130-byte
+pointer. `git archive` applies them again on the way out, and the attributes can come
+from a `.gitattributes` **captured into the store's own tree** - which needs no
+unusual configuration at all, only a backed-up repository that has one.
+
+`--no-filters`, a neutralising `info/attributes`, and pinned `-c` config on every
+invocation. `info/attributes` does not survive a mirror clone, so restore
+re-establishes it - otherwise the disaster path re-exposes the bug.
+
+## D16. A root that yields nothing fails the run
+
+**Rejected:** treating every read failure as a warning, which the design specified.
+
+Under launchd, macOS TCC can deny the agent access to a watched root. With read
+failures as warnings, that produced a near-empty commit at exit 0 with every remote
+recorded as `Synced` - a green backup containing nothing. That is precisely the
+a sibling daemon failure, where the agent ran faithfully and moved nothing, rebuilt
+inside the tool written to prevent it.
+
+A root resolving to zero capturable entries, or whose own directory read fails, is
+now a `RunError`. A large drop in entry count against the previous run's `RunStats`
+also fails, unless `--allow-shrink` is passed. Leaf-file read failures remain
+warnings, because one unreadable file is not a reason to lose the other fifty
+thousand.
+

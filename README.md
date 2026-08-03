@@ -15,16 +15,18 @@ history and going back is `git log` and a checkout.
 
 ## Why
 
-It replaces a 45-line shell script whose every scheduled run failed silently for
-its entire life: `git bundle verify` was called without `-C "$repo"`, launchd's
-working directory is not a repository, and `set -e` aborted before anything was
-copied. Nobody noticed, because a backup system that fails silently manufactures
-confidence rather than removing it.
+It replaces a 44-line shell script whose every logged scheduled run failed
+silently: `git bundle verify` was called without `-C "$repo"`, launchd's working
+directory is not a repository, and `set -e` aborted before anything was copied.
+Nobody noticed, because a backup system that fails silently manufactures confidence
+rather than removing it.
 
 Three requirements come directly from that and from what followed:
 
 - **Failure is loud.** Non-zero exits, red status, desktop notifications, and a
-  `status --check` that a monitor can read without parsing output.
+  `status --check` that a monitor can read without parsing output. A run in which
+  no remote received the new commit is a failure, so "every run pushes" means
+  something rather than being an aspiration.
 - **Gitignored files are the precious ones.** A sync incident once deleted a
   repository's files; git restored everything except the one gitignored file. Tycho
   never consults `.gitignore` when deciding what to capture.
@@ -38,6 +40,19 @@ Developer machines and company documents. Not a competitor to restic on storage
 engineering for large binary datasets - point it at a 4K video library and you will
 be disappointed. The store keeps full history forever, which is the right trade for
 documents and source, and the wrong one for a media collection.
+
+**What a restore gives back is file contents, not filesystem state.** Permissions
+beyond the execute bit, ownership, timestamps, extended attributes and ACLs are not
+preserved, because git does not store them. A restored private key comes back
+world-readable. `docs/architecture/store.md` section 7 has the full list.
+
+## Status
+
+The design was audited before any code was written: four region auditors read the
+doc set exhaustively and four adversarial verifiers re-ran the decisive experiments,
+confirming 57 of 58 Critical and High findings. Every confirmed finding has been
+fixed in the documents, and `docs/decisions.md` D13 to D16 record the four design
+reversals that resulted. The audit workspace is at `.audit/`, which is gitignored.
 
 ## Docs
 

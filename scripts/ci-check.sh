@@ -3,5 +3,4 @@
 # editor run-task pointing at this path keep working.
 
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")"
-exec cex ci-check --rust
+exec cex ci-check --rust --root "$(dirname "${BASH_SOURCE[0]}")/.."

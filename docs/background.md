@@ -1,16 +1,15 @@
 # Tycho background
 
-Everything around the design that does not belong in the RFC: the history that
+Everything around the design that does not belong in the architecture docs: the history that
 motivated it, the environment it runs in, and the exact state of the system it
-replaces. Read alongside `rfc/001-tycho.md`.
+replaces. Read alongside `docs/architecture/overview.md`.
 
 ## 1. Who and what this is for
 
 - User: CoreEngineX, GitHub `CoreEngineX`, Toronto, Nova Scotia.
-- Two legal entities exist as of Jul-2026: the CoreEngineX sole proprietorship
-  (BN 795095579) and CoreEngineX Inc. (Nova Scotia, Registry ID 4831302,
-  incorporated 10-Jul-2026). Relevant to legal text only. Tycho is
-  entity-agnostic.
+- Tycho is entity-agnostic. Nothing in its design depends on which CoreEngineX
+  legal entity owns it; see the company records for that, which are not this
+  document's to assert.
 - Tycho backs up (a) the user's company data on macOS, and (b) a second person's
   company on their own machine, likely Windows, requirements not yet gathered.
   Multi-tenant means multiple config profiles; nothing is shared between them.
@@ -78,11 +77,16 @@ verify a bundle" and `set -euo pipefail` aborts before any copy.
 Evidence: three such errors in the log; `launchctl list` shows last exit status 1
 for `com.coreenginex.docs-backup`, re-confirmed 01-Aug-2026; both cloud folders'
 newest bundles are from a manual run on 22-Jul 18:17, so the scheduled 26-Jul run
-left nothing. Every scheduled run in the script's life failed silently.
+left nothing. Every scheduled run covered by the log failed silently. The log does
+not reach back to the job's installation, so "every run ever" is the likely reading
+rather than the established one - what is established is that no bundle in either
+destination carries a Sunday-12:00 mtime.
 
 Consequence of leaving it unfixed: there are no working scheduled backups until
-Tycho M1 ships and is dogfooded. That raises the urgency of M1, and it makes the
-retirement plan a cutover from nothing rather than from a working system.
+Tycho ships and is dogfooded - meaning the first release installed on this machine
+and confirmed by a successful *scheduled* run, not a manual one. That raises the
+urgency, and it makes the retirement plan a cutover from nothing rather than from a
+working system.
 
 Known gap in the script beyond the bug: `org`'s submodules (brand-assets,
 toolkit, website, handbook) are captured only as gitlink pointers
