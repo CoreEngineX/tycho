@@ -2,6 +2,7 @@
 
 pub mod render;
 pub mod run;
+pub mod service;
 
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
@@ -46,6 +47,9 @@ pub struct Cli {
 pub struct RunArgs {
     /// Which profile to back up
     pub profile: Option<String>,
+    /// Every profile. The installed agents run one profile each, per scheduling.md
+    #[arg(long, conflicts_with = "profile")]
+    pub all: bool,
     /// Print the plan and stop before touching the store
     #[arg(long)]
     pub dry_run: bool,
@@ -64,6 +68,9 @@ pub struct RunArgs {
 pub struct PushArgs {
     /// Which profile's store to push
     pub profile: Option<String>,
+    /// Every profile, which is what the shared catch-up agent runs
+    #[arg(long, conflicts_with = "profile")]
+    pub all: bool,
     /// Read this config file instead of the default location
     #[arg(long, value_name = "PATH")]
     pub config: Option<PathBuf>,
@@ -134,6 +141,30 @@ impl RestoreArgs {
 }
 
 #[derive(Clone, Debug, Args)]
+pub struct ServiceArgs {
+    #[command(subcommand)]
+    pub action: ServiceAction,
+    /// Which profile's agent. Omit for every profile in the config
+    #[arg(global = true)]
+    pub profile: Option<String>,
+    /// Read this config file instead of the default location
+    #[arg(long, value_name = "PATH", global = true)]
+    pub config: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, Subcommand)]
+pub enum ServiceAction {
+    /// Generate the plists and load them
+    Install,
+    /// Unload and remove the plists. Never touches the store or any backup
+    Uninstall,
+    /// Whether each agent is loaded, its last exit status, and its next run
+    Status,
+    /// Unload and reload, for after a config change
+    Restart,
+}
+
+#[derive(Clone, Debug, Args)]
 pub struct HistoryArgs {
     /// Which profile's store to read
     pub profile: Option<String>,
@@ -186,7 +217,7 @@ pub enum Command {
     /// Validate, locate or create the config file
     Config(ConfigArgs),
     /// launchd lifecycle for the backup agents
-    Service,
+    Service(ServiceArgs),
     /// Environment, service, remote and volume health
     Doctor,
     /// Measure the agent's own Full Disk Access grant
@@ -230,7 +261,7 @@ impl Command {
             Self::Ignore => "ignore",
             Self::Reinclude => "reinclude",
             Self::Config(_) => "config",
-            Self::Service => "service",
+            Self::Service(_) => "service",
             Self::Doctor => "doctor",
             Self::ProbeAccess => "probe-access",
             Self::Log => "log",
@@ -273,6 +304,7 @@ pub fn dispatch(command: Command) -> Exit {
         Command::Config(args) => run::config(&args),
         Command::History(args) => run::history(&args),
         Command::Restore(args) => run::restore(&args),
+        Command::Service(args) => service::dispatch(&args),
         other => {
             eprintln!("tycho: {} is not implemented yet", other.name());
             Exit::Failure

@@ -2,7 +2,7 @@
 
 use crate::capture::{Inspection, inspect};
 use crate::cli::{ConfigAction, ConfigArgs, Exit, RunArgs, render};
-use crate::config::{Config, Parsed, Profile};
+use crate::config::{Config, Parsed, Profile, Schedule};
 use crate::plan::Plan;
 use crate::platform;
 use crate::remote::state::RemoteState;
@@ -21,10 +21,20 @@ pub fn run(args: &RunArgs) -> Exit {
         eprintln!("tycho: the config has errors, so nothing was backed up");
         return Exit::Failure;
     }
-    let Some(profile) = select(&parsed.config, args.profile.as_deref()) else {
+    let Some(profiles) = selected(&parsed.config, args.profile.as_deref(), args.all) else {
         return Exit::Failure;
     };
 
+    // One profile's failure must not stop the others: the whole point of separate
+    // profiles is that they are independent backups.
+    let mut worst = Exit::Ok;
+    for profile in profiles {
+        worst = worse(worst, one_run(args, profile, &config_text));
+    }
+    worst
+}
+
+fn one_run(args: &RunArgs, profile: &Profile, config_text: &str) -> Exit {
     let Some(paths) = locations(profile) else {
         return Exit::Failure;
     };
@@ -67,7 +77,7 @@ pub fn run(args: &RunArgs) -> Exit {
     let run_paths = store::run::Paths {
         lock: paths.lock.as_path(),
         state: paths.state.as_path(),
-        config_text: Some(&config_text),
+        config_text: Some(config_text),
     };
     let done = match store::run::execute(profile, &store, &run_paths, &mut state, args.allow_shrink)
     {
@@ -229,9 +239,17 @@ pub fn push(args: &crate::cli::PushArgs) -> Exit {
     let Some((parsed, config_text)) = load(args.config.clone()) else {
         return Exit::Failure;
     };
-    let Some(profile) = select(&parsed.config, args.profile.as_deref()) else {
+    let Some(profiles) = selected(&parsed.config, args.profile.as_deref(), args.all) else {
         return Exit::Failure;
     };
+    let mut worst = Exit::Ok;
+    for profile in profiles {
+        worst = worse(worst, one_push(profile, &config_text));
+    }
+    worst
+}
+
+fn one_push(profile: &Profile, config_text: &str) -> Exit {
     if profile.remotes.is_empty() {
         eprintln!("tycho: {} has no remotes to push to", profile.name);
         return Exit::Ok;
@@ -256,7 +274,7 @@ pub fn push(args: &crate::cli::PushArgs) -> Exit {
     let run_paths = store::run::Paths {
         lock: paths.lock.as_path(),
         state: paths.state.as_path(),
-        config_text: Some(&config_text),
+        config_text: Some(config_text),
     };
 
     match store::run::catch_up(profile, &store, &run_paths, &mut state) {
@@ -275,6 +293,16 @@ pub fn push(args: &crate::cli::PushArgs) -> Exit {
             eprintln!("tycho: {error}");
             Exit::Failure
         }
+    }
+}
+
+/// The worse of two outcomes, so a fan-out over profiles reports the worst thing
+/// that happened rather than the last thing.
+const fn worse(a: Exit, b: Exit) -> Exit {
+    match (a, b) {
+        (Exit::Failure, _) | (_, Exit::Failure) => Exit::Failure,
+        (Exit::Warning, _) | (_, Exit::Warning) => Exit::Warning,
+        (Exit::Ok, Exit::Ok) => Exit::Ok,
     }
 }
 
@@ -580,9 +608,9 @@ fn summarise(profile: &Profile) -> String {
     let schedule = profile.schedule.map_or_else(
         || "no schedule".to_owned(),
         |schedule| match schedule {
-            crate::config::Schedule::Daily { at } => format!("daily {at}"),
-            crate::config::Schedule::Weekly { day, at } => format!("{day:?} {at}").to_lowercase(),
-            crate::config::Schedule::Every(every) => format!("every {}s", every.as_secs()),
+            Schedule::Daily { at } => format!("daily {at}"),
+            Schedule::Weekly { day, at } => format!("{day:?} {at}").to_lowercase(),
+            Schedule::Every(every) => format!("every {}s", every.as_secs()),
         },
     );
     format!(
@@ -607,7 +635,7 @@ fn resolve(override_path: Option<PathBuf>) -> Result<PathBuf, String> {
     }
 }
 
-fn load(override_path: Option<PathBuf>) -> Option<(Parsed, String)> {
+pub(crate) fn load(override_path: Option<PathBuf>) -> Option<(Parsed, String)> {
     let path = match resolve(override_path) {
         Ok(path) => path,
         Err(error) => {
@@ -629,6 +657,23 @@ fn load(override_path: Option<PathBuf>) -> Option<(Parsed, String)> {
             None
         }
     }
+}
+
+/// Which profiles a command was aimed at.
+///
+/// `--all` is the manual and scripted form, and the shared catch-up agent's own form;
+/// the installed backup agents run one profile each, per `scheduling.md`. Naming a
+/// profile and passing `--all` cannot both happen - clap refuses the combination -
+/// which is why this takes a bool rather than an `Option` that means two things.
+fn selected<'a>(config: &'a Config, wanted: Option<&str>, all: bool) -> Option<Vec<&'a Profile>> {
+    if all {
+        if config.profiles.is_empty() {
+            eprintln!("tycho: the config defines no profiles");
+            return None;
+        }
+        return Some(config.profiles.iter().collect());
+    }
+    select(config, wanted).map(|profile| vec![profile])
 }
 
 fn select<'a>(config: &'a Config, wanted: Option<&str>) -> Option<&'a Profile> {

@@ -253,8 +253,48 @@ fn render(job: &Job<'_>, extra: &str) -> String {
 pub enum Loaded {
     /// Not bootstrapped into the domain at all.
     No,
-    /// Loaded, with the last exit status it reported.
-    Yes { pid: Option<u32>, last_exit: i32 },
+    /// Loaded, with how the last invocation ended.
+    Yes { pid: Option<u32>, last: Ended },
+}
+
+/// How a job's last invocation finished.
+///
+/// A sum type because `launchctl list` reports a **raw wait status**, not an exit
+/// code: `LastExitStatus = 256` means exit 1, and `= 9` means killed by SIGKILL.
+/// Printing the raw number would have shown `exit 256` for an ordinary failure, which
+/// is a number no `echo $?` ever produced and nobody could look up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ended {
+    Exit(i32),
+    Signal(i32),
+}
+
+impl Ended {
+    /// Decodes a `wait(2)` status the way the shell does.
+    #[must_use]
+    pub const fn from_wait_status(raw: i32) -> Self {
+        let signal = raw & 0x7f;
+        if signal == 0 {
+            Self::Exit((raw >> 8) & 0xff)
+        } else {
+            Self::Signal(signal)
+        }
+    }
+
+    #[must_use]
+    pub const fn is_clean(self) -> bool {
+        matches!(self, Self::Exit(0))
+    }
+}
+
+impl std::fmt::Display for Ended {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Exit(0) => f.pad("loaded"),
+            Self::Exit(code) => f.pad(&format!("exit {code}")),
+            Self::Signal(signal) => f.pad(&format!("killed {signal}")),
+        }
+    }
 }
 
 /// Asks launchd about one label.
@@ -283,9 +323,11 @@ pub fn state(agent: &Agent) -> Result<Loaded, RunError> {
 
     Ok(Loaded::Yes {
         pid: field("PID").and_then(|pid| u32::try_from(pid).ok()),
-        last_exit: field("LastExitStatus")
-            .and_then(|code| i32::try_from(code).ok())
-            .unwrap_or_default(),
+        last: Ended::from_wait_status(
+            field("LastExitStatus")
+                .and_then(|raw| i32::try_from(raw).ok())
+                .unwrap_or_default(),
+        ),
     })
 }
 

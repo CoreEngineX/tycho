@@ -5,9 +5,10 @@
 //! section headers do not; a rule spans exactly the table's width.
 
 use crate::capture::Inspection;
-use crate::config::{Diagnostic, Severity};
+use crate::config::{Diagnostic, Schedule, Severity};
 use crate::plan::{Plan, REPO_TABLE_ROWS, RepoHead};
 use std::fmt::Write as _;
+use std::path::Path;
 
 /// Total width, which fits an eighty-column terminal.
 pub const WIDTH: usize = 74;
@@ -428,6 +429,90 @@ pub fn upcoming(next: &jiff::Zoned) -> String {
     };
     let seconds = (next.timestamp().as_second()) - jiff::Timestamp::now().as_second();
     format!("{label}, in {}", until(seconds))
+}
+
+/// What `service install` put where. The binary path is echoed because it is written
+/// into the plist verbatim, and a plist pointing at a binary you later moved is a
+/// scheduled backup that silently stops.
+#[must_use]
+pub fn service_installed(agents: &[crate::platform::launchd::Agent], program: &Path) -> String {
+    let mut out = String::new();
+    for agent in agents {
+        let _ = writeln!(out, "installed {}", agent.label());
+    }
+    let _ = writeln!(
+        out,
+        "\nrunning   {}",
+        abbreviate(&program.display().to_string())
+    );
+    out
+}
+
+/// `service status`: whether each agent is loaded, its last exit, and its schedule.
+#[must_use]
+pub fn service_status(rows: &[(crate::service::Installed, Option<Option<Schedule>>)]) -> String {
+    use crate::platform::launchd::Loaded;
+
+    let mut out = String::new();
+    let _ = writeln!(out, "{:<48}{:<10}schedule", "agent", "state");
+    rule(&mut out);
+
+    for (installed, wanted) in rows {
+        // A non-zero last exit is what `launchctl list` showed for a year while
+        // nobody looked. It is a column here so nobody has to.
+        let state = match installed.loaded {
+            Loaded::No => "not loaded".to_owned(),
+            Loaded::Yes { last, .. } => last.to_string(),
+        };
+        // Drift between the installed plist and the config is what killed the old
+        // system, so it is a column rather than something only `doctor` would find.
+        // `None` means there is nothing to compare against - the shared agents carry
+        // a fixed schedule of their own.
+        let drifted = wanted.and_then(|wanted| {
+            (installed.matches(wanted) == Some(false))
+                .then(|| wanted.map_or_else(|| "none".to_owned(), say))
+        });
+        let schedule = match (installed.scheduled, drifted) {
+            (None, _) => "-".to_owned(),
+            (Some(schedule), Some(config)) => {
+                format!("{} (config says {config})", say(schedule))
+            }
+            (Some(schedule), None) => say(schedule),
+        };
+        let _ = writeln!(
+            out,
+            "  {:<46}{:<10}{}",
+            fit(&installed.agent.label(), 45),
+            state,
+            schedule
+        );
+    }
+    out
+}
+
+/// A schedule in the words the config uses for it.
+#[must_use]
+pub fn say(schedule: Schedule) -> String {
+    match schedule {
+        Schedule::Daily { at } => format!("daily {at}"),
+        Schedule::Weekly { day, at } => format!("{day:?} {at}").to_lowercase(),
+        // Compact, and in the unit the config was written in. `until`'s two-unit form
+        // reads as a countdown; a schedule is a setting, so `every 1h 0m` is wrong
+        // for it in a way `every 1h` is not.
+        Schedule::Every(every) => {
+            let seconds = every.as_secs();
+            let (value, unit) = if seconds.is_multiple_of(86_400) {
+                (seconds / 86_400, 'd')
+            } else if seconds.is_multiple_of(3_600) {
+                (seconds / 3_600, 'h')
+            } else if seconds.is_multiple_of(60) {
+                (seconds / 60, 'm')
+            } else {
+                (seconds, 's')
+            };
+            format!("every {value}{unit}")
+        }
+    }
 }
 
 /// What a restore produced.

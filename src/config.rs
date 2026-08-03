@@ -150,7 +150,53 @@ pub enum Schedule {
     Every(Duration),
 }
 
+/// How far past its schedule a profile may drift before it is overdue.
+///
+/// A run does not start at exactly the scheduled second - launchd coalesces, the
+/// machine wakes late, a previous run holds the lock - so a grace period is what
+/// separates "ran a bit late" from "did not run". Six hours is comfortably longer than
+/// any run this design produces and far shorter than the weekly interval it guards.
+pub const GRACE: Duration = Duration::from_secs(6 * 3_600);
+
 impl Schedule {
+    /// How long this schedule leaves between runs.
+    ///
+    /// Nominal, not exact: a weekly schedule's real interval is 167 or 169 hours
+    /// across a DST boundary. That imprecision is irrelevant here because it is only
+    /// ever compared against a value plus [`GRACE`], and it is what lets the overdue
+    /// check be pure arithmetic rather than a second calendar walk.
+    #[must_use]
+    pub const fn interval(self) -> Duration {
+        match self {
+            Self::Daily { .. } => Duration::from_secs(86_400),
+            Self::Weekly { .. } => Duration::from_secs(7 * 86_400),
+            Self::Every(every) => every,
+        }
+    }
+
+    /// How long past due this profile is, or `None` if it is not.
+    ///
+    /// **This is what makes the no-daemon design safe rather than merely cheap.**
+    /// `man launchd.plist` promises catch-up across *sleep* and says nothing about
+    /// power-off, so a Mac shut down over a weekend would silently skip its weekly
+    /// backup and nothing would ever notice - the exact shape of the failure this
+    /// project exists to correct. Every invocation of every agent runs this.
+    ///
+    /// A profile that has never run successfully is overdue from the moment it is
+    /// configured, which is right: "no backup has ever worked" is the loudest thing
+    /// this tool can have to say.
+    #[must_use]
+    pub fn overdue_by(self, last_success: Option<&Zoned>, now: &Zoned) -> Option<Duration> {
+        let Some(last) = last_success else {
+            return Some(self.interval());
+        };
+        let elapsed = now.timestamp().as_second() - last.timestamp().as_second();
+        let elapsed = Duration::from_secs(u64::try_from(elapsed).unwrap_or(0));
+        elapsed
+            .checked_sub(self.interval() + GRACE)
+            .filter(|over| !over.is_zero())
+    }
+
     /// When this schedule next fires, strictly after `from`.
     ///
     /// Zoned rather than added seconds, because "Sunday 12:00" is a wall-clock
@@ -443,5 +489,95 @@ mod schedule_tests {
         let next = every.next_after(&before).expect("next");
 
         assert_eq!(next.strftime("%F %H:%M").to_string(), "2027-03-14 13:00");
+    }
+}
+
+#[cfg(test)]
+mod overdue_tests {
+    use super::{GRACE, Schedule, TimeOfDay, Weekday};
+    use jiff::{Span, Zoned, tz::TimeZone};
+
+    fn now() -> Zoned {
+        "2026-11-08T14:30:00"
+            .parse::<jiff::civil::DateTime>()
+            .expect("a civil datetime")
+            .to_zoned(TimeZone::get("America/Toronto").expect("a zone"))
+            .expect("no gap")
+    }
+
+    fn ago(span: Span) -> Zoned {
+        now().checked_sub(span).expect("in range")
+    }
+
+    fn weekly() -> Schedule {
+        Schedule::Weekly {
+            day: Weekday::Sunday,
+            at: TimeOfDay {
+                hour: 12,
+                minute: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn a_run_inside_the_interval_is_not_overdue() {
+        let last = ago(Span::new().days(3));
+        assert_eq!(weekly().overdue_by(Some(&last), &now()), None);
+    }
+
+    /// A run does not start at exactly the scheduled second: launchd coalesces, the
+    /// machine wakes late, a previous run holds the lock. Grace is what separates
+    /// "ran a bit late" from "did not run".
+    #[test]
+    fn a_run_inside_the_grace_period_is_not_overdue() {
+        let last = ago(Span::new().days(7).hours(5));
+        assert_eq!(weekly().overdue_by(Some(&last), &now()), None);
+    }
+
+    /// The case the whole check exists for: a Mac shut down over a weekend, which
+    /// `man launchd.plist` promises nothing about.
+    #[test]
+    fn a_run_past_the_grace_period_is_overdue_and_says_by_how_much() {
+        let last = ago(Span::new().days(9));
+        let over = weekly()
+            .overdue_by(Some(&last), &now())
+            .expect("two days past the grace period");
+        assert!(over.as_secs() > 86_400, "{over:?}");
+    }
+
+    /// "No backup has ever worked" is the loudest thing this tool can have to say, so
+    /// it is overdue from the moment it is configured.
+    #[test]
+    fn a_profile_that_has_never_run_is_overdue_immediately() {
+        assert_eq!(weekly().overdue_by(None, &now()), Some(weekly().interval()));
+    }
+
+    #[test]
+    fn each_schedule_shape_carries_its_own_interval() {
+        assert_eq!(weekly().interval().as_secs(), 7 * 86_400);
+        assert_eq!(
+            Schedule::Daily {
+                at: TimeOfDay { hour: 1, minute: 0 }
+            }
+            .interval()
+            .as_secs(),
+            86_400
+        );
+        assert_eq!(
+            Schedule::Every(std::time::Duration::from_secs(900))
+                .interval()
+                .as_secs(),
+            900
+        );
+    }
+
+    /// An hourly catch-up must not be called overdue after ninety minutes, or the
+    /// notification fires several times a day and stops meaning anything.
+    #[test]
+    fn a_short_interval_still_gets_the_full_grace_period() {
+        let hourly = Schedule::Every(std::time::Duration::from_secs(3_600));
+        let last = ago(Span::new().hours(2));
+        assert_eq!(hourly.overdue_by(Some(&last), &now()), None);
+        assert_eq!(GRACE.as_secs(), 6 * 3_600);
     }
 }
