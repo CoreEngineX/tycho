@@ -2,6 +2,8 @@
 //! probe.
 
 pub mod launchd;
+pub mod log;
+pub mod notify;
 
 use crate::primitives::path::{AbsPath, PathError};
 

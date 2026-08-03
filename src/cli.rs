@@ -141,6 +141,21 @@ impl RestoreArgs {
 }
 
 #[derive(Clone, Debug, Args)]
+pub struct LogArgs {
+    /// Which profile's log
+    pub profile: Option<String>,
+    /// Follow the file as it grows
+    #[arg(short = 'f', long)]
+    pub follow: bool,
+    /// How many lines to show
+    #[arg(short = 'n', default_value_t = 40)]
+    pub count: usize,
+    /// Read this config file instead of the default location
+    #[arg(long, value_name = "PATH")]
+    pub config: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Args)]
 pub struct ServiceArgs {
     #[command(subcommand)]
     pub action: ServiceAction,
@@ -224,7 +239,7 @@ pub enum Command {
     #[command(hide = true)]
     ProbeAccess,
     /// Tail the log file
-    Log,
+    Log(LogArgs),
 }
 
 impl Command {
@@ -264,7 +279,7 @@ impl Command {
             Self::Service(_) => "service",
             Self::Doctor => "doctor",
             Self::ProbeAccess => "probe-access",
-            Self::Log => "log",
+            Self::Log(_) => "log",
         }
     }
 }
@@ -305,6 +320,7 @@ pub fn dispatch(command: Command) -> Exit {
         Command::History(args) => run::history(&args),
         Command::Restore(args) => run::restore(&args),
         Command::Service(args) => service::dispatch(&args),
+        Command::Log(args) => run::log(&args),
         other => {
             eprintln!("tycho: {} is not implemented yet", other.name());
             Exit::Failure

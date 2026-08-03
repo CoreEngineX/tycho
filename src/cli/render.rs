@@ -312,6 +312,9 @@ pub struct RemoteRow {
 #[derive(Clone, Debug)]
 pub struct ProfileStatus {
     pub name: String,
+    /// How far past its schedule this profile is, if it is. Red on its own: a backup
+    /// that did not happen is worse than one that happened and could not be pushed.
+    pub overdue: Option<std::time::Duration>,
     /// `Sun 12:00, in 6d 2h`, or absent when the profile has no schedule or the
     /// config could not be read.
     pub next_run: Option<String>,
@@ -341,6 +344,31 @@ pub fn status(profiles: &[ProfileStatus], banner: Option<&str>) -> String {
     }
 
     for profile in profiles {
+        if let Some(over) = profile.overdue {
+            let _ = writeln!(
+                out,
+                "{}{:>width$}",
+                profile.name,
+                format!(
+                    "OVERDUE by {}",
+                    until(i64::try_from(over.as_secs()).unwrap_or(i64::MAX))
+                ),
+                width = WIDTH.saturating_sub(profile.name.chars().count())
+            );
+            let _ = writeln!(out, "  {}\n", subtitle(profile));
+            for remote in &profile.remotes {
+                let _ = writeln!(
+                    out,
+                    "  {:<REMOTE_NAME$}{:<REMOTE_WORD$}{:<REMOTE_DETAIL$}{:>REMOTE_NOTE$}",
+                    fit(&remote.name, REMOTE_NAME - 1),
+                    fit(&remote.word, REMOTE_WORD - 1),
+                    fit(&remote.detail, REMOTE_DETAIL - 1),
+                    fit(&remote.note, REMOTE_NOTE)
+                );
+            }
+            out.push('\n');
+            continue;
+        }
         match &profile.next_run {
             Some(next) => {
                 let right = format!("next run  {next}");

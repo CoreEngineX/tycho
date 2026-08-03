@@ -185,6 +185,31 @@ impl<'a> Git<'a> {
     }
 }
 
+/// Runs a program with the terminal's own stdout and stderr, and no timeout.
+///
+/// The one deliberate exception to the timeout rule, and it exists for `tycho log -f`:
+/// a follow *is* an unbounded wait, and buffering its output through a pipe would
+/// defeat the point of following. Nothing that reads a result may use this - the
+/// caller gets an exit code and nothing else.
+///
+/// # Errors
+///
+/// If the program cannot be spawned or waited on.
+pub fn stream_to_terminal(program: &str, args: &[&str]) -> Result<i32, RunError> {
+    let mut child = Command::new(program)
+        .args(args)
+        .spawn()
+        .map_err(|source| RunError::Spawn {
+            program: program.to_owned(),
+            source,
+        })?;
+    let status = child.wait().map_err(|source| RunError::Io {
+        command: program.to_owned(),
+        source,
+    })?;
+    Ok(status.code().unwrap_or(1))
+}
+
 /// Runs a non-git program. Separate from [`Git`] so nothing can reach git without
 /// the pins.
 ///

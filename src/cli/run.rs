@@ -107,11 +107,62 @@ fn one_run(args: &RunArgs, profile: &Profile, config_text: &str) -> Exit {
         );
         incomplete = Exit::Warning;
     }
-    match (report(&done.remotes), incomplete) {
-        (Exit::Failure, _) => Exit::Failure,
-        (Exit::Warning, _) | (Exit::Ok, Exit::Warning) => Exit::Warning,
-        (Exit::Ok, other) => other,
-    }
+    let outcome = worse(report(&done.remotes), incomplete);
+    announce(profile, outcome, &done.remotes);
+    outcome
+}
+
+/// Failure is loud on four channels, and this is the third of them: the exit code and
+/// the state-file record carry the contract, `status` carries the red line, and a
+/// banner carries the interruption.
+///
+/// A notification that could not be delivered is **never** a failed run. A machine in
+/// a Focus mode suppresses delivery, which is expected - which is exactly why the
+/// notification is the convenience and the other three are the contract.
+fn announce(profile: &Profile, outcome: Exit, remotes: &[store::run::RemoteResult]) {
+    use crate::platform::notify::{Urgency, notify};
+
+    let failed: Vec<&str> = remotes
+        .iter()
+        .filter(|remote| remote.state.is_red())
+        .map(|remote| remote.name.as_str())
+        .collect();
+
+    let (urgency, body) = match outcome {
+        Exit::Ok => return,
+        Exit::Failure if failed.is_empty() => (
+            Urgency::Failure,
+            format!("{} did not complete", profile.name),
+        ),
+        Exit::Failure => (
+            Urgency::Failure,
+            format!("{} could not reach {}", profile.name, failed.join(", ")),
+        ),
+        Exit::Warning => (
+            Urgency::Warning,
+            format!("{} finished with warnings", profile.name),
+        ),
+    };
+    let _ = notify(urgency, &body);
+}
+
+/// The check that makes the no-daemon design safe rather than merely cheap.
+///
+/// `man launchd.plist` promises catch-up across sleep and says nothing about
+/// power-off, so a Mac shut down over a weekend would silently skip its weekly backup
+/// and nothing would ever notice. Every invocation of every agent runs this.
+fn overdue(profile: &Profile, state: &State) -> Option<std::time::Duration> {
+    let schedule = profile.schedule?;
+    let last = state
+        .profiles
+        .get(profile.name.as_str())
+        .into_iter()
+        .flatten()
+        .find(|run| run.outcome != crate::state::Outcome::Failed)
+        .and_then(|run| run.when.parse::<jiff::Timestamp>().ok())
+        .map(|stamp| stamp.to_zoned(jiff::tz::TimeZone::system()));
+    let now = jiff::Timestamp::now().to_zoned(jiff::tz::TimeZone::system());
+    schedule.overdue_by(last.as_ref(), &now)
 }
 
 /// Where a profile's three files live.
@@ -385,6 +436,9 @@ pub fn status(args: &crate::cli::StatusArgs) -> Exit {
     let mut red = false;
     let mut yellow = false;
     for profile in &profiles {
+        // Overdue is red on its own, whatever the remotes say: a backup that did not
+        // happen is worse than one that happened and could not be pushed.
+        red |= overdue(profile, &state).is_some();
         for remote in &profile.remotes {
             let current = state.remote(profile.name.as_str(), remote.name.as_str());
             red |= current.is_red();
@@ -409,6 +463,7 @@ fn snapshot(
     let last = state.last(profile.name.as_str());
     render::ProfileStatus {
         name: profile.name.to_string(),
+        overdue: overdue(profile, state),
         next_run: profile.schedule.and_then(|schedule| {
             schedule
                 .next_after(&jiff::Timestamp::now().to_zoned(jiff::tz::TimeZone::system()))
@@ -714,4 +769,54 @@ fn inspect_all(plan: &Plan) -> Vec<(String, Inspection)> {
         }
     }
     out
+}
+
+/// `tycho log`: tail the log file without needing to know where it lives.
+pub fn log(args: &crate::cli::LogArgs) -> Exit {
+    let Some((parsed, _)) = load(args.config.clone()) else {
+        return Exit::Failure;
+    };
+    let Some(profile) = select(&parsed.config, args.profile.as_deref()) else {
+        return Exit::Failure;
+    };
+    let path = match crate::platform::log::path_for(profile.name.as_str()) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("tycho: {error}");
+            return Exit::Failure;
+        }
+    };
+    if !path.exists() {
+        eprintln!(
+            "tycho: nothing logged yet for {} ({})",
+            profile.name,
+            path.display()
+        );
+        return Exit::Ok;
+    }
+
+    // `tail` rather than a reimplementation: `-f` means following across a rotation
+    // and a truncation, and getting that subtly wrong in a diagnostic tool is worse
+    // than shelling out to the thing everyone already trusts to do it.
+    let count = args.count.to_string();
+    let path = path.display().to_string();
+    let mut arguments = vec!["-n", &count];
+    if args.follow {
+        arguments.push("-f");
+    }
+    arguments.push(&path);
+
+    match crate::sys::process::stream_to_terminal("tail", &arguments) {
+        Ok(code) => {
+            if code == 0 {
+                Exit::Ok
+            } else {
+                Exit::Failure
+            }
+        }
+        Err(error) => {
+            eprintln!("tycho: {error}");
+            Exit::Failure
+        }
+    }
 }
