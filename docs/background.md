@@ -161,3 +161,28 @@ their GitHub remotes existing.
   cannot be pushed. Tycho's org coverage makes this less urgent, not resolved.
 - Whether Google Drive live-folder-sync was disabled after the July incident was
   never explicitly confirmed. No recurrence observed since 16-Jul.
+
+## 7. The name
+
+Tycho Brahe (1546-1601), the Danish astronomer, spent roughly twenty-one
+years at his observatory Uraniborg on the island of Hven (1576-1597) making
+systematic naked-eye measurements of stellar and planetary positions, before
+the telescope existed, at a precision nobody could match. When he died in
+1601 his assistant Johannes Kepler inherited the observations and derived the
+laws of planetary motion from them, particularly from the Mars data. Tycho's
+own model of the solar system was wrong. The data was not. The records
+outlived their maker and were faithful enough that someone else could
+reconstruct deeper truth from them - which is exactly what a backup is for.
+
+The etymology is commonly got backwards. Tyge is a Danish name of Old Norse
+origin, usually traced to Tóki, a pet form of names built on the Þórr (Thor)
+element. Renaissance humanists Latinising Danish names rendered Tyge as
+Tycho, a spelling that happens to mirror the Greek name Τύχων (Tychon),
+connected to τύχη (tyche, "fortune") and the verb τυγχάνω ("to hit the
+mark"). So the "fortunate one who hits the mark" reading is a resemblance
+acquired at the moment of Latinisation, not an inheritance from the Greek -
+a coincidence, not a derivation.
+
+The Moon's most prominent crater is named Tycho, and the supernova he
+observed in 1572 - described in *De nova stella* (1573), the source of the
+word "nova" - is called Tycho's Supernova.

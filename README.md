@@ -36,6 +36,20 @@ Three requirements come directly from that and from what followed:
   permanently - Apple SSDs zero freed blocks within seconds and no recovery tool
   helps. Every run pushes.
 
+## The name
+
+Tycho Brahe (1546-1601) spent roughly twenty-one years, 1576 to 1597, at his
+observatory Uraniborg on the island of Hven, taking systematic naked-eye
+measurements of stellar and planetary positions before the telescope existed,
+at a precision nobody could match. His own model of the solar system was
+wrong. His data was not: when he died in 1601, his assistant Johannes Kepler
+inherited the observations and derived the laws of planetary motion from
+them, particularly the Mars data. The records outlived their maker and were
+faithful enough that someone else could reconstruct deeper truth from them -
+which is exactly what a backup is for. The Latinised spelling "Tycho" happens
+to resemble the Greek τύχη, "fortune" - a coincidence picked up in
+translation from the Danish Tyge, not an inherited meaning.
+
 ## Scope
 
 Developer machines and company documents. Not a competitor to restic on storage
