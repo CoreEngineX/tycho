@@ -7,8 +7,15 @@ use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+/// ASCII only: `--help` is read through pipes and log files as often as a terminal.
+const LOGO: &str = r"  .    \     /    .
+        \   /
+  --------*--------
+        \   /
+  .    \     /    .";
+
 #[derive(Debug, Parser)]
-#[command(name = "tycho", version, about)]
+#[command(name = "tycho", version, about, before_help = LOGO)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,

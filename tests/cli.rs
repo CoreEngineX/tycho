@@ -47,6 +47,15 @@ fn help_lists_every_public_command() {
 }
 
 #[test]
+fn help_is_pure_ascii() {
+    let run = tycho(&["--help"]);
+    assert!(
+        run.stdout.is_ascii(),
+        "help output is read through pipes and log files, so it must stay ASCII"
+    );
+}
+
+#[test]
 fn a_hidden_command_still_runs() {
     assert_eq!(tycho(&["probe-access"]).code, 1);
 }
