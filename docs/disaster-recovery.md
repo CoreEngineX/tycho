@@ -296,5 +296,15 @@ tycho restore --store ~/"Library/CloudStorage/GoogleDrive-Acct/My Drive/CoreEngi
 ```
 
 `--store` reads no config file at all and does not need a profile name - the store
-names itself. It performs every step above, including the `info/attributes` fix, the
-full four-refspec fetch per repository, and a type-safe overlay copy.
+names itself. It performs every step above: the `info/attributes` fix before anything
+is extracted, the four-glob fetch per repository with the stash as a separate command,
+the checkout of whatever branch `REPO.txt` recorded, and a type-safe overlay copy.
+
+Two things it does that the manual procedure cannot. It **refuses a path that is not
+a git repository** rather than reporting an empty backup, which matters because the
+`--store` argument here is a long `~/Library/CloudStorage/…` path typed by hand on a
+machine that has nothing else on it. And it **reads a store it does not own**: a
+mirror clone is mode `0755`, and Tycho's own permission check - right for the live
+store, which holds gitignored content - is deliberately not applied to a restore
+source, because refusing to read one would protect a file the person recovering is
+already holding in their hands.

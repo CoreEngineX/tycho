@@ -56,7 +56,8 @@ fn rule(out: &mut String) {
 }
 
 /// `1 file`, `4 files`, `1 repository`, `12 repositories`.
-fn plural(value: usize, word: &str) -> String {
+#[must_use]
+pub fn plural(value: usize, word: &str) -> String {
     if value == 1 {
         return format!("{} {word}", count(value));
     }

@@ -212,7 +212,7 @@ sending one; `scheduling.md` sections 7 and 8 describe both probes.
 | --- | --- |
 | 0 | Success, including a run where an optional remote is merely unplugged |
 | 1 | Failure: a run failed, a required remote is unreachable, the config has errors, or `status --check` / `doctor` found red |
-| 3 | Yellow only, from `status --check` and `doctor` |
+| 3 | Yellow only: `status --check --strict`, `doctor`, or a `restore` that refused an overlay file rather than resolving it |
 | 2 | Usage error, which clap emits |
 
 `status --check` exits non-zero on **red only** by default; `--strict` makes yellow
@@ -298,6 +298,18 @@ The overlay is applied with a copy that **does not follow symlinks and refuses t
 mismatches**, reporting each conflict. A plain recursive copy writes through a
 symlink in the checkout to its target, fabricating a file that never existed on the
 source machine.
+
+A restore that reports a conflict exits 3. Everything else landed; one awkward
+filename does not cost you the other nine hundred.
+
+**The staging tree at `<dest>/.tycho/` is kept, always.** `git archive` extracts it
+alongside your files - `.tycho/config.toml` and one `REPO.txt` and `overlay/` per
+captured repository - and restore leaves it there. It costs the overlay's size twice
+over, and it is the only reason a reported conflict can be settled by hand: the file
+the copy declined to write is still sitting in `overlay/`, so you can look at both
+versions and put the right one in place. Delete the staging tree and the conflict
+becomes unrecoverable from the destination, forcing a second full restore just to see
+what was refused. Restore deletes nothing.
 
 ### Cross-platform restore
 

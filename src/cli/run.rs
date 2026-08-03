@@ -471,8 +471,8 @@ pub fn restore(args: &crate::cli::RestoreArgs) -> Exit {
 
     match store.span() {
         Ok(Some(span)) => println!(
-            "reading   {} backups, {} to {}",
-            render::count(span.backups),
+            "reading   {}, {} to {}",
+            render::plural(span.backups, "backup"),
             render::day(&span.oldest),
             render::day(&span.newest)
         ),

@@ -72,8 +72,18 @@ are real and were each demonstrated:
 | Mechanism | Without it |
 |---|---|
 | `hash-object -w --no-filters` | `core.autocrlf` or a global `* text=auto` stores a CRLF file LF-normalized. A git-lfs `clean` filter replaces the file's content with a 130-byte pointer |
-| `info/attributes` in the store | A `.gitattributes` **captured into the store's own tree** - an ordinary watched file - makes `git archive` drop `export-ignore`d paths and rewrite line endings on restore, at exit 0, while `git ls-tree` still lists the file that was not extracted |
+| `info/attributes` in the store | A `.gitattributes` **captured into the store's own tree** - an ordinary watched file - makes `git archive` drop `export-ignore`d paths outright and rewrite `export-subst` and `ident` content, at exit 0, while `git ls-tree` still lists the file that was not extracted |
 | Pinned `-c` config on every invocation | Belt and braces for the invocations that take neither of the above |
+
+**Line endings are a risk on the way in, not on the way out.** An earlier version of
+this table blamed `info/attributes` for that too. Measured: a blob holding CRLF
+archives back as CRLF whether or not `info/attributes` exists, because `core.eol`
+defaults to `native` and native on macOS is LF, so `text=auto` has nothing to convert
+on extraction. What actually damages line endings is `hash-object` on the way in,
+which `--no-filters` handles - row one, and the row `tests/byte_exactness.rs` proves.
+The archive-side traps are `export-ignore`, `export-subst` and `ident`, and those are
+real: `tests/restore.rs` runs a restore from a mirror clone with the mechanism removed
+and watches all three fire.
 
 The second one needs no unusual configuration anywhere. Any repository you back up
 that contains a `.gitattributes` arms it.
@@ -462,7 +472,8 @@ git -C <dest>/<repo path> fetch <store> \
   "+refs/tycho/<key>/heads/*:refs/heads/*" \
   "+refs/tycho/<key>/tags/*:refs/tags/*" \
   "+refs/tycho/<key>/remotes/*:refs/remotes/*" \
-  "+refs/tycho/<key>/stash/0:refs/stash"
+  "+refs/tycho/<key>/stashes/*:refs/tycho-stash/*"
+git -C <dest>/<repo path> fetch <store> "+refs/tycho/<key>/stash:refs/stash"
 git -C <dest>/<repo path> checkout <recorded branch or sha>
 ```
 
@@ -471,10 +482,26 @@ The `symbolic-ref` line is required. `git init` leaves `HEAD` pointing at an unb
 on a name that never gets created lets the fetch write every branch as a real local
 branch, which is what a restore should produce.
 
-Only the top entry becomes `refs/stash`; the rest are restored as ordinary refs under
+**The main fetch is four globs, and the stash is a fifth command on its own.** A glob
+that matches nothing is skipped silently, so a repository with no tags still gets its
+branches. A refspec naming one exact ref that is absent does the opposite: git aborts
+the entire fetch with `couldn't find remote ref` and writes nothing at all, not the
+branches and not the tags. An earlier version of this block put
+`+refs/tycho/<key>/stash/0:refs/stash` in the list, which was wrong twice over - the
+store has never written a `stash/0`, only a `stash` leaf and `stashes/<n>` - and it
+would have recovered nothing from every repository that had no stash. On its own,
+that command failing means only that there was no stash.
+
+Only the top entry becomes `refs/stash`; the rest arrive as ordinary refs under
 `refs/tycho-stash/<n>` from `refs/tycho/<key>/stashes/*`, because git's stash stack is
 a reflog and cannot be reconstructed from refs alone. `REPO.txt` records how many
 there were.
+
+**`REPO.txt` is where the recorded branch comes from, and there is no alternative.**
+The tidier design - capturing `HEAD` as a symref under `refs/tycho/<key>/` - does not
+survive the trip: push and fetch carry a symref's resolved value and drop its symbolic
+nature, so the branch *name* would never reach a remote, and a remote is what a real
+restore reads from.
 
 Then the overlay is applied over the checkout, restoring uncommitted edits,
 untracked files and gitignored files. **The overlay copy does not follow symlinks
