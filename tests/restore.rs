@@ -443,6 +443,37 @@ fn a_restore_short_of_its_backup_names_what_is_missing() {
     );
 }
 
+/// A name outside ASCII must come back as itself.
+///
+/// Windows ships bsdtar, which reads tar header names in the machine's ANSI codepage
+/// unless told otherwise, so `Café — supplier agrément.md` extracted as mojibake: on
+/// disk, under a name nothing would look for, while the count said the restore was
+/// complete. Found by restoring a real tree, not by reading.
+#[test]
+fn a_name_outside_ascii_comes_back_as_itself() {
+    let mut fixture = fixture();
+    let awkward = "Café — supplier agrément.md";
+    write(
+        &fixture.root().join(awkward),
+        b"non-ascii name, ascii content\n",
+    );
+    write(&fixture.root().join("plain.txt"), b"plain\n");
+    fixture.run();
+
+    let into = fixture.dest("recovered");
+    let done = fixture.restore(&into, &Wanted::default());
+
+    assert!(
+        done.missing.is_empty(),
+        "nothing should be missing: {:?}",
+        done.missing
+    );
+    assert_eq!(
+        fs::read(into.join("A").join(awkward)).expect("the non-ascii name came back"),
+        b"non-ascii name, ascii content\n"
+    );
+}
+
 /// Restore never writes into a destination that already holds things.
 #[test]
 fn a_non_empty_destination_is_refused_without_force() {

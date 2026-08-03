@@ -5,6 +5,34 @@ of them are paths, and the sync client's job is to move what appears there. Insi
 that folder Tycho keeps a bare git repository, and publishing a backup is
 `git push`.
 
+**On Windows, an exFAT or FAT32 volume is not usable as a remote as things stand,
+and an external drive is usually one of those.** Measured against a removable exFAT
+volume: `git init --bare` succeeds and leaves a correct repository, and then every
+subsequent git command against it fails.
+
+```text
+$ git -C D:/backups/demo.git rev-parse --git-dir
+fatal: detected dubious ownership in repository at 'D:/backups/demo.git'
+'D:/backups/demo.git' is on a file system that does not record ownership
+To add an exception for this directory, call:
+        git config --global --add safe.directory D:/backups/demo.git
+```
+
+That is git's `safe.directory` protection, and it fires on any filesystem with no
+ownership to check. The run **fails loudly** - the remote is reported `unusable` and
+the run exits 1 - so this is not a silent-backup case. But git's own explanation is
+swallowed: the first command Tycho runs after `init` is `git config`, and git answers
+a non-repository with `fatal: not in a git directory`, which says nothing about
+ownership. **A remote that cannot be used should say why**, and this one does not.
+
+The remedy is the `git config --global --add safe.directory <path>` git prints.
+Tycho does **not** add it automatically, and that is a deliberate refusal rather than
+an omission: `safe.directory` exists because a repository on removable media can be
+attacker-controlled, hooks included, and a backup tool that quietly disables the
+protection for any path in a config file is doing the thing the protection is for.
+The same volume is also refused as a `store_path`, for a second reason - see
+`store.md` section 2 on `NO_ACCESS_CONTROL`.
+
 ## 1. Why a bare repo in the folder, rather than files
 
 The cloud sync clients are the hazard here, not the transport. A live git working

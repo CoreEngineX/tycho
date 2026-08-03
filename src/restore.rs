@@ -314,6 +314,35 @@ pub fn execute(
 /// `--output` to a file rather than a pipe: in a pipeline the shell reports only the
 /// last command's status, so a store with a missing object prints an error, extracts
 /// zero files, and still exits 0.
+/// Nothing to say on a platform with one `tar`.
+#[cfg(not(windows))]
+fn charset_options() -> Vec<&'static str> {
+    Vec::new()
+}
+
+/// Tells libarchive that the names in the archive are UTF-8, which `git archive`
+/// writes and which bsdtar does not assume.
+///
+/// Windows ships bsdtar as `C:\Windows\System32\tar.exe`, and without this it reads
+/// header names in the machine's ANSI codepage: `Café — supplier agrément.md` lands
+/// as mojibake, so the file is on disk under a name nothing will ever look for.
+/// Measured against a real backup, and caught by the `missing` reconciliation rather
+/// than by reading, which is the whole argument for that reconciliation existing.
+///
+/// Asked rather than assumed, because `tar` may equally resolve to GNU tar - Git for
+/// Windows ships one - and GNU tar answers `--options` with `unrecognized option`
+/// and extracts nothing at all. GNU tar reads UTF-8 names correctly on its own, so
+/// there is nothing to add for it.
+#[cfg(windows)]
+fn charset_options() -> Vec<&'static str> {
+    let libarchive = crate::sys::process::command("tar", &["--version"], Timeout::QUICK)
+        .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains("bsdtar"));
+    if libarchive {
+        return vec!["--options", "hdrcharset=UTF-8"];
+    }
+    Vec::new()
+}
+
 fn extract_all(
     store: &Store,
     into: &Path,
@@ -325,8 +354,9 @@ fn extract_all(
 
     let archive = tar.display().to_string();
     let destination = into.display().to_string();
-    let out =
-        crate::sys::process::command("tar", &["-xf", &archive, "-C", &destination], Timeout::WORK)?;
+    let mut args = charset_options();
+    args.extend(["-xf", &archive, "-C", &destination]);
+    let out = crate::sys::process::command("tar", &args, Timeout::WORK)?;
     std::fs::remove_file(&tar).map_err(io(format!("removing {}", tar.display())))?;
 
     // `command` hands back the output whatever the status, so a non-zero exit here

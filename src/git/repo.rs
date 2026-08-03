@@ -429,13 +429,40 @@ fn refuse_if_exposed(path: &AbsPath) -> Result<(), RepoError> {
 fn refuse_if_exposed(path: &AbsPath) -> Result<(), RepoError> {
     let owner = current_user_sid()?;
     let dacl = read_dacl(path)?;
-    if let Some(trustee) = foreign_trustee(&dacl, &owner) {
+    if let Some(detail) = exposure(&dacl, &owner) {
         return Err(RepoError::Exposed {
             path: path.to_string(),
-            detail: format!("grants access to {trustee}"),
+            detail,
         });
     }
     Ok(())
+}
+
+/// Why the store is readable by someone else, or `None` if it is not.
+///
+/// **A volume with no access control is the case that matters most and looks like
+/// the safest.** exFAT and FAT32 carry no ACLs, so Windows reports the whole
+/// descriptor as `D:NO_ACCESS_CONTROL` with owner `WD` - Everyone - and a check that
+/// only walks ACEs finds none to object to and passes. Measured on a removable exFAT
+/// volume, which is exactly where `remotes.md` expects an external drive to be, and
+/// where someone would reasonably point `store_path`.
+///
+/// An absent DACL is treated the same way. This function refuses anything it cannot
+/// positively show is owner-only, because the alternative is proving a secret-bearing
+/// store safe by failing to find evidence against it.
+#[cfg(windows)]
+fn exposure(dacl: &str, owner: &str) -> Option<String> {
+    if dacl.contains("NO_ACCESS_CONTROL") {
+        return Some(
+            "is on a volume that carries no access control at all, such as exFAT or FAT32, \
+             where every file is readable by anyone with the disk"
+                .to_owned(),
+        );
+    }
+    let Some(entries) = dacl.split("D:").nth(1) else {
+        return Some("has no discretionary access control list to check".to_owned());
+    };
+    foreign_trustee(entries, owner).map(|trustee| format!("grants access to {trustee}"))
 }
 
 #[cfg(windows)]
@@ -531,4 +558,56 @@ fn parse_one(stdout: &[u8], stderr: &[u8], success: bool) -> Result<Oid, RepoErr
         ));
     }
     Oid::parse(String::from_utf8_lossy(stdout).trim()).map_err(RepoError::Oid)
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::exposure;
+
+    const OWNER: &str = "S-1-5-21-1111111111-2222222222-3333333333-1001";
+
+    /// The shape a directory under the user profile has: SYSTEM, Administrators and
+    /// the owner, which is the same reach `0700` grants.
+    #[test]
+    fn a_profile_directorys_dacl_is_not_an_exposure() {
+        let dacl = format!("name\nD:(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)(A;OICIID;FA;;;{OWNER})");
+        assert_eq!(exposure(&dacl, OWNER), None, "{dacl}");
+    }
+
+    /// `C:\Users\Public` adds Interactive, Service and Batch with modify rights,
+    /// which is precisely what the check exists to refuse.
+    #[test]
+    fn a_publicly_writable_dacl_names_the_trustee() {
+        let dacl = format!(
+            "name\nD:AI(A;OICIID;FA;;;BA)(A;ID;FA;;;{OWNER})(A;OICIID;FA;;;SY)\
+             (A;OICIID;0x1301ff;;;IU)(A;OICIID;0x1301ff;;;SU)"
+        );
+        let detail = exposure(&dacl, OWNER).expect("an exposure");
+        assert!(detail.contains("IU"), "{detail}");
+    }
+
+    /// The one that looks safest and is the least safe. exFAT and FAT32 have no ACLs,
+    /// so there are no entries to object to - and a check that only walks entries
+    /// passes a store every user of the machine can read. Measured on a real removable
+    /// exFAT volume, which is where an external-drive store would live.
+    #[test]
+    fn a_volume_with_no_access_control_is_an_exposure_rather_than_a_clean_bill() {
+        let detail = exposure("acl-probe\nD:NO_ACCESS_CONTROL", OWNER)
+            .expect("a volume with no ACLs must be refused");
+        assert!(detail.contains("exFAT"), "{detail}");
+    }
+
+    /// A descriptor with no DACL at all is unprovable, not proven safe.
+    #[test]
+    fn an_absent_dacl_is_refused_rather_than_assumed_owner_only() {
+        assert!(exposure("acl-probe\n", OWNER).is_some());
+    }
+
+    /// A deny entry restricts rather than grants, and an inherit-only one applies to
+    /// children this object does not have.
+    #[test]
+    fn deny_and_inherit_only_entries_do_not_count_as_grants() {
+        let dacl = format!("name\nD:(D;;FA;;;WD)(A;OICIIOID;FA;;;CO)(A;OICIID;FA;;;{OWNER})");
+        assert_eq!(exposure(&dacl, OWNER), None, "{dacl}");
+    }
 }
