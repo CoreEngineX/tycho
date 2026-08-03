@@ -126,9 +126,15 @@ Always injected, before any caller-supplied argument:
 The identity pin is not cosmetic: `commit-tree` inherits the user's identity and
 hard-fails under `user.useConfigOnly=true`.
 
-**Every child process runs under a timeout.** A FIFO or `/dev/zero` in a watched
-directory blocks `hash-object` forever, and a hung run holding a lock is how backups
-stop silently.
+**Every child process runs under a timeout**, chosen per call site: 30s for
+`rev-parse`-class reads, 10 min for the hash batch and `fetch`, 30 min for a push
+into a synced cloud folder, which can be very slow. A generous total rather than a
+tight one - the `st_mode` classification in 1.4 is what keeps a FIFO or `/dev/zero`
+out of `hash-object`, so the timeout is the backstop for a case nobody anticipated,
+not the primary defence. A hung run holding the lock is how backups stop silently.
+
+The runner also strips `GIT_DIR` and its family, because `-C` changes the directory
+while `GIT_DIR` overrides discovery and wins - see `store.md` section 7.
 
 ### 1.2 The streaming pipe helper
 

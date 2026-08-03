@@ -266,9 +266,27 @@ Chunking well under the pipe buffer with a full drain between chunks is an
 acceptable alternative.
 
 **Every child git process runs under a timeout**, so any future unhandled blocking
-case fails loudly instead of hanging. And the profile lock is a `try_lock` that
-reports "a run is already in progress since <time>" rather than blocking - a
-blocking lock converts one hung run into permanently silent backups.
+case fails loudly instead of hanging. It is a generous total rather than a tight
+one, because the `st_mode` classification is what actually keeps a FIFO or a device
+out of `hash-object`; the timeout is the backstop for a case nobody anticipated. And
+the profile lock is a `try_lock` that reports "a run is already in progress since
+<time>" rather than blocking - a blocking lock converts one hung run into
+permanently silent backups.
+
+**Git's environment is stripped before every invocation.** `-C` changes the working
+directory, but `GIT_DIR` overrides repository *discovery* and outranks it - so a
+Tycho invoked from a git hook, a `rebase --exec` or `bisect run` would write the
+store's objects into that repository instead, at exit 0. `GIT_DIR`, `GIT_WORK_TREE`,
+`GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`,
+`GIT_COMMON_DIR`, `GIT_NAMESPACE`, `GIT_CEILING_DIRECTORIES`, `GIT_CONFIG` and
+`GIT_CONFIG_COUNT` are removed, and whichever of them Tycho needs it then sets
+itself. `GIT_TERMINAL_PROMPT=0` is set for the same reason the timeout exists: a
+credential prompt under launchd would otherwise block until it fires.
+
+`GIT_CONFIG_GLOBAL` is deliberately **not** cleared. Command-line `-c` already
+outranks every environment and file source for the settings that matter, and
+clearing it would break `safe.directory`, which is what lets git read a repository
+owned by a different user.
 
 ### Read failures do not truncate the backup
 
