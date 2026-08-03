@@ -68,7 +68,7 @@ reads as one thing rather than a pile of ad-hoc formatters.
 - **Text left, numbers right**, so digits line up on their ones place.
 - **Rows indent two spaces, section headers do not.**
 - **A rule spans exactly the table's width.**
-- **Total width 76 columns**, which fits an 80-column terminal.
+- **Total width 74 columns**, which fits an 80-column terminal.
 - **State words are lowercase and short.** Shouting is what colour is for.
 - **Meaning never depends on colour.** Green, yellow and red add emphasis to a word
   that already says the same thing, because this output is read through pipes and in

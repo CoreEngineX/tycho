@@ -182,7 +182,7 @@ git -C ~/recovered-repos/handbook fetch ~/store.git \
   "+refs/tycho/CoreEngineX/org/handbook/heads/*:refs/heads/*" \
   "+refs/tycho/CoreEngineX/org/handbook/tags/*:refs/tags/*" \
   "+refs/tycho/CoreEngineX/org/handbook/remotes/*:refs/remotes/*" \
-  "+refs/tycho/CoreEngineX/org/handbook/stash/0:refs/stash"
+  "+refs/tycho/CoreEngineX/org/handbook/stash:refs/stash"
 git -C ~/recovered-repos/handbook checkout main
 ```
 
@@ -199,16 +199,25 @@ real local branch, which is what you want from a backup.
 
 **All four refspecs matter.** The last two recover the remote-tracking refs and the
 stash, which the store captured and which an earlier version of this document
-silently left behind. Only `stash/0` can become `refs/stash`, because git's stash
-stack is a reflog and cannot be rebuilt from refs; deeper entries come back as
-ordinary refs:
+silently left behind. Only the top entry can become `refs/stash`, because git's stash
+stack is a reflog and cannot be rebuilt from refs; the rest come back as ordinary
+refs, from `stashes/` rather than `stash/`:
 
 ```text
 git -C ~/recovered-repos/handbook fetch ~/store.git \
-  "+refs/tycho/CoreEngineX/org/handbook/stash/*:refs/tycho-stash/*"
+  "+refs/tycho/CoreEngineX/org/handbook/stashes/*:refs/tycho-stash/*"
 ```
 
 `REPO.txt` records how many there were.
+
+**`git stash list` will be empty afterwards, and the stash is not lost.** That command
+reads the *reflog* of `refs/stash`, and a fetch does not carry reflogs - so the stack
+is invisible to it even though every commit is present. Verified: apply them by name.
+
+```text
+git -C ~/recovered-repos/handbook stash apply refs/stash
+git -C ~/recovered-repos/handbook show refs/tycho-stash/1
+```
 
 ### Step 6 - put the overlay back on top
 

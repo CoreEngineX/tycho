@@ -12,8 +12,10 @@ synced cloud folders and on external drives, so every destination holds identica
 history and going back is `git log` and a checkout.
 
 **In build.** The architecture is documented in full under `docs/`, and
-`docs/build-plan.md` carries the order of work. The crate skeleton is in place; no
-command does anything yet.
+`docs/build-plan.md` carries the order of work. `run`, `history` and `config` work
+today: a run captures watched files and every repository under them, commits, and
+records what it did. Remotes and restore are not built yet, so nothing leaves the
+machine and getting data back means `git` against the store by hand.
 
 ## Why
 
