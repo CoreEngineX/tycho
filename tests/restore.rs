@@ -573,6 +573,69 @@ fn a_name_outside_ascii_comes_back_as_itself() {
     );
 }
 
+/// The same name, restored with **no locale at all**, which is what the scheduled run
+/// gets.
+///
+/// The test above inherits this shell's `LANG`, and libarchive takes its header
+/// charset from `nl_langinfo(CODESET)` - so it exercises the one condition under which
+/// the Windows bug could not appear. A launchd agent has no `LANG`: the generated plist
+/// sets no `EnvironmentVariables`, so an agent-run restore is the stripped case.
+///
+/// This is what says the `#[cfg(not(windows))]` arm of `charset_options` is right
+/// rather than merely untested. It is also why that arm must stay empty: passing
+/// `hdrcharset=UTF-8` here extracts `agre\u{301}ment` - `e` plus a combining acute -
+/// where the tree holds `é`, turning NFC into NFD.
+#[cfg(unix)]
+#[test]
+fn a_name_outside_ascii_survives_the_empty_environment_a_scheduled_run_has() {
+    let mut fixture = fixture();
+    let awkward = "Café — supplier agrément.md";
+    write(&fixture.root().join(awkward), b"stripped environment\n");
+    fixture.run();
+
+    let into = fixture.dest("recovered-bare");
+    let out = Command::new(env!("CARGO_BIN_EXE_tycho"))
+        .env_clear()
+        .env(
+            "PATH",
+            std::env::var_os("PATH").expect("a PATH to find git and tar"),
+        )
+        .args(["restore", "--store"])
+        .arg(fixture.store_path())
+        .arg("--into")
+        .arg(&into)
+        .output()
+        .expect("tycho runs");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert_eq!(
+        fs::read(into.join("A").join(awkward)).expect("the non-ascii name came back"),
+        b"stripped environment\n"
+    );
+
+    // Read out of the directory rather than compared against a path built here.
+    // APFS looks a name up in either normalisation, so `fs::read` on a constructed
+    // path succeeds whichever form is on disk and proves nothing - the bytes the
+    // filesystem hands back are the only thing that can tell NFC from NFD.
+    let on_disk = fs::read_dir(into.join("A"))
+        .expect("read the restored directory")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name())
+        .find(|name| name.as_encoded_bytes().starts_with(b"Caf"))
+        .expect("the accented entry is there under some spelling");
+    assert_eq!(
+        on_disk.as_encoded_bytes(),
+        awkward.as_bytes(),
+        "the name on disk must be the bytes the tree holds, not a re-normalised form"
+    );
+}
+
 /// Restore never writes into a destination that already holds things.
 #[test]
 fn a_non_empty_destination_is_refused_without_force() {
