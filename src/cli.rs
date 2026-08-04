@@ -7,7 +7,6 @@ pub mod run;
 pub mod service;
 
 use clap::{Args, Parser, Subcommand};
-use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -39,60 +38,6 @@ const LOGO: &str = r"
                               *@@+
                               +@@+";
 
-/// The mark, coloured by glyph density.
-///
-/// The art's own ramp - `@ % # * + = - : .` from dense to sparse - already encodes
-/// brightness, so mapping it onto a temperature gradient makes colour and shape agree
-/// rather than compete: hot white at the core, through gold and orange, to deep red
-/// where the strokes thin out. Tycho's Star was a supernova, and a remnant is exactly
-/// that gradient.
-///
-/// Runs of one colour share a single escape rather than one per character, which
-/// keeps the sequence a few hundred bytes instead of a few thousand.
-fn logo() -> String {
-    if !logo_colour() {
-        return LOGO.to_owned();
-    }
-    let mut out = String::with_capacity(LOGO.len() * 2);
-    let mut current: Option<u8> = None;
-    for character in LOGO.chars() {
-        let wanted = match character {
-            '@' => Some(231),
-            '%' => Some(229),
-            '#' => Some(220),
-            '*' => Some(214),
-            '+' => Some(208),
-            '=' => Some(202),
-            '-' => Some(160),
-            ':' => Some(124),
-            '.' => Some(88),
-            _ => None,
-        };
-        if wanted != current {
-            match wanted {
-                // Setting a colour replaces the last one, so a reset first would be
-                // two escapes where one does.
-                Some(code) => {
-                    let _ = write!(out, "\x1b[38;5;{code}m");
-                }
-                None => out.push_str("\x1b[0m"),
-            }
-            current = wanted;
-        }
-        out.push(character);
-    }
-    out.push_str("\x1b[0m");
-    out
-}
-
-/// Decided here rather than through `render::decide_colour`, which runs after
-/// `Cli::parse()` - and help is rendered *during* it. Same three answers that mean no.
-fn logo_colour() -> bool {
-    std::env::var_os("NO_COLOR").is_none()
-        && !std::env::args_os().any(|arg| arg == "--no-color")
-        && std::io::IsTerminal::is_terminal(&std::io::stdout())
-}
-
 /// clap 4 ships colour *support* on by default and an **empty palette**, so help
 /// renders monochrome until a `Styles` is supplied. clap 3 coloured without asking;
 /// the opt-in is the change. Reusing the SGR codes `render` already defines keeps one
@@ -120,7 +65,7 @@ fn help_styles() -> clap::builder::Styles {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "tycho", version, about, before_help = logo(), styles = help_styles())]
+#[command(name = "tycho", version, about, before_help = LOGO, styles = help_styles())]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
