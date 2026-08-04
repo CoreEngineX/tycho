@@ -429,9 +429,14 @@ fn a_link_windows_cannot_write_is_named_rather_than_counted() {
     let into = fixture.dest("recovered");
     let done = fixture.restore(&into, &Wanted::default());
 
+    // Whether `tar` can write a link here is the machine's business - a CI runner has
+    // Developer Mode and a stock workstation does not - so both outcomes are correct.
+    // The one that is not, and the one this exists for, is a link that reaches neither
+    // the disk nor the report: that restore counted it and called itself a success.
+    let landed = into.join("A").join("link").symlink_metadata().is_ok();
     assert!(
-        done.missing.iter().any(|path| path.ends_with("link")),
-        "the link tar could not create must be named: {:?}",
+        landed || done.missing.iter().any(|path| path.ends_with("link")),
+        "a link that was not written must be named: {:?}",
         done.missing
     );
     assert!(
