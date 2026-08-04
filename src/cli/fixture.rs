@@ -13,14 +13,13 @@
 
 use std::path::{Path, PathBuf};
 
-pub struct Fixture {
+pub(crate) struct Fixture {
     dir: tempfile::TempDir,
     pub path: PathBuf,
 }
 
 impl Fixture {
-    #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("tycho.toml");
         std::fs::write(&path, "version = 1\n").expect("write");
@@ -28,37 +27,33 @@ impl Fixture {
     }
 
     /// A directory that exists, under a name a refname accepts.
-    #[must_use]
-    pub fn dir(&self, name: &str) -> PathBuf {
+    pub(crate) fn dir(&self, name: &str) -> PathBuf {
         let root = self.dir.path().join(name);
         std::fs::create_dir_all(&root).expect("mkdir");
         root
     }
 
     /// A `[[profile]]` table watching a real directory, with `body` pasted in.
-    #[must_use]
-    pub fn profile(&self, name: &str, body: &str) -> String {
+    pub(crate) fn profile(&self, name: &str, body: &str) -> String {
         format!(
             "\n[[profile]]\nname = \"{name}\"\nwatch = [{}]\n{body}",
             literal(&self.dir(&format!("watched-{name}")))
         )
     }
 
-    pub fn append(&self, toml: &str) {
+    pub(crate) fn append(&self, toml: &str) {
         let mut text = std::fs::read_to_string(&self.path).expect("read");
         text.push_str(toml);
         std::fs::write(&self.path, text).expect("write");
     }
 
-    #[must_use]
-    pub fn text(&self) -> String {
+    pub(crate) fn text(&self) -> String {
         std::fs::read_to_string(&self.path).expect("read back")
     }
 }
 
 /// A path as a TOML literal string, which processes no escapes.
-#[must_use]
-pub fn literal(path: &Path) -> String {
+pub(crate) fn literal(path: &Path) -> String {
     format!("'{}'", path.display())
 }
 

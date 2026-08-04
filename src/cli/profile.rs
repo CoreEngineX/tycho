@@ -311,6 +311,7 @@ fn open_editing(config: Option<PathBuf>) -> Result<Editing, Exit> {
 #[cfg(test)]
 mod tests {
     use super::{add_profile, remove_profile};
+    use crate::cli::fixture::Fixture;
     use crate::cli::{Exit, ProfileAddArgs, ProfileRmArgs};
 
     fn add_args(name: &str) -> ProfileAddArgs {
@@ -345,9 +346,13 @@ mod tests {
     /// machine and not on a clean runner. That is a test asserting the environment.
     #[test]
     fn an_optional_name_must_match_a_declared_remote() {
-        let (dir, path) = config_with_one_profile();
+        let fixture = config_with_one_profile();
+        let path = fixture.path.clone();
         let mut args = add_args("fresh");
-        args.remote = vec![format!("drive={}", dir.path().join("nowhere").display())];
+        args.remote = vec![format!(
+            "drive={}",
+            fixture.dir("nowhere").join("gone").display()
+        )];
         args.optional = vec!["ghost".to_owned()];
         assert_eq!(add_profile(Some(path.clone()), &args), Exit::Failure);
 
@@ -365,67 +370,45 @@ mod tests {
         assert_eq!(add_profile(None, &args), Exit::Failure);
     }
 
-    /// A real directory on this machine, quoted as a TOML **literal** string.
-    ///
-    /// Two things a hardcoded `/tmp` hid: it is not a path on Windows, so the
-    /// re-validation every write runs called it an error; and the watched root's own
-    /// name becomes a git refname, which `tempfile`'s `.tmpXXXX` cannot be. Hence a
-    /// named subdirectory, and literal quoting so a `C:\...` path needs no escaping.
-    fn config_with_one_profile() -> (tempfile::TempDir, std::path::PathBuf) {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("tycho.toml");
-        std::fs::write(&path, profile_toml("demo", &watched(&dir))).expect("write");
-        (dir, path)
+    const LOCAL: &str = "local_only = true\nschedule = { every = \"6h\" }\n";
+
+    fn config_with_one_profile() -> Fixture {
+        let fixture = Fixture::new();
+        let profile = fixture.profile("demo", LOCAL);
+        fixture.append(&profile);
+        fixture
     }
 
-    fn watched(dir: &tempfile::TempDir) -> std::path::PathBuf {
-        let root = dir.path().join("watched");
-        std::fs::create_dir_all(&root).expect("mkdir");
-        root
-    }
-
-    fn profile_toml(name: &str, root: &std::path::Path) -> String {
-        format!(
-            "version = 1\n\n[[profile]]\nname = \"{name}\"\nwatch = ['{}']\n\
-             local_only = true\nschedule = {{ every = \"6h\" }}\n",
-            root.display()
-        )
+    fn rm(name: &str) -> ProfileRmArgs {
+        ProfileRmArgs {
+            name: name.to_owned(),
+            keep_store: false,
+            delete_store: false,
+        }
     }
 
     /// Requirement 4(a): the last profile in the file can never be removed, since a
     /// config with none fails `config check`.
     #[test]
     fn removing_the_last_profile_is_refused() {
-        let (_dir, path) = config_with_one_profile();
-        let outcome = remove_profile(
-            Some(path),
-            &ProfileRmArgs {
-                name: "demo".to_owned(),
-                keep_store: false,
-                delete_store: false,
-            },
+        let fixture = config_with_one_profile();
+        assert_eq!(
+            remove_profile(Some(fixture.path.clone()), &rm("demo")),
+            Exit::Failure
         );
-        assert_eq!(outcome, Exit::Failure);
     }
 
     #[test]
     fn removing_one_of_several_profiles_succeeds() {
-        let (dir, path) = config_with_one_profile();
-        let mut text = std::fs::read_to_string(&path).expect("read");
-        let second = profile_toml("second", &watched(&dir));
-        text.push_str(second.split_once("\n\n").expect("a profile table").1);
-        std::fs::write(&path, text).expect("write");
+        let fixture = config_with_one_profile();
+        let second = fixture.profile("second", LOCAL);
+        fixture.append(&second);
 
-        let outcome = remove_profile(
-            Some(path.clone()),
-            &ProfileRmArgs {
-                name: "demo".to_owned(),
-                keep_store: false,
-                delete_store: false,
-            },
+        assert_eq!(
+            remove_profile(Some(fixture.path.clone()), &rm("demo")),
+            Exit::Ok
         );
-        assert_eq!(outcome, Exit::Ok);
-        let text = std::fs::read_to_string(&path).expect("read back");
+        let text = fixture.text();
         assert!(!text.contains("name = \"demo\""), "{text}");
         assert!(text.contains("name = \"second\""), "{text}");
     }

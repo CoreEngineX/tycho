@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
 # The gate every commit has to pass: fmt, clippy, tests, doctests, docs, audit.
 #
-# Prefers `cex ci-check --rust` when it is installed - it runs the same checks in
-# parallel and renders a pass/fail table - and runs them directly otherwise, so a
-# contributor with nothing but a Rust toolchain gets the same verdict. Both paths
-# gate on the same things; only the presentation differs.
+# **This runs exactly what CI runs, and nothing else.** A gate that checks something
+# adjacent to what CI checks is worse than no gate: it returns green, the commit is
+# pushed on the strength of it, and the failure arrives anyway with the local check
+# still insisting it passed.
+#
+# That is not hypothetical. This script used to delegate to `cex ci-check --rust` when
+# that tool was installed, and its clippy runs without `--all-targets` - so no
+# `#[cfg(test)]` code was ever linted. Six red runs were pushed against a green local
+# gate before the difference was measured. `TYCHO_CI_TABLE=1` still opts into that
+# tool's rendering, but it is not the gate.
 
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-if command -v cex >/dev/null 2>&1; then
+if [ "${TYCHO_CI_TABLE:-}" = "1" ] && command -v cex >/dev/null 2>&1; then
     exec cex ci-check --rust --root "$root"
 fi
 
@@ -30,7 +36,7 @@ run() {
     fi
 }
 
-printf 'ci-check  (cex not installed; running the checks directly)\n'
+printf 'ci-check  the same six checks CI runs\n'
 run fmt     cargo fmt --all --check
 run clippy  cargo clippy --workspace --all-targets --all-features -- -D warnings
 # --run-ignored=all because `#[ignore]` is not an escape hatch here. `cargo test`

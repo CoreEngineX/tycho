@@ -104,7 +104,48 @@ pub fn records_ownership(path: &Path) -> Result<bool, VolumeError> {
 /// Never.
 #[cfg(windows)]
 pub fn records_ownership(path: &Path) -> Result<bool, VolumeError> {
-    Ok(exposure(path)?.is_none())
+    Ok(dacl_records_ownership(&read_dacl(path)?))
+}
+
+/// Whether a security descriptor comes from a filesystem that records ownership.
+///
+/// **A narrower question than [`exposure`]'s, and they were the same call.**
+/// `exposure` answers "can somebody other than the owner read this", which is right
+/// for the store and wrong here: it also says `Some` when the DACL simply grants a
+/// foreign trustee, which is what an ordinary NTFS folder with inherited ACLs looks
+/// like. Routing this through it refused every such folder as "a volume that records
+/// no ownership" and demanded `--trust-ownership` for a volume that records it fine.
+///
+/// The unix arm asks only whether the mount ignores ownership, so this is what makes
+/// one name mean one thing on both platforms.
+///
+/// Compiled off Windows too, which is what lets it be tested anywhere rather than
+/// only on the machine that already agrees with it.
+#[cfg(any(windows, test))]
+fn dacl_records_ownership(dacl: &str) -> bool {
+    !dacl.contains("NO_ACCESS_CONTROL")
+}
+
+#[cfg(test)]
+mod records_ownership_tests {
+    use super::dacl_records_ownership;
+
+    /// What the question is actually for: exFAT and FAT32 carry no ACLs, so Windows
+    /// reports the whole descriptor this way.
+    #[test]
+    fn a_volume_with_no_access_control_records_no_ownership() {
+        assert!(!dacl_records_ownership("name\nD:NO_ACCESS_CONTROL"));
+    }
+
+    /// The regression. A folder granting a foreign trustee is an ordinary NTFS folder
+    /// with inherited ACLs, and routing this through `exposure` called it a volume
+    /// that records no ownership - refusing it until `--trust-ownership` was passed
+    /// for a volume that records ownership perfectly well.
+    #[test]
+    fn a_folder_readable_by_others_still_records_ownership() {
+        let dacl = "name\nD:AI(A;OICIID;FA;;;S-1-5-32-544)(A;OICIID;FA;;;S-1-5-18)";
+        assert!(dacl_records_ownership(dacl), "{dacl}");
+    }
 }
 
 /// Whether the volume holding `path` is mounted `noowners`.
