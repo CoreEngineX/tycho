@@ -86,6 +86,22 @@ A volume with no ownership is also refused as a `store_path`, for a second and
 unrelated reason - see the store-permissions note at the top of `store.md`. `trust_ownership`
 does not affect that and is not meant to.
 
+### macOS sidecars are swept after every push
+
+On a volume that cannot hold an extended attribute - every exFAT and FAT32 drive -
+macOS writes a `._name` file beside each real one. They are not litter: git globs
+`objects/pack/*.idx`, so it opens `._pack-<hex>.idx` as a pack index and answers
+`non-monotonic index`, and every `._` under `refs/` is a `badRefName`. One push to a
+freshly formatted exFAT volume produced 185 of them.
+
+So `dot_clean -m` runs over the remote folder after the push and before verification.
+Measured on a real drive: 186 sidecars before, 0 after, `git fsck` silent.
+
+`doctor`'s artifact scan still reports them under their own kind, because a sidecar
+that survives the sweep means something else is wrong. Reporting alone was not
+enough - it failed a healthy backup on every macOS-written exFAT drive, and a row
+that is red on every machine is one people learn to skim.
+
 ### Spotlight can destroy an exFAT backup drive
 
 Observed, on a 512 GB exFAT drive that stopped mounting on macOS. `fsck_exfat`

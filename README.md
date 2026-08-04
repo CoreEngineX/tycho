@@ -128,7 +128,7 @@ reversals that resulted. The audit workspace is at `.audit/`, which is gitignore
 | [`docs/architecture/capture.md`](docs/architecture/capture.md) | What a run does, stage by stage |
 | [`docs/architecture/remotes.md`](docs/architecture/remotes.md) | Push, verification, offline handling |
 | [`docs/architecture/cli.md`](docs/architecture/cli.md) | Commands, flags, exit codes, output format |
-| [`docs/architecture/scheduling.md`](docs/architecture/scheduling.md) | launchd integration and service lifecycle |
+| [`docs/architecture/scheduling.md`](docs/architecture/scheduling.md) | The service lifecycle: launchd on macOS, Task Scheduler on Windows |
 | [`docs/decisions.md`](docs/decisions.md) | Why each choice, and what was rejected |
 | [`docs/background.md`](docs/background.md) | The incidents behind the requirements, and the system being replaced |
 | [`docs/git-primer.md`](docs/git-primer.md) | Objects, refs, refspecs and reachability - the git parts this design rests on |

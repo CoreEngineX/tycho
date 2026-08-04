@@ -32,9 +32,9 @@ global: --no-color
 | `restore` | Recover to a destination directory. See section 7 |
 | `watch` / `ignore` / `reinclude` | Rule management, editing the config in place |
 | `config` | Validate, locate, or create the config file |
-| `service` | launchd lifecycle for the per-profile backup agents and the shared catch-up agent |
+| `service` | Scheduler lifecycle for the per-profile backup agents and the shared catch-up agent - launchd on macOS, Task Scheduler on Windows |
 | `doctor` | Environment, service, remotes, volumes and object-database health |
-| `probe-access` | Internal. Run by `doctor --deep` through launchd to measure the agent's own Full Disk Access grant. Not for direct use |
+| `probe-access` | Internal. Run by `doctor --deep` through the scheduler to measure the agent's own Full Disk Access grant. macOS only, since TCC is. Not for direct use |
 | `log` | Tail the log file without needing to know where it lives |
 
 `--all` conflicts with an explicit PROFILE. **`--all` is the manual and scripted
