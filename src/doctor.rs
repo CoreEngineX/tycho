@@ -198,6 +198,14 @@ fn spotlight(folder: &std::path::Path, name: &str) -> Option<Check> {
     if volume == std::path::Path::new("/") {
         return None;
     }
+    // A journaled volume replays an interrupted write at mount, so Spotlight there is
+    // wasted IO rather than a hazard - and a row that warns where there is no hazard
+    // is the kind people learn to skim. This fired on an APFS drive while claiming
+    // exFAT keeps no journal, which was the check asserting a reason it had not
+    // checked.
+    if crate::sys::volume::is_journaled(&volume).ok()? {
+        return None;
+    }
     let out = command(
         "mdutil",
         &["-s", &volume.display().to_string()],
@@ -213,8 +221,8 @@ fn spotlight(folder: &std::path::Path, name: &str) -> Option<Check> {
         &format!("{name} spotlight"),
         Verdict::Warn,
         format!(
-            "Spotlight is indexing {}; exFAT keeps no journal, so its constant index \
-             writes are what corrupts a drive past repair. \
+            "Spotlight is indexing {}, which keeps no journal - so an interrupted index \
+             write stays broken and can corrupt the volume past repair. \
              sudo mdutil -i off {} && sudo mdutil -E {}",
             volume.display(),
             volume.display(),

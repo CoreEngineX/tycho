@@ -166,6 +166,34 @@ fn mounted_noowners(listing: &str, path: &Path) -> bool {
         .is_some_and(|(_, options)| options.split(", ").any(|item| item == "noowners"))
 }
 
+/// Whether the volume holding `path` journals its metadata.
+///
+/// The distinction that decides whether an interrupted write is recoverable. APFS,
+/// HFS+ and NTFS log a metadata change before making it, so a rename cut off halfway
+/// is replayed or rolled back at mount. exFAT and FAT32 log nothing, so it stays
+/// broken - which is what turns a background writer like Spotlight from wasteful into
+/// dangerous.
+///
+/// # Errors
+///
+/// If `mount` cannot be run or fails.
+#[cfg(unix)]
+pub fn is_journaled(path: &Path) -> Result<bool, VolumeError> {
+    let listing = mount_listing()?;
+    Ok(deepest_mount(&listing, path)
+        .is_some_and(|(_, options)| options.split(", ").any(|item| item == "journaled")))
+}
+
+/// NTFS journals; the volumes that do not are caught by the DACL check instead.
+///
+/// # Errors
+///
+/// Never.
+#[cfg(windows)]
+pub fn is_journaled(_path: &Path) -> Result<bool, VolumeError> {
+    Ok(true)
+}
+
 /// Where the volume holding `path` is mounted.
 ///
 /// # Errors

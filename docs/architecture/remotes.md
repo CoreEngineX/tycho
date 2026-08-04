@@ -100,10 +100,19 @@ Cannot create a generated name for 0.indexBigDates
 
 and the volume has not mounted since, read-only or otherwise.
 
-exFAT folds case, Spotlight writes index names that collide once it does, and
-`fsck_exfat` has no way to rename its way out. So the search index corrupts the
-filesystem holding it, on exactly the removable drive this document recommends as the
-offline copy.
+**The filesystem is the variable, not Spotlight.** exFAT and FAT32 keep no journal, so
+a directory write cut off partway stays broken rather than being replayed at mount -
+and Spotlight rewrites its index constantly and invisibly on a drive people unplug.
+APFS, HFS+ and NTFS all log the change first, so the same interruption is recoverable.
+`doctor` therefore warns only on an unjournaled volume: on a journaled one Spotlight is
+wasted IO rather than a hazard, and a row that warns where there is no hazard is one
+people learn to skim. An earlier version fired on an APFS drive while claiming exFAT
+keeps no journal, which was the check asserting a reason it had not checked.
+
+**So reformatting a cross-platform drive to APFS removes this failure entirely** -
+along with the AppleDouble sidecars, since APFS holds extended attributes natively.
+The cost is that Windows cannot read APFS at all, which is the whole reason exFAT was
+on the table.
 
 The fix is `mdutil`, and it needs a password:
 
