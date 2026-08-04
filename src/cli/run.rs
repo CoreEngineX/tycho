@@ -528,6 +528,13 @@ fn row(remote: &crate::config::Remote, profile: &Profile, state: &State) -> rend
         detail,
         note,
         hint,
+        severity: if current.is_red() {
+            crate::doctor::Verdict::Fail
+        } else if current.is_yellow() {
+            crate::doctor::Verdict::Warn
+        } else {
+            crate::doctor::Verdict::Ok
+        },
     }
 }
 

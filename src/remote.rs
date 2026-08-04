@@ -151,9 +151,6 @@ pub fn classify(path: &Path) -> Result<RemoteKind, RemoteError> {
 /// between readdir order and sorted order - so a first-match-wins rule would put
 /// company backups in a university account that must never be written to.
 ///
-/// # Errors
-///
-/// If the glob matches more than one directory, or none at all.
 /// Splitting on `/` alone finds no parent in `C:\Users\me\GoogleDrive-*\Backups`, so
 /// the search reads the current directory instead and every glob remote resolves to
 /// nothing. `std::path::is_separator` is what knows which characters count here.
@@ -167,6 +164,9 @@ fn split_separator(text: &str) -> Option<(&str, &str)> {
         .map(|at| (&text[..at], &text[at + 1..]))
 }
 
+/// # Errors
+///
+/// If the glob matches more than one directory, or none at all.
 pub fn resolve(path: &AbsPath) -> Result<PathBuf, RemoteError> {
     let text = path.as_path().to_string_lossy().into_owned();
     if !text.contains('*') {
@@ -285,6 +285,34 @@ pub fn verify(store: &Store, repo: &Path) -> Result<Option<String>, RemoteError>
 /// Only if something outside the remote's own health fails. A remote that is
 /// unreachable, refuses, or fails verification is an [`Observation`], not an error -
 /// one bad destination must not stop the others.
+/// Names the cause when git's own answer does not.
+///
+/// Git refuses a repository on a filesystem that records no ownership - exFAT and
+/// FAT32, which is what an external drive usually is. The refusal makes every command
+/// after `init` fail, and the first one Tycho runs is `git config`, which answers a
+/// non-repository with `fatal: not in a git directory`: true, useless, and silent
+/// about ownership. Asking git directly gets the real complaint, and git's own text
+/// carries the remedy with the exact path spelling `safe.directory` has to match -
+/// which is backslashes here, and does not match the forward-slash form.
+fn explain(repo: &Path, failure: &str) -> String {
+    const GUARD: &str = "dubious ownership";
+    if failure.contains(GUARD) {
+        return failure.to_owned();
+    }
+    let Ok(out) = Git::at(repo).run(&["rev-parse", "--git-dir"], Timeout::QUICK) else {
+        return failure.to_owned();
+    };
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if !stderr.contains(GUARD) {
+        return failure.to_owned();
+    }
+    format!(
+        "git will not use {}: it is on a filesystem that records no ownership. {}",
+        repo.display(),
+        stderr.trim()
+    )
+}
+
 pub fn publish(store: &Store, remote: &Remote, profile: &str) -> Observation {
     let folder = match resolve(&remote.path) {
         Ok(folder) => folder,
@@ -310,7 +338,12 @@ pub fn publish(store: &Store, remote: &Remote, profile: &str) -> Observation {
     let repo = repo_path(&folder, profile);
     let kind = match classify(&repo) {
         Ok(kind) => kind,
-        Err(error) => return Observation::Refused(FailureReason::Unusable(error.to_string())),
+        Err(error) => {
+            return Observation::Refused(FailureReason::Unusable(explain(
+                &repo,
+                &error.to_string(),
+            )));
+        }
     };
     if let Some(refusal) = kind.refusal() {
         return Observation::Refused(FailureReason::Unusable(refusal));
@@ -318,7 +351,7 @@ pub fn publish(store: &Store, remote: &Remote, profile: &str) -> Observation {
     if kind == RemoteKind::Absent
         && let Err(error) = initialise(&repo)
     {
-        return Observation::Refused(FailureReason::Unusable(error.to_string()));
+        return Observation::Refused(FailureReason::Unusable(explain(&repo, &error.to_string())));
     }
 
     match store.repo().push(&repo, &refspecs()) {

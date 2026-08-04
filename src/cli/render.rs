@@ -361,6 +361,11 @@ pub struct RemoteRow {
     pub note: String,
     /// What to type next when something is wrong.
     pub hint: Option<String>,
+    /// How bad this row is, carried rather than inferred from [`RemoteRow::word`].
+    ///
+    /// Colouring by matching on the word would make the palette depend on prose that
+    /// exists to be read, so renaming a word would silently change a colour.
+    pub severity: crate::doctor::Verdict,
 }
 
 #[derive(Clone, Debug)]
@@ -391,6 +396,20 @@ const REMOTE_NOTE: usize = WIDTH - 2 - REMOTE_NAME - REMOTE_WORD - REMOTE_DETAIL
 /// down the left lists your profiles and a glance down the right says when each
 /// fires.
 #[must_use]
+/// A remote's verdict, padded to its column and then coloured.
+///
+/// Padded before painting for the reason `doctor` records: an escape sequence has
+/// width in bytes and none on screen, so colouring first pushes every later column
+/// out by exactly the length of the escape.
+fn verdict_word(remote: &RemoteRow) -> String {
+    let padded = format!("{:<REMOTE_WORD$}", fit(&remote.word, REMOTE_WORD - 1));
+    match remote.severity {
+        crate::doctor::Verdict::Ok => padded,
+        crate::doctor::Verdict::Warn => paint(&padded, YELLOW),
+        crate::doctor::Verdict::Fail => paint(&padded, RED),
+    }
+}
+
 pub fn status(profiles: &[ProfileStatus], banner: Option<&str>) -> String {
     let mut out = String::new();
     if let Some(banner) = banner {
@@ -399,23 +418,24 @@ pub fn status(profiles: &[ProfileStatus], banner: Option<&str>) -> String {
 
     for profile in profiles {
         if let Some(over) = profile.overdue {
-            let _ = writeln!(
-                out,
-                "{}{:>width$}",
-                profile.name,
+            // Invariant 10's "red status line". Right-aligned first, then painted,
+            // so the escape does not eat the padding.
+            let overdue = format!(
+                "{:>width$}",
                 format!(
                     "OVERDUE by {}",
                     until(i64::try_from(over.as_secs()).unwrap_or(i64::MAX))
                 ),
                 width = WIDTH.saturating_sub(profile.name.chars().count())
             );
+            let _ = writeln!(out, "{}{}", profile.name, paint(&overdue, RED));
             let _ = writeln!(out, "  {}\n", subtitle(profile));
             for remote in &profile.remotes {
                 let _ = writeln!(
                     out,
-                    "  {:<REMOTE_NAME$}{:<REMOTE_WORD$}{:<REMOTE_DETAIL$}{:>REMOTE_NOTE$}",
+                    "  {:<REMOTE_NAME$}{}{:<REMOTE_DETAIL$}{:>REMOTE_NOTE$}",
                     fit(&remote.name, REMOTE_NAME - 1),
-                    fit(&remote.word, REMOTE_WORD - 1),
+                    verdict_word(remote),
                     fit(&remote.detail, REMOTE_DETAIL - 1),
                     fit(&remote.note, REMOTE_NOTE)
                 );
@@ -442,9 +462,9 @@ pub fn status(profiles: &[ProfileStatus], banner: Option<&str>) -> String {
         for remote in &profile.remotes {
             let _ = writeln!(
                 out,
-                "  {:<REMOTE_NAME$}{:<REMOTE_WORD$}{:<REMOTE_DETAIL$}{:>REMOTE_NOTE$}",
+                "  {:<REMOTE_NAME$}{}{:<REMOTE_DETAIL$}{:>REMOTE_NOTE$}",
                 fit(&remote.name, REMOTE_NAME - 1),
-                fit(&remote.word, REMOTE_WORD - 1),
+                verdict_word(remote),
                 fit(&remote.detail, REMOTE_DETAIL - 1),
                 fit(&remote.note, REMOTE_NOTE)
             );
@@ -832,7 +852,7 @@ fn when(rfc3339: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{count, size};
+    use super::{COLOUR, RemoteRow, count, size, verdict_word};
 
     #[test]
     fn counts_carry_thousands_separators() {
@@ -852,5 +872,55 @@ mod tests {
         assert_eq!(size(1_100_000), "1.10 MB");
         assert_eq!(size(41_000_000), "41.0 MB");
         assert_eq!(size(204_000_000), "204 MB");
+    }
+
+    fn failed_row() -> RemoteRow {
+        RemoteRow {
+            name: "ghost".to_owned(),
+            word: "failed".to_owned(),
+            detail: "behind 2 runs".to_owned(),
+            note: "today 20:13".to_owned(),
+            hint: None,
+            severity: crate::doctor::Verdict::Fail,
+        }
+    }
+
+    fn set_colour(on: bool) {
+        COLOUR.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// `overview.md` invariant 10 promises a red status line, and `status` emitted no
+    /// colour at all - every `paint` in this file was in `doctor`. Colour is emphasis
+    /// on a word that already carries the meaning, so the word has to survive without
+    /// it too.
+    #[test]
+    fn a_failed_remote_is_painted_and_still_readable_without_colour() {
+        set_colour(false);
+        let plain = verdict_word(&failed_row());
+        assert!(!plain.contains(''), "{plain:?}");
+        assert!(plain.starts_with("failed"), "{plain:?}");
+
+        set_colour(true);
+        let painted = verdict_word(&failed_row());
+        set_colour(false);
+        assert!(painted.contains("[31m"), "no red: {painted:?}");
+        assert!(painted.contains("failed"), "{painted:?}");
+    }
+
+    /// An escape sequence has width in bytes and none on screen, so painting before
+    /// padding shifts every later column by exactly its length.
+    #[test]
+    fn colour_does_not_change_the_column_width() {
+        set_colour(false);
+        let plain = verdict_word(&failed_row());
+        set_colour(true);
+        let painted = verdict_word(&failed_row());
+        set_colour(false);
+
+        let visible = painted.replace("[31m", "").replace("[0m", "");
+        assert_eq!(
+            visible, plain,
+            "the painted cell must occupy the same columns"
+        );
     }
 }
