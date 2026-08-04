@@ -26,14 +26,42 @@ cargo install --path .
 tycho __bootstrap            # installs, then writes shell completions
 ```
 
-`__bootstrap` mirrors `cex __bootstrap` and `a sibling tool __bootstrap`: it finds the
-checkout (from `TYCHO_SRC`, a bounded scan, or the current directory), runs `cargo
-install`, writes completions for zsh, bash, fish or PowerShell, and patches the rc
-file once. `--only-completions` refreshes those without rebuilding.
+`__bootstrap` finds the checkout (from `TYCHO_SRC`, a bounded scan of the usual
+roots, or the current directory), runs `cargo install`, writes completions for zsh,
+bash, fish or PowerShell, patches the rc file once, and leaves a starter config so
+the first command finds one. `--only-completions` refreshes completions without
+rebuilding.
 
 The build sets `target-cpu=native`, so the binary is built for the machine that
 builds it and is **not portable** to an older CPU. That is fine because installation
 is from source; it would not be if a prebuilt binary were ever published.
+
+## Quickstart
+
+```text
+tycho config init                       # a starter ~/.config/tycho/tycho.toml
+tycho watch add ~/Documents             # what to back up
+tycho config check                      # every problem at once, not the first
+tycho run --dry-run                     # the plan, before anything is written
+tycho run                               # capture, commit, push
+```
+
+Then add a `[[profile.remotes]]` block and a `schedule` to the config and:
+
+```text
+tycho service install                   # launchd or Task Scheduler
+tycho status                            # what ran, where it went, what is behind
+tycho doctor                            # everything that could be wrong, in one table
+```
+
+Getting data back needs neither a schedule nor a config:
+
+```text
+tycho restore --store /path/to/backup.git --into ./recovered
+```
+
+That is the disaster path, and it reads no config file at all - on a replacement
+machine there is nothing to read.
 
 ## Why
 
@@ -117,3 +145,18 @@ backup design is only worth what its restore path is.
     bash scripts/ci-check.sh
 
 fmt, the gated pedantic clippy set, tests, doc and audit. Green before every commit.
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md). The short version: `bash
+scripts/ci-check.sh` has to be green, and a change to what a backup does or how it
+is recovered needs the matching document changed in the same commit.
+
+## Licence
+
+Apache-2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
+
+Chosen over MIT for its explicit limitation of liability, which matters more than
+usual here: this is a backup tool, and its failure mode is somebody losing data.
+Section 6 also makes clear that the licence grants no rights to the CoreEngineX name
+or marks - the code is open, the brand is not.
