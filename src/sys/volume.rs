@@ -291,7 +291,7 @@ pub fn exposure(path: &Path) -> Result<Option<String>, VolumeError> {
 /// An absent DACL is treated the same way. This refuses anything it cannot positively
 /// show is owner-only, because the alternative is proving a secret-bearing store safe
 /// by failing to find evidence against it.
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn from_dacl(dacl: &str, owner: &str) -> Option<String> {
     if dacl.contains("NO_ACCESS_CONTROL") {
         return Some(
@@ -373,7 +373,17 @@ fn decode_utf16le(bytes: &[u8]) -> String {
 /// Only allow ACEs count. A deny ACE removes access rather than granting it, and an
 /// inherit-only ACE - `IO` in the flags - applies to children this object does not
 /// have yet, so neither can expose what is already there.
-#[cfg(windows)]
+///
+/// **`LA` is allowed for the same reason `BA` is.** SDDL writes well-known accounts as
+/// abbreviations rather than as SIDs, so the built-in Administrator arrives as `LA`
+/// and never matches an owner string that is a raw SID - which refused a store owned
+/// by the very account that created it, whenever that account was the built-in one.
+/// It is inside the `Administrators` grant this already allows, and an administrator
+/// reads through any DACL regardless.
+///
+/// Compiled off Windows so its tests run anywhere. They were `cfg(all(test, windows))`
+/// and this cost a CI round to find.
+#[cfg(any(windows, test))]
 fn foreign_trustee(dacl: &str, owner: &str) -> Option<String> {
     for ace in dacl.split('(').skip(1) {
         let ace = ace.split(')').next().unwrap_or_default();
@@ -384,7 +394,7 @@ fn foreign_trustee(dacl: &str, owner: &str) -> Option<String> {
         if !kind.starts_with('A') || flags.contains("IO") {
             continue;
         }
-        if !matches!(*trustee, "SY" | "BA") && !trustee.eq_ignore_ascii_case(owner) {
+        if !matches!(*trustee, "SY" | "BA" | "LA") && !trustee.eq_ignore_ascii_case(owner) {
             return Some((*trustee).to_owned());
         }
     }
@@ -441,11 +451,22 @@ mod unix_tests {
     }
 }
 
-#[cfg(all(test, windows))]
-mod windows_tests {
+#[cfg(test)]
+mod dacl_tests {
     use super::from_dacl;
 
     const OWNER: &str = "S-1-5-21-1111111111-2222222222-3333333333-1001";
+
+    /// SDDL writes well-known accounts as abbreviations rather than as SIDs, so the
+    /// built-in Administrator arrives as `LA` and never matched an owner string that
+    /// is a raw SID. A store created by that account was then refused as exposed to
+    /// somebody else - the somebody else being itself. Observed on a CI runner, whose
+    /// user is that account.
+    #[test]
+    fn the_built_in_administrator_is_not_a_foreign_trustee() {
+        let dacl = format!("name\nD:(A;OICIID;FA;;;SY)(A;OICIID;FA;;;LA)(A;OICIID;FA;;;{OWNER})");
+        assert_eq!(from_dacl(&dacl, OWNER), None, "{dacl}");
+    }
 
     /// The shape a directory under the user profile has: SYSTEM, Administrators and
     /// the owner, which is the same reach `0700` grants.
