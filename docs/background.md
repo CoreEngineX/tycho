@@ -118,30 +118,7 @@ their GitHub remotes existing.
    off-site copy. Do not assume a GitHub remote exists for everything Tycho
    protects; folder remotes are the trust anchor.
 
-## 4. Environment facts for the first machine
-
-- macOS, Darwin 25.6.0, zsh, Apple Silicon. Git present. `/usr/bin/trash` exists
-  and is mandated over recursive rm.
-- Cloud mounts observed live, exact paths, re-confirmed 01-Aug-2026:
-  - `~/Library/CloudStorage/OneDrive-Personal/` - backup destination
-  - `~/Library/CloudStorage/GoogleDrive-Acct/My Drive/` -
-    backup destination. The account is the backup account, not the user's
-    personal gmail.
-  - `~/Library/CloudStorage/OneDrive-Work/` - university account,
-    never a backup target, never write there.
-  - `a phone mount` - a phone mount, irrelevant.
-- Scale calibration: handbook bundle ~7.7 MB, org bundle ~112 KB. The full
-  dev tree `~/Developer/CoreEngineX` is low single-digit GB once junk dirs are
-  excluded. For contrast, `a sibling tool` reports ~38 GB in the global cargo target
-  dir alone, which is exactly the kind of thing the default ignores must catch.
-- Repo layout: `~/Developer/CoreEngineX/{org,products}`. `org` contains
-  submodules brand-assets, toolkit, handbook, website.
-  `products/` holds standalone repos a sibling project, pager, spass-converter, and the
-  platform repos inside those (a sibling project-ios, -android, -web, -docs, -img-core,
-  pager-daemon, -docs, spass-core, -docs, -ios, -web) are submodules of them.
-  Nested-repo capture is the normal case here, not an edge case.
-
-## 5. Precedent code
+## 4. Precedent code
 
 - The old script above is the only in-house prior art for the job itself.
 - `system-tools/daemons/a sibling daemon` is the reference for the local shape:
@@ -152,37 +129,3 @@ their GitHub remotes existing.
 - `~/.claude/guidance/architecture.md` covers ports-and-adapters discipline.
   Tycho's one real port is the remote; resist trait-ifying anything with a single
   implementation.
-
-## 6. Loose ends outside Tycho
-
-- The one-line `-C` fix to the old script: offered, declined 01-Aug-2026. The old
-  script stays broken by choice.
-- `CoreEngineX/org`'s GitHub remote is missing and 8-plus local-only org commits
-  cannot be pushed. Tycho's org coverage makes this less urgent, not resolved.
-- Whether Google Drive live-folder-sync was disabled after the July incident was
-  never explicitly confirmed. No recurrence observed since 16-Jul.
-
-## 7. The name
-
-Tycho Brahe (1546-1601), the Danish astronomer, spent roughly twenty-one
-years at his observatory Uraniborg on the island of Hven (1576-1597) making
-systematic naked-eye measurements of stellar and planetary positions, before
-the telescope existed, at a precision nobody could match. When he died in
-1601 his assistant Johannes Kepler inherited the observations and derived the
-laws of planetary motion from them, particularly from the Mars data. Tycho's
-own model of the solar system was wrong. The data was not. The records
-outlived their maker and were faithful enough that someone else could
-reconstruct deeper truth from them - which is exactly what a backup is for.
-
-The etymology is commonly got backwards. Tyge is a Danish name of Old Norse
-origin, usually traced to Tóki, a pet form of names built on the Þórr (Thor)
-element. Renaissance humanists Latinising Danish names rendered Tyge as
-Tycho, a spelling that happens to mirror the Greek name Τύχων (Tychon),
-connected to τύχη (tyche, "fortune") and the verb τυγχάνω ("to hit the
-mark"). So the "fortunate one who hits the mark" reading is a resemblance
-acquired at the moment of Latinisation, not an inheritance from the Greek -
-a coincidence, not a derivation.
-
-The Moon's most prominent crater is named Tycho, and the supernova he
-observed in 1572 - described in *De nova stella* (1573), the source of the
-word "nova" - is called Tycho's Supernova.

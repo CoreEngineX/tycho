@@ -6,7 +6,7 @@
 
 use crate::capture::Inspection;
 use crate::config::{Diagnostic, Schedule, Severity};
-use crate::plan::{Plan, REPO_TABLE_ROWS, RepoHead};
+use crate::plan::{ExcludeReason, Plan, REPO_TABLE_ROWS, RepoHead};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -153,6 +153,18 @@ fn short(head: &RepoHead) -> String {
     }
 }
 
+/// A rule's reason for exclusion, coloured only for `matched nothing` - the row
+/// `cli.md` section 8 says earns `--dry-run`, because a typo'd ignore path is
+/// otherwise a silent no-op that commits gigabytes into permanent history.
+fn reason_label(reason: ExcludeReason) -> String {
+    let label = reason.label();
+    if reason == ExcludeReason::MatchedNothing {
+        paint(label, YELLOW)
+    } else {
+        label.to_owned()
+    }
+}
+
 /// The three tables of `cli.md` section 8, because the three questions are separate:
 /// how much is coming, what repositories were found and in what state, and what the
 /// rules threw away.
@@ -209,7 +221,7 @@ pub fn dry_run(plan: &Plan, repos: &[(String, Inspection)], quick: bool) -> Stri
             out,
             "  {:<48}{}",
             fit(&abbreviate(rule_text), 47),
-            reason.label()
+            reason_label(*reason)
         );
     }
 
@@ -233,6 +245,16 @@ pub fn dry_run(plan: &Plan, repos: &[(String, Inspection)], quick: bool) -> Stri
         );
     }
     out
+}
+
+/// `error`/`warn`, padded to its column and then coloured - the same order as
+/// [`verdict_word`], for the same reason.
+fn severity_label(severity: Severity) -> String {
+    let (word, code) = match severity {
+        Severity::Error => ("error", RED),
+        Severity::Warning => ("warn", YELLOW),
+    };
+    paint(&format!("{word:<7}"), code)
 }
 
 /// `config check`'s echo, and its findings. Reading your own config back in
@@ -264,13 +286,14 @@ pub fn config_check(summaries: &[String], diagnostics: &[Diagnostic]) -> String 
             }
             profile = Some(diagnostic.profile.clone());
         }
-        let label = match diagnostic.severity {
-            Severity::Error => "error",
-            Severity::Warning => "warn",
-        };
-        let _ = writeln!(out, "  {label:<7} {}", diagnostic.kind);
+        let _ = writeln!(
+            out,
+            "  {} {}",
+            severity_label(diagnostic.severity),
+            diagnostic.kind
+        );
         if let Some(hint) = diagnostic.hint() {
-            let _ = writeln!(out, "          {hint}");
+            let _ = writeln!(out, "          {}", paint(&hint, DIM));
         }
     }
 
@@ -292,9 +315,9 @@ pub fn run_result(profile: &str, done: &crate::store::run::Completed) -> String 
     let mut out = format!("{profile}  {}\n", done.commit.short());
     let _ = writeln!(
         out,
-        "  {:<13}{:<40}{:>19}",
+        "  {:<13}{}{:>19}",
         "captured",
-        counted(summary),
+        counted_cell(&counted(summary), summary.is_empty(), 40),
         size(summary.tracked_bytes)
     );
     let _ = writeln!(
@@ -321,20 +344,23 @@ pub fn history(backups: &[crate::store::Backup]) -> String {
 
     let mut total = 0;
     for backup in backups {
-        let (line, written) = backup.summary.as_ref().map_or_else(
-            || ("not written by tycho".to_owned(), None),
+        let (line, empty, written) = backup.summary.as_ref().map_or_else(
+            || ("not written by tycho".to_owned(), false, None),
             |summary| {
-                let text = counted(summary);
-                (text, Some(summary.written_bytes))
+                (
+                    counted(summary),
+                    summary.is_empty(),
+                    Some(summary.written_bytes),
+                )
             },
         );
         total += written.unwrap_or_default();
         let _ = writeln!(
             out,
-            "  {:<18}{:<10}{:<34}{:>10}",
+            "  {:<18}{:<10}{}{:>10}",
             when(&backup.when),
             backup.commit.short(),
-            fit(&line, 33),
+            counted_cell(&fit(&line, 33), empty, 34),
             written.map_or_else(|| "-".to_owned(), size)
         );
     }
@@ -594,8 +620,6 @@ pub fn service_installed(agents: &[crate::platform::Agent], program: &Path) -> S
 /// `service status`: whether each agent is loaded, its last exit, and its schedule.
 #[must_use]
 pub fn service_status(rows: &[(crate::service::Installed, Option<Option<Schedule>>)]) -> String {
-    use crate::platform::Loaded;
-
     let mut out = String::new();
     // 12 rather than 10: "not yet run" is eleven characters and ran into the
     // schedule column, and "not loaded" filled it exactly with no gap.
@@ -603,12 +627,6 @@ pub fn service_status(rows: &[(crate::service::Installed, Option<Option<Schedule
     rule(&mut out);
 
     for (installed, wanted) in rows {
-        // A non-zero last exit is what `launchctl list` showed for a year while
-        // nobody looked. It is a column here so nobody has to.
-        let state = match installed.loaded {
-            Loaded::No => "not loaded".to_owned(),
-            Loaded::Yes { last, .. } => last.to_string(),
-        };
         // Drift between the installed plist and the config is what killed the old
         // system, so it is a column rather than something only `doctor` would find.
         // `None` means there is nothing to compare against - the shared agents carry
@@ -626,13 +644,30 @@ pub fn service_status(rows: &[(crate::service::Installed, Option<Option<Schedule
         };
         let _ = writeln!(
             out,
-            "  {:<44}{:<12}{}",
+            "  {:<44}{}{}",
             fit(&installed.agent.label(), 43),
-            state,
+            agent_state(installed.loaded, 12),
             schedule
         );
     }
     out
+}
+
+/// `installed.loaded`, padded to `width` and then coloured - `doctor` treats the same
+/// two conditions as `warn` and `fail`: not loaded means nothing is scheduled to run,
+/// and a non-zero last exit is the evidence that revealed a year of silent failure.
+fn agent_state(loaded: crate::platform::Loaded, width: usize) -> String {
+    use crate::platform::Loaded;
+    let text = match loaded {
+        Loaded::No => "not loaded".to_owned(),
+        Loaded::Yes { last, .. } => last.to_string(),
+    };
+    let padded = format!("{text:<width$}");
+    match loaded {
+        Loaded::No => paint(&padded, YELLOW),
+        Loaded::Yes { last, .. } if last.is_clean() => padded,
+        Loaded::Yes { .. } => paint(&padded, RED),
+    }
 }
 
 /// A schedule in the words the config uses for it.
@@ -695,7 +730,8 @@ pub fn restored(into: &std::path::Path, done: &crate::restore::Done) -> String {
     if !done.missing.is_empty() {
         let _ = writeln!(
             out,
-            "missing   {} the extraction could not write",
+            "{}   {} the extraction could not write",
+            paint("missing", RED),
             plural(done.missing.len(), "path")
         );
         for path in done.missing.iter().take(REPO_TABLE_ROWS) {
@@ -721,8 +757,14 @@ pub fn restored(into: &std::path::Path, done: &crate::restore::Done) -> String {
         if !meta.owner_refused.is_empty() {
             let _ = writeln!(
                 out,
-                "          {} kept their original owner only for root; these are yours now",
-                plural(meta.owner_refused.len(), "path")
+                "          {}",
+                paint(
+                    &format!(
+                        "{} kept their original owner only for root; these are yours now",
+                        plural(meta.owner_refused.len(), "path")
+                    ),
+                    DIM
+                )
             );
         }
         for failure in meta.failed.iter().take(REPO_TABLE_ROWS) {
@@ -759,7 +801,8 @@ pub fn restored(into: &std::path::Path, done: &crate::restore::Done) -> String {
         for conflict in &repo.conflicts {
             let _ = writeln!(
                 out,
-                "conflict  {:<34}{}",
+                "{}  {:<34}{}",
+                paint("conflict", YELLOW),
                 fit(&conflict.path.display().to_string(), 33),
                 conflict.reason
             );
@@ -768,9 +811,16 @@ pub fn restored(into: &std::path::Path, done: &crate::restore::Done) -> String {
 
     let _ = writeln!(
         out,
-        "\nnote      timestamps are not restored, and a rebuilt repository's own tree\n\
-         \x20         comes from git, which keeps only the execute bit\n\n\
-         done      {}",
+        "\n{}",
+        paint(
+            "note      timestamps are not restored, and a rebuilt repository's own tree\n\
+             \x20         comes from git, which keeps only the execute bit",
+            DIM
+        )
+    );
+    let _ = writeln!(
+        out,
+        "\ndone      {}",
         abbreviate(&into.display().to_string())
     );
     out
@@ -812,6 +862,14 @@ pub fn path_history(
         );
     }
     out
+}
+
+/// [`counted`]'s text (or a caller's own fallback), padded to `width` and then
+/// painted green when `empty` - `no changes` is the one branch of that text with no
+/// digits for the padding trap to catch.
+fn counted_cell(text: &str, empty: bool, width: usize) -> String {
+    let padded = format!("{text:<width$}");
+    if empty { paint(&padded, GREEN) } else { padded }
 }
 
 /// Only the non-zero parts, so a run that only changed files reads `2 changed`
@@ -873,7 +931,10 @@ fn when(rfc3339: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{COLOUR, RemoteRow, count, size, verdict_word};
+    use super::{
+        COLOUR, ExcludeReason, RemoteRow, Severity, agent_state, config_check, count, counted_cell,
+        history, reason_label, restored, run_result, severity_label, size, verdict_word,
+    };
 
     #[test]
     fn counts_carry_thousands_separators() {
@@ -910,6 +971,25 @@ mod tests {
         COLOUR.store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Every SGR span removed, the way a terminal renders them and a pipe never sees
+    /// them - what is left is what the padding trap would otherwise have disturbed.
+    fn strip_ansi(text: &str) -> String {
+        let mut out = String::new();
+        let mut chars = text.chars();
+        while let Some(next) = chars.next() {
+            if next == '\u{1b}' {
+                for escaped in chars.by_ref() {
+                    if escaped == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(next);
+            }
+        }
+        out
+    }
+
     /// `overview.md` invariant 10 promises a red status line, and `status` emitted no
     /// colour at all - every `paint` in this file was in `doctor`. Colour is emphasis
     /// on a word that already carries the meaning, so the word has to survive without
@@ -943,5 +1023,225 @@ mod tests {
             visible, plain,
             "the painted cell must occupy the same columns"
         );
+    }
+
+    #[test]
+    fn severity_label_pads_before_it_paints() {
+        set_colour(false);
+        let plain_error = severity_label(Severity::Error);
+        let plain_warn = severity_label(Severity::Warning);
+        set_colour(true);
+        let painted_error = severity_label(Severity::Error);
+        let painted_warn = severity_label(Severity::Warning);
+        set_colour(false);
+
+        assert_eq!(strip_ansi(&painted_error), plain_error);
+        assert_eq!(strip_ansi(&painted_warn), plain_warn);
+        assert!(painted_error.contains("31m"), "no red: {painted_error:?}");
+        assert!(painted_warn.contains("33m"), "no yellow: {painted_warn:?}");
+    }
+
+    #[test]
+    fn counted_cell_is_only_painted_when_there_is_nothing_to_report() {
+        set_colour(false);
+        let plain_empty = counted_cell("no changes", true, 40);
+        let plain_busy = counted_cell("14 changed, 2 added", false, 40);
+        set_colour(true);
+        let painted_empty = counted_cell("no changes", true, 40);
+        let painted_busy = counted_cell("14 changed, 2 added", false, 40);
+        set_colour(false);
+
+        assert_eq!(plain_empty.chars().count(), 40);
+        assert_eq!(strip_ansi(&painted_empty), plain_empty);
+        assert!(painted_empty.contains("32m"), "no green: {painted_empty:?}");
+        // Digits are never coloured, so a row that has any stays untouched.
+        assert_eq!(painted_busy, plain_busy);
+    }
+
+    #[test]
+    fn reason_label_colours_only_matched_nothing() {
+        set_colour(false);
+        let plain_matched = reason_label(ExcludeReason::MatchedNothing);
+        let plain_junk = reason_label(ExcludeReason::DefaultJunk);
+        set_colour(true);
+        let painted_matched = reason_label(ExcludeReason::MatchedNothing);
+        let painted_junk = reason_label(ExcludeReason::DefaultJunk);
+        set_colour(false);
+
+        assert_eq!(strip_ansi(&painted_matched), plain_matched);
+        assert!(
+            painted_matched.contains("33m"),
+            "no yellow: {painted_matched:?}"
+        );
+        // An expected exclusion is not a warning, so it stays as written.
+        assert_eq!(painted_junk, plain_junk);
+    }
+
+    #[test]
+    fn agent_state_pads_before_it_paints() {
+        use crate::platform::{Ended, Loaded};
+
+        let clean = Loaded::Yes {
+            pid: Some(1),
+            last: Ended::Exit(0),
+        };
+        let failed = Loaded::Yes {
+            pid: None,
+            last: Ended::Exit(1),
+        };
+
+        set_colour(false);
+        let plain_clean = agent_state(clean, 12);
+        let plain_failed = agent_state(failed, 12);
+        let plain_missing = agent_state(Loaded::No, 12);
+        set_colour(true);
+        let painted_clean = agent_state(clean, 12);
+        let painted_failed = agent_state(failed, 12);
+        let painted_missing = agent_state(Loaded::No, 12);
+        set_colour(false);
+
+        assert_eq!(plain_clean.chars().count(), 12);
+        // A clean last exit is the baseline, so it is never coloured.
+        assert_eq!(painted_clean, plain_clean);
+        assert_eq!(strip_ansi(&painted_failed), plain_failed);
+        assert_eq!(strip_ansi(&painted_missing), plain_missing);
+        assert!(painted_failed.contains("31m"), "no red: {painted_failed:?}");
+        assert!(
+            painted_missing.contains("33m"),
+            "no yellow: {painted_missing:?}"
+        );
+    }
+
+    /// `config check`'s error label, warn label and remedy line, all three at once -
+    /// the shape `cli.md` section 9 documents.
+    #[test]
+    fn config_check_keeps_its_columns_when_painted() {
+        let diagnostics = vec![
+            crate::config::Diagnostic {
+                severity: Severity::Error,
+                profile: Some("coreenginex".to_owned()),
+                kind: crate::config::DiagnosticKind::AliasCollision {
+                    alias: "docs".to_owned(),
+                    first: "~/work/docs".to_owned(),
+                    second: "~/personal/docs".to_owned(),
+                },
+            },
+            crate::config::Diagnostic {
+                severity: Severity::Warning,
+                profile: Some("coreenginex".to_owned()),
+                kind: crate::config::DiagnosticKind::NoSchedule,
+            },
+        ];
+
+        set_colour(false);
+        let plain = config_check(&[], &diagnostics);
+        set_colour(true);
+        let painted = config_check(&[], &diagnostics);
+        set_colour(false);
+
+        assert_eq!(strip_ansi(&painted), plain);
+        assert!(painted.contains("31m"), "no red for error: {painted:?}");
+        assert!(painted.contains("33m"), "no yellow for warn: {painted:?}");
+        assert!(painted.contains("2m"), "no dim for the remedy: {painted:?}");
+    }
+
+    /// `no changes` is `run_result`'s only branch with no digits to protect from the
+    /// padding trap, and the only one this renderer paints.
+    #[test]
+    fn run_result_keeps_its_columns_when_painted() {
+        let commit =
+            crate::primitives::oid::Oid::parse("8f2a10c8f2a10c8f2a10c8f2a10c8f2a10c8f2a1").unwrap();
+        let done = crate::store::run::Completed {
+            commit,
+            summary: crate::store::message::Summary::default(),
+            warnings: Vec::new(),
+            record: crate::state::RunRecord {
+                when: String::new(),
+                outcome: crate::state::Outcome::Ok,
+                commit: None,
+                entries: std::collections::BTreeMap::new(),
+                files: 0,
+                bytes: 0,
+                store_bytes: 0,
+                warnings: Vec::new(),
+            },
+            remotes: Vec::new(),
+        };
+
+        set_colour(false);
+        let plain = run_result("coreenginex", &done);
+        set_colour(true);
+        let painted = run_result("coreenginex", &done);
+        set_colour(false);
+
+        assert_eq!(strip_ansi(&painted), plain);
+        assert!(painted.contains("32m"), "no green: {painted:?}");
+    }
+
+    #[test]
+    fn history_keeps_its_columns_when_painted() {
+        let commit =
+            crate::primitives::oid::Oid::parse("1c93bb71c93bb71c93bb71c93bb71c93bb71c93b").unwrap();
+        let backups = vec![
+            crate::store::Backup {
+                commit,
+                when: "2026-10-26T12:00:00Z".to_owned(),
+                summary: Some(crate::store::message::Summary::default()),
+            },
+            crate::store::Backup {
+                commit,
+                when: "2026-10-19T12:00:00Z".to_owned(),
+                summary: None,
+            },
+        ];
+
+        set_colour(false);
+        let plain = history(&backups);
+        set_colour(true);
+        let painted = history(&backups);
+        set_colour(false);
+
+        assert_eq!(strip_ansi(&painted), plain);
+        assert!(painted.contains("32m"), "no green: {painted:?}");
+    }
+
+    /// `missing` (red), `conflict` (yellow) and the closing note (dim) - `restored`'s
+    /// three coloured spots in one report.
+    #[test]
+    fn restored_keeps_its_columns_when_painted() {
+        let done = crate::restore::Done {
+            missing: vec!["CoreEngineX/org/notes.md".to_owned()],
+            metadata: Some(crate::metadata::Applied {
+                owner_refused: vec!["CoreEngineX/org/key".to_owned()],
+                ..Default::default()
+            }),
+            repos: vec![crate::restore::Rebuilt {
+                key: "CoreEngineX/org".to_owned(),
+                at: std::path::PathBuf::from("/tmp/rescue/CoreEngineX/org"),
+                head: Some("main aef686f".to_owned()),
+                stashes: 0,
+                overlay: 0,
+                conflicts: vec![crate::restore::overlay::Conflict {
+                    path: std::path::PathBuf::from("CoreEngineX/org/secret"),
+                    reason: crate::restore::overlay::Reason::TypeMismatch,
+                }],
+            }],
+            ..Default::default()
+        };
+        let into = std::path::PathBuf::from("/tmp/rescue");
+
+        set_colour(false);
+        let plain = restored(&into, &done);
+        set_colour(true);
+        let painted = restored(&into, &done);
+        set_colour(false);
+
+        assert_eq!(strip_ansi(&painted), plain);
+        assert!(painted.contains("31m"), "no red for missing: {painted:?}");
+        assert!(
+            painted.contains("33m"),
+            "no yellow for conflict: {painted:?}"
+        );
+        assert!(painted.contains("2m"), "no dim for the note: {painted:?}");
     }
 }

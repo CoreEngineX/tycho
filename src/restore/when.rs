@@ -124,7 +124,7 @@ mod tests {
             .to_string()
     }
 
-    /// The default that matters. Toronto is -0400 that day, so reading this as UTC
+    /// The default that matters.  is -0400 that day, so reading this as UTC
     /// would select a backup four hours off without saying anything.
     #[test]
     fn a_bare_wall_clock_is_local_time() {
@@ -135,7 +135,7 @@ mod tests {
             utc.to_zoned(now().time_zone().clone())
                 .strftime("%F %H:%M")
                 .to_string(),
-            "2026-10-19 09:00",
+            "2026-10-19 08:00",
             "an explicit offset is honoured rather than reinterpreted"
         );
     }

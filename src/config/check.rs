@@ -153,7 +153,7 @@ impl fmt::Display for DiagnosticKind {
             }
             Self::NoRemotes => write!(
                 f,
-                "profile has no remotes; set local_only = true to confirm this is intended"
+                "this profile has nowhere to send its backups, so they never leave this machine"
             ),
             Self::NoSchedule => write!(f, "profile has no schedule, so it only runs manually"),
             Self::InvalidSchedule { reason } => write!(f, "invalid schedule: {reason}"),
@@ -180,7 +180,24 @@ impl Diagnostic {
             DiagnosticKind::AliasCollision { first, .. } => Some(format!(
                 "give one an explicit name: {{ path = \"{first}\", name = \"...\" }}"
             )),
-            DiagnosticKind::NoRemotes => Some("local_only = true".to_owned()),
+            // Both remedies, because the wrong one was the only one offered: a backup
+            // that never leaves the disk it is on dies with that disk, so adding a
+            // destination is the answer far more often than declaring you meant it.
+            //
+            // The indent matches what the renderer puts before the first line, so a
+            // multi-line hint stays in its column.
+            DiagnosticKind::NoRemotes => Some(
+                [
+                    "add somewhere to send them, under this profile:",
+                    "",
+                    "  [[profile.remotes]]",
+                    "  name = \"drive\"",
+                    "  path = \"/Volumes/<your drive>/Backups\"",
+                    "",
+                    "or set local_only = true if a store on this machine alone is deliberate",
+                ]
+                .join("\n          "),
+            ),
             _ => None,
         }
     }
