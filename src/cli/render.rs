@@ -52,6 +52,7 @@ pub const RED: &str = "31";
 pub const YELLOW: &str = "33";
 pub const GREEN: &str = "32";
 pub const DIM: &str = "2";
+pub const CYAN: &str = "36";
 
 /// `8,412`.
 #[must_use]

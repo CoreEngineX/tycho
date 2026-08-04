@@ -107,6 +107,35 @@ pub enum RunError {
     },
 }
 
+/// Runs a child with the terminal attached and no timeout, for a command a person is
+/// watching.
+///
+/// The deliberate opposite of [`command`], and the only other way out of this module.
+/// [`command`] captures output and kills the child at a deadline, which is right for
+/// everything on the backup path: a hung `git` must not become a silently stalled
+/// backup. It is wrong for `cargo install`, which legitimately takes a minute, prints
+/// progress worth seeing, and would be killed mid-build by any deadline short enough
+/// to be useful elsewhere.
+///
+/// Nothing here is pinned, because there is no config to pin - the pins in [`command`]
+/// exist to stop git reading the ambient environment, and this never runs git.
+///
+/// # Errors
+///
+/// If the program cannot be spawned.
+pub fn interactive(
+    program: &str,
+    args: &[&std::ffi::OsStr],
+) -> Result<std::process::ExitStatus, RunError> {
+    std::process::Command::new(program)
+        .args(args)
+        .status()
+        .map_err(|source| RunError::Spawn {
+            program: program.to_owned(),
+            source,
+        })
+}
+
 /// A replacement global config for git, used for exactly one setting.
 ///
 /// `safe.directory` is the only thing Tycho needs that **cannot** be pinned with

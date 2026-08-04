@@ -1,0 +1,18 @@
+# Build for the machine doing the building.
+#
+# `native` means the compiler may emit any instruction this CPU has, which makes the
+# resulting binary **not portable**: copied to a machine with an older CPU it can die
+# with an illegal-instruction fault rather than a clear error. That is acceptable here
+# and only here, because Tycho is built from source on the machine that runs it -
+# `cargo install --path .`, or the `__bootstrap` command, on each machine. If a
+# prebuilt binary is ever published for other people to download, this line has to go
+# first.
+#
+# Be clear about the payoff: for this program it is close to nothing. Tycho spends its
+# time in `git` subprocesses and in filesystem IO, not in arithmetic. The one place
+# that is genuinely our own compute is glob matching across a large tree, and even
+# there the walk dominates. The real release wins are already in `Cargo.toml` -
+# `lto = true` and `codegen-units = 1` shrink the binary and cut startup, which is what
+# a command you run from a shell actually notices.
+[build]
+rustflags = ["-C", "target-cpu=native"]

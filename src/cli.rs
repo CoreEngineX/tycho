@@ -297,6 +297,9 @@ pub enum Command {
     /// Measure the agent's own Full Disk Access grant
     #[command(hide = true)]
     ProbeAccess(ProbeArgs),
+    /// Install tycho and wire up shell completions
+    #[command(name = "__bootstrap", hide = true)]
+    Bootstrap(crate::bootstrap::BootstrapArgs),
     /// Tail the log file
     Log(LogArgs),
 }
@@ -339,6 +342,7 @@ impl Command {
             Self::Doctor(_) => "doctor",
             Self::ProbeAccess(_) => "probe-access",
             Self::Log(_) => "log",
+            Self::Bootstrap(_) => "__bootstrap",
         }
     }
 }
@@ -382,6 +386,13 @@ pub fn dispatch(command: Command) -> Exit {
         Command::Log(args) => run::log(&args),
         Command::Doctor(args) => doctor::dispatch(&args),
         Command::ProbeAccess(args) => doctor::probe_access(&args),
+        Command::Bootstrap(args) => match crate::bootstrap::run(&args) {
+            Ok(()) => Exit::Ok,
+            Err(error) => {
+                eprintln!("tycho: {error}");
+                Exit::Failure
+            }
+        },
         Command::Watch(args) => rules::dispatch(crate::config_edit::List::Watch, &args),
         Command::Ignore(args) => rules::dispatch(crate::config_edit::List::Ignore, &args),
         Command::Reinclude(args) => rules::dispatch(crate::config_edit::List::Reinclude, &args),

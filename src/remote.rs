@@ -279,6 +279,38 @@ pub fn verify(store: &Store, repo: &Path) -> Result<Option<String>, RemoteError>
     Ok(Some(missing.join("; ")))
 }
 
+/// Removes the AppleDouble sidecars macOS leaves on a volume that cannot hold an
+/// extended attribute.
+///
+/// **Not cosmetic, and not optional.** Every exFAT and FAT32 drive is such a volume,
+/// which is what `remotes.md` expects an external backup to live on, and one push to a
+/// freshly formatted one produced 185 `._` files. Git globs `objects/pack/*.idx`, so
+/// it opens `._pack-<hex>.idx` as a pack index and answers `non-monotonic index`;
+/// every `._` under `refs/` is a `badRefName`. Measured on real hardware, twice.
+///
+/// Swept rather than reported, because reporting it made `doctor` fail on a healthy
+/// backup on every macOS-written exFAT drive forever - and a row that is red on every
+/// machine is a row people learn to skim. `doctor`'s check stays, so a sidecar that
+/// survives this is still a finding.
+///
+/// Best-effort: a failure here is not a reason to fail a push that succeeded, and
+/// `verify` immediately afterwards is what says whether the remote is sound.
+#[cfg(target_os = "macos")]
+pub fn sweep_sidecars(repo: &Path) {
+    // `-m` deletes rather than merging the sidecar back into the file it shadows,
+    // which is what we want: the data is git's, and the metadata being carried is
+    // macOS's own noise.
+    let _ = crate::sys::process::command(
+        "dot_clean",
+        &["-m", &repo.display().to_string()],
+        Timeout::WORK,
+    );
+}
+
+/// AppleDouble is Apple's, and so is the sweep.
+#[cfg(not(target_os = "macos"))]
+pub fn sweep_sidecars(_repo: &Path) {}
+
 /// Names the cause when git's own answer does not.
 ///
 /// Git refuses a repository on a filesystem that records no ownership - exFAT and
@@ -360,6 +392,9 @@ pub fn publish(store: &Store, remote: &Remote, profile: &str) -> Observation {
         }
         Err(error) => return Observation::Refused(FailureReason::Other(error.to_string())),
     }
+
+    // Before verification, because the sidecars are what `verify` would trip over.
+    sweep_sidecars(&repo);
 
     match verify(store, &repo) {
         Ok(None) => {}

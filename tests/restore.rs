@@ -672,7 +672,9 @@ fn the_permission_bits_git_cannot_store_come_back_anyway() {
         .metadata
         .as_ref()
         .expect("the backup carried a manifest");
-    assert_eq!(applied.modes, modes.len(), "{applied:?}");
+    // The four files plus the `A` directory holding them: a `0700` directory whose
+    // contents came back correct is still a listable directory.
+    assert_eq!(applied.modes, modes.len() + 1, "{applied:?}");
     assert!(applied.failed.is_empty(), "{applied:?}");
 
     for (name, mode) in modes {
@@ -880,5 +882,32 @@ fn at_selects_the_newest_backup_at_or_before_the_moment() {
         fs::read(into.join("A/f.txt")).expect("read"),
         b"first\n",
         "at-or-before must not reach forward past the moment asked for"
+    );
+}
+
+/// A directory's own mode, which the manifest has to derive: the plan enumerates
+/// files, so nothing else names `A/private` at all.
+#[cfg(unix)]
+#[test]
+fn a_directorys_mode_comes_back_too() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut fixture = fixture();
+    let secret = fixture.root().join("private");
+    write(&secret.join("key.pem"), b"-----BEGIN-----\n");
+    fs::set_permissions(&secret, fs::Permissions::from_mode(0o700)).expect("chmod");
+    fixture.run();
+
+    let into = fixture.dest("recovered");
+    fixture.restore(&into, &Wanted::default());
+
+    let back = fs::metadata(into.join("A").join("private"))
+        .expect("the directory came back")
+        .permissions()
+        .mode()
+        & 0o7777;
+    assert_eq!(
+        back, 0o700,
+        "a directory holding a key must not come back listable: {back:04o}"
     );
 }

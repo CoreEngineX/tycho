@@ -160,24 +160,29 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
 #[cfg(unix)]
 #[must_use]
 pub fn capture(items: &[(AbsPath, TreePath)]) -> Manifest {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::{
+        os::unix::fs::{MetadataExt, PermissionsExt},
+        path::PathBuf,
+    };
 
     let mut manifest = Manifest::new();
-    let mut ids: BTreeMap<(u32, u32), Vec<String>> = BTreeMap::new();
+    // One representative source path per distinct owner, so the name lookup is one
+    // `stat` for a whole backup rather than one per file.
+    let mut ids: BTreeMap<(u32, u32), (PathBuf, Vec<String>)> = BTreeMap::new();
 
-    for (source, stored) in items {
-        let Ok(meta) = std::fs::symlink_metadata(source.as_path()) else {
-            continue;
+    let mut record = |source: &Path, key: String, ids: &mut BTreeMap<_, (_, Vec<String>)>| {
+        let Ok(meta) = std::fs::symlink_metadata(source) else {
+            return;
         };
-        // A symlink's own mode is not meaningful and cannot be set without
-        // `lchmod`, which macOS has and Linux does not; the target's mode is the
-        // target's business.
+        // A symlink's own mode is not meaningful and cannot be set without `lchmod`,
+        // which macOS has and Linux does not; the target's mode is the target's
+        // business.
         if meta.file_type().is_symlink() {
-            continue;
+            return;
         }
-        let key = stored.to_string();
         ids.entry((meta.uid(), meta.gid()))
-            .or_default()
+            .or_insert_with(|| (source.to_path_buf(), Vec::new()))
+            .1
             .push(key.clone());
         manifest.insert(
             key,
@@ -186,14 +191,38 @@ pub fn capture(items: &[(AbsPath, TreePath)]) -> Manifest {
                 ..Record::default()
             },
         );
+    };
+
+    for (source, stored) in items {
+        record(source.as_path(), stored.to_string(), &mut ids);
     }
 
-    for ((uid, gid), paths) in &ids {
-        let (owner, group) = names(*uid, *gid, items, paths);
+    // Directories, walked up from each stored path alongside its source. The plan
+    // enumerates files, so without this a `0700` directory comes back `0755` and its
+    // contents are listable by anyone - the mode on the files inside is only half the
+    // guarantee.
+    let mut dirs: BTreeMap<String, PathBuf> = BTreeMap::new();
+    for (source, stored) in items {
+        let (mut src, mut dst) = (source.as_path(), stored.as_path());
+        while let (Some(up_src), Some(up_dst)) = (src.parent(), dst.parent()) {
+            if up_dst.as_os_str().is_empty() {
+                break;
+            }
+            dirs.insert(up_dst.to_string_lossy().into_owned(), up_src.to_path_buf());
+            src = up_src;
+            dst = up_dst;
+        }
+    }
+    for (stored, source) in &dirs {
+        record(source, stored.clone(), &mut ids);
+    }
+
+    for (&(uid, gid), (source, paths)) in &ids {
+        let (owner, group) = names(uid, gid, source);
         for path in paths {
-            if let Some(record) = manifest.get_mut(path) {
-                record.owner.clone_from(&owner);
-                record.group.clone_from(&group);
+            if let Some(entry) = manifest.get_mut(path) {
+                entry.owner.clone_from(&owner);
+                entry.group.clone_from(&group);
             }
         }
     }
@@ -215,21 +244,14 @@ pub fn capture(_items: &[(AbsPath, TreePath)]) -> Manifest {
 /// The owner and group names for one id pair, asked of `stat` rather than resolved
 /// from `/etc/passwd`, which on macOS is a stub that local accounts are not in.
 #[cfg(unix)]
-fn names(uid: u32, gid: u32, items: &[(AbsPath, TreePath)], paths: &[String]) -> (String, String) {
+fn names(uid: u32, gid: u32, source: &Path) -> (String, String) {
+    use crate::sys::process::Timeout;
+
     let fallback = (uid.to_string(), gid.to_string());
-    let Some(first) = paths.first() else {
-        return fallback;
-    };
-    let Some((source, _)) = items
-        .iter()
-        .find(|(_, stored)| &stored.to_string() == first)
-    else {
-        return fallback;
-    };
     let Ok(out) = crate::sys::process::command(
         "stat",
-        &["-f", "%Su %Sg", &source.as_path().display().to_string()],
-        crate::sys::process::Timeout::QUICK,
+        &["-f", "%Su %Sg", &source.display().to_string()],
+        Timeout::QUICK,
     ) else {
         return fallback;
     };
@@ -296,12 +318,19 @@ fn read_xattrs(items: &[(AbsPath, TreePath)], manifest: &mut Manifest) {
 /// an ordinary user is the normal case, so a refusal is reported rather than fatal.
 #[cfg(unix)]
 pub fn apply(into: &Path, manifest: &Manifest) -> Applied {
+    use crate::sys::process::Timeout;
     use std::os::unix::fs::PermissionsExt;
 
     let mut applied = Applied::default();
     let me = whoami();
 
-    for (path, record) in manifest {
+    // Files first, then directories deepest-first. A directory set to `0500` before
+    // its contents were touched would refuse every one of them.
+    let (dirs, files): (Vec<_>, Vec<_>) = manifest
+        .iter()
+        .partition(|(path, _)| into.join(path).is_dir());
+
+    for (path, record) in files.into_iter().chain(dirs.into_iter().rev()) {
         let target = into.join(path);
         if !target
             .symlink_metadata()
@@ -318,7 +347,7 @@ pub fn apply(into: &Path, manifest: &Manifest) -> Applied {
             let ok = crate::sys::process::command(
                 "xattr",
                 &["-wx", name, &hexed, &target.display().to_string()],
-                crate::sys::process::Timeout::QUICK,
+                Timeout::QUICK,
             )
             .is_ok_and(|out| out.status.success());
             if ok {

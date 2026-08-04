@@ -444,6 +444,10 @@ fn mirror(profile: &Profile, store: &Store, state: &mut State) -> Vec<RemoteResu
     folders.dedup();
     for folder in &folders {
         let _ = remote::recovery::write(folder);
+        // Last, because it must cover `RECOVERY.md` too - macOS writes a sidecar for
+        // whatever was touched most recently, so a sweep before this one leaves its
+        // own behind.
+        remote::sweep_sidecars(folder);
     }
     results
 }

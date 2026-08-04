@@ -13,11 +13,27 @@ that history alone cannot restore. The store is then pushed to bare repositories
 synced cloud folders and on external drives, so every destination holds identical
 history and going back is `git log` and a checkout.
 
-**In build.** The architecture is documented in full under `docs/`, and
-`docs/build-plan.md` carries the order of work. `run`, `history` and `config` work
-today: a run captures watched files and every repository under them, commits, and
-records what it did. Remotes and restore are not built yet, so nothing leaves the
-machine and getting data back means `git` against the store by hand.
+**Complete, on macOS and Windows.** Every command in `docs/architecture/cli.md`
+works: capture, push to remotes, verify, restore whole trees or single files or a
+point in time, rebuild captured repositories with their history, the scheduled agent
+on launchd or Task Scheduler, and `doctor`. The architecture is documented in full
+under `docs/`, and `docs/build-plan.md` carries the order it was built in.
+
+## Install
+
+```text
+cargo install --path .
+tycho __bootstrap            # installs, then writes shell completions
+```
+
+`__bootstrap` mirrors `cex __bootstrap` and `a sibling tool __bootstrap`: it finds the
+checkout (from `TYCHO_SRC`, a bounded scan, or the current directory), runs `cargo
+install`, writes completions for zsh, bash, fish or PowerShell, and patches the rc
+file once. `--only-completions` refreshes those without rebuilding.
+
+The build sets `target-cpu=native`, so the binary is built for the machine that
+builds it and is **not portable** to an older CPU. That is fine because installation
+is from source; it would not be if a prebuilt binary were ever published.
 
 ## Why
 
