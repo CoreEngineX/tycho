@@ -155,21 +155,29 @@ pub(crate) fn check_ownership(
     path: &Path,
     trust_ownership: bool,
 ) -> Result<Exit, Exit> {
-    if !path.exists() {
+    // Saying so was the decision. There is nothing left to verify, and warning anyway
+    // told people to pass the flag they had just passed.
+    if trust_ownership {
+        return Ok(Exit::Ok);
+    }
+
+    // The folder itself will not exist yet on first contact - Tycho creates it on the
+    // first run - but ownership is a property of the **volume**, so the nearest
+    // ancestor that does exist answers the same question. Only a path with no existing
+    // ancestor at all is a drive that is not plugged in.
+    let Some(probe) = nearest_existing(path) else {
         let shown = path.display();
         return Ok(report! {
             warning: "'{name}' cannot be checked for ownership yet",
             at: at_remote(name),
-            note: "{shown} is not currently present, so its volume cannot be inspected",
-            help: "the first backup run will fail if it turns out to record no ownership",
-            recovery: {
-                "tycho remote rm {name}" => "and re-add with --trust-ownership, if you already know it does",
-            },
+            note: "nothing along {shown} is present, so the volume cannot be inspected \
+                   - the drive is most likely not plugged in",
+            help: "the first backup run will fail if that volume turns out to record none",
         });
-    }
-    match crate::sys::volume::records_ownership(path) {
+    };
+
+    match crate::sys::volume::records_ownership(probe) {
         Ok(true) => Ok(Exit::Ok),
-        Ok(false) if trust_ownership => Ok(Exit::Ok),
         Ok(false) => {
             let shown = path.display();
             Err(report! {
@@ -188,6 +196,11 @@ pub(crate) fn check_ownership(
             at: at_remote(name),
         }),
     }
+}
+
+/// The closest ancestor of `path` that is on disk, which is on the same volume.
+fn nearest_existing(path: &Path) -> Option<&Path> {
+    std::iter::successors(Some(path), |here| here.parent()).find(|here| here.exists())
 }
 
 /// Writes the file, then re-validates it, folding in whatever [`Exit`] the caller had
