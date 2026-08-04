@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
 description = "A backup daemon that treats git as the storage format"
+license = "Apache-2.0"
+readme = "README.md"
+keywords = ["backup", "git", "daemon", "restore"]
+categories = ["command-line-utilities", "filesystem"]
 
 [[bin]]
 name = "tycho"
