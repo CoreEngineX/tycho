@@ -61,11 +61,29 @@ backslashes on Windows while a forward-slash entry does not match it - measured,
 classification that passed followed by a push that still failed.
 
 The result is that trusting a remote costs the user none of their own git settings and
-leaves nothing behind on the machine, which `git config --global --add` would not:
-that is permanent, machine-wide, and applies to every tool they run.
+leaves nothing in their git config, which `git config --global --add` would not: that
+is permanent, machine-wide, and applies to every tool they run. It is not quite
+nothing on the machine - the scoped file itself stays at
+`<data>/trusted-remotes.gitconfig` and is rewritten on each run - but it is read only
+by Tycho's own git invocations and by nothing else.
+
+**Both files are included, not the first that exists.** Git reads
+`$XDG_CONFIG_HOME/git/config` and then `~/.gitconfig`, and `GIT_CONFIG_GLOBAL`
+suppresses both, so including one silently dropped the other's settings for the whole
+run - and having both is an ordinary layout rather than an exotic one.
+
+**The path is resolved before it is written.** A remote path may carry the single `*`
+that names a cloud account directory, and git matches a `safe.directory` value
+literally - `*` is special only as the entire value - so writing the unresolved form
+named nothing and the guard still fired, on exactly the remotes this option exists
+for.
+
+**The value is quoted.** Unquoted, `#` and `;` begin a comment and trailing whitespace
+is stripped, so `/Volumes/Backup #2` truncates to `/Volumes/Backup` and matches
+nothing. All three are legal in a volume name.
 
 A volume with no ownership is also refused as a `store_path`, for a second and
-unrelated reason - see `store.md` section 2 on `NO_ACCESS_CONTROL`. `trust_ownership`
+unrelated reason - see the store-permissions note at the top of `store.md`. `trust_ownership`
 does not affect that and is not meant to.
 
 ## 1. Why a bare repo in the folder, rather than files

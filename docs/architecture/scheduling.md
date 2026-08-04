@@ -33,7 +33,7 @@ notices - which is the exact shape of the failure this project exists to correct
 What a resident daemon would have added: an internal timer, an IPC protocol, an
 async runtime, a second lifecycle to install and debug, and a new failure mode where
 the daemon is dead and backups stop silently. Windows Task Scheduler is the weaker
-half of this argument and is revisited when Windows support lands.
+half of this argument, and section 10 is where it is revisited.
 
 ## 2. Schedule configuration
 

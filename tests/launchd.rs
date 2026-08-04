@@ -7,8 +7,12 @@
 //!
 //! macOS only, and deliberately: the whole point is that `plutil` and not this crate
 //! decides whether a plist is a plist. There is no Windows stand-in for that, so the
-//! file is skipped rather than weakened into a string comparison. `tests/schtasks.rs`
-//! is the equivalent for the Windows lifecycle, checked by `schtasks` itself.
+//! file is skipped rather than weakened into a string comparison.
+//!
+//! **There is no equivalent for the Windows lifecycle.** `platform::schtasks` has no
+//! tests at all - not here and not in the module - so its escaping, its quoting and
+//! its trigger construction are unchecked. Writing them needs the machine that can run
+//! `schtasks /Query /XML`.
 #![cfg(target_os = "macos")]
 
 use std::fs;

@@ -464,11 +464,17 @@ convenience, not the interface.
 
 ## 10. Cross-platform naming
 
-Tycho captures every name faithfully - the store is a git repository and has no such
-limits. The constraint appears at **restore** time on Windows, so `restore` reports
-what it could not write rather than aborting, and `doctor` warns when a watched tree
-contains names that cannot be restored there. That is knowable years before anyone
-needs the restore, which is the only time the warning is useful.
+Tycho captures every name faithfully on the machine doing the capturing - the store is
+a git repository and has no such limits of its own. Two qualifications: on Windows
+`update-index` refuses every character NTFS reserves, so a capture *there* does have
+limits, which section 2 of `store.md` covers; and everywhere, the constraint mainly
+appears at **restore** time, so `restore` names each path it could not write and exits
+1 rather than aborting mid-way.
+
+**`doctor` does not warn about unrestorable names, on any platform.** An earlier
+version of this paragraph said it did. Warning at capture time would be the useful
+place - the tree is on the machine years before anyone needs the restore - but nothing
+implements it, and a table of reserved names in a document is not a check.
 
 **What follows was measured on Windows 11 build 22635, not read from
 documentation.** The first version of this section was read from documentation and

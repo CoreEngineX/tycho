@@ -195,9 +195,23 @@ Windows sets `core.autocrlf=true` in its system config, so `checkout main` above
 lands CRLF in the working tree for a blob stored as LF. The recovered *objects* are
 byte-exact - `git cat-file blob HEAD:file` proves it, and `tests/remote.rs` asserts
 exactly that pair. If you need the working tree to match the stored bytes as well,
-add `-c core.autocrlf=false` to the `git init` above. The same applies to a `restore
---bundle` handed to someone else: what their `git clone` writes is their config's
-business, not the bundle's.
+set the option on the repository after creating it:
+
+```text
+git -C ~/recovered-repos/handbook config core.autocrlf false
+```
+
+before the `checkout`. **Not `-c` on the `git init`**, which an earlier version of this
+document said: `git init` rejects `-c` outright with `error: unknown switch 'c'`, so
+following that instruction leaves you with no repository at all. Moving it in front of
+the subcommand - `git -c core.autocrlf=false init` - is accepted and still does not
+work, because `-c` applies to the invoking process and `init` touches no working tree;
+the `checkout` two lines later is a different process and reads the system config
+again. Measured under a simulated Git-for-Windows system config: only the `config`
+form above leaves LF in the working tree.
+
+The same applies to a `restore --bundle` handed to someone else: what their `git
+clone` writes is their config's business, not the bundle's.
 
 The `symbolic-ref` line is not optional and is the step people trip on. `git init`
 leaves HEAD pointing at an unborn `refs/heads/main`, and git refuses to fetch into a
@@ -276,10 +290,13 @@ recovering does not need the same username, home directory or operating system.
 Two constraints do apply. **Metadata is not restored**: permissions beyond the
 execute bit, ownership, timestamps and extended attributes are lost, so anything
 secret-bearing comes back world-readable and should be re-secured immediately. And
-**on Windows**, reserved device names (`CON`, `AUX`, `NUL`, `COM1`-`COM9`,
-`LPT1`-`LPT9`), trailing dots and spaces, the characters `<>:"|?*` and paths beyond
-260 characters cannot be created; `tycho restore` reports a per-file skip list, and a
-manual `tar -x` fails on those entries.
+**on Windows**, some names do not survive the restore. `config.md` section 10 has
+the measured table and it is not the one this paragraph used to give: `<>:"|?*` and
+control characters are refused outright, but reserved device names are created as
+ordinary files, and trailing dots and spaces are **silently stripped** - a rename
+rather than a refusal, which is worse, because a refusal is a report. `tycho restore`
+names every path it could not write and exits 1; a manual `tar -x` does not, so read
+the table before trusting one.
 
 ## 5. Testing this before you need it
 

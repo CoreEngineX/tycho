@@ -93,8 +93,10 @@ non-UTF-8 bytes, leading dot, `.lock`, and a name that is `%` itself.
 ### 0.3 Ref collision detection
 
 Case-fold and NFC-normalise a set of destination refnames and report duplicates. On
-APFS, `Feature` and `feature` map to one file; git errors on first exposure but the
-*next* fetch is silent and clobbers the captured tip.
+APFS and on NTFS, `Feature` and `feature` map to one file and the captured tip
+oscillates between them. `store.md` section 4 has the measurements; the short version
+is that a green exit is available on both platforms, so nothing but this check
+notices.
 
 **Test vectors for layer 0** are in `capture.md` section 8 (Hostile filenames,
 Refnames rows).

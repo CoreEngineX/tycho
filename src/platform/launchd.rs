@@ -106,8 +106,10 @@ pub fn uid() -> Result<u32, LaunchdError> {
 }
 
 /// There is no uid here and no `launchctl` to hand one to. The plist generation above
-/// is pure text and stays compiled so `tests/launchd.rs` still checks it, but nothing
-/// that talks to launchd can run - `platform::schtasks` is the Windows lifecycle.
+/// is pure text and stays compiled - the in-module tests below cover it on every
+/// target - but nothing that talks to launchd can run, and `tests/launchd.rs`, which
+/// is what checks a generated plist against Apple's own parser, does not build here at
+/// all. `platform::schtasks` is the Windows lifecycle.
 ///
 /// # Errors
 ///

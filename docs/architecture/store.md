@@ -16,7 +16,19 @@ Default location, overridable per profile with `store_path`:
 the whole point of the overlay, and gitignored is where secrets live. Tycho refuses
 to open one that anybody but its owner can read.
 
-On macOS that is mode `0700` and a check on `0o077`. **On Windows it is the DACL**,
+On macOS that is mode `0700` and a check on `0o077` - **plus a check that the mode
+means anything at all**, which the mode alone does not settle. On a volume mounted
+`noowners` the kernel synthesises owner and mode per reader, so a store there reads
+back as exactly `0700` for every account on the machine and `chmod` is a no-op:
+measured on a real exFAT image, `chmod 777` and then `chmod 000` both leave
+`drwx------`. That is the same hole Windows reports as `NO_ACCESS_CONTROL`, and macOS
+reaches it one extra way - `noowners` is what Disk Utility's "Ignore ownership on this
+volume" sets, and it is the default for removable volumes whatever the filesystem, so
+an HFS+ or APFS external drive is exposed too, not only exFAT and FAT32. The volume is
+asked of `mount`, and only when the store is not on the boot volume, which an `st_dev`
+comparison settles for free.
+
+**On Windows it is the DACL**,
 and the guarantee is equivalent rather than weaker - which is a measurement, not an
 assurance. A directory created under the user profile carries exactly three entries:
 
@@ -199,28 +211,45 @@ are files, so on APFS or NTFS a repository carrying both `Feature` and `feature`
 two branches onto one path. Before each fetch, case-fold and NFC-normalise every
 destination refname and fail loudly on a duplicate.
 
-**On NTFS git never notices at all**, which is worse than this section used to claim.
-The old text said git errors on first exposure and only the *next* fetch is silent.
-Measured on Windows: every fetch exits 0 with no message, and the store keeps
-whichever of the two it wrote last, so the captured branch oscillates. Five
-consecutive fetches of the same unchanged source:
+**The captured branch oscillates, and how loudly git says so depends on the git you
+have.** Measured twice, on the same fixture - a source whose `packed-refs` holds
+`refs/heads/Feature` and `refs/heads/feature` at different commits - fetched five
+times in a row into a bare store:
+
+| | git 2.45.1, NTFS | git 2.55.0, APFS |
+| --- | --- | --- |
+| exit status | `0 0 0 0 0` | `1 0 1 0 1` |
+| stderr | empty every time | the case-insensitive-filesystem error on the odd fetches |
+| captured tip | alternates | alternates |
 
 ```text
-fetch 1 (exit 0): 8790bbf refs/tycho/demo/heads/feature
-fetch 2 (exit 0): 33bb590 refs/tycho/demo/heads/Feature
-fetch 3 (exit 0): 8790bbf refs/tycho/demo/heads/feature
-fetch 4 (exit 0): 33bb590 refs/tycho/demo/heads/Feature
-fetch 5 (exit 0): 8790bbf refs/tycho/demo/heads/feature
+git 2.55.0 / APFS, fetch 1 (exit 1):
+error: You're on a case-insensitive filesystem, and the remote you are
+trying to fetch from has references that only differ in casing. …
+ * [new branch]      Feature    -> refs/tycho/demo/heads/Feature
+ ! [new branch]      feature    -> refs/tycho/demo/heads/feature  (unable to update local ref)
+
+fetch 2 (exit 0): no message at all; the tip is now the other commit
 ```
 
-Each run silently drops the other branch, and which one a given backup holds is
-decided by nothing. There is no exposure at which git complains, so the pre-fetch
-check is not an optimisation over letting git notice - it is the only thing there is.
+The differing column is the message, not the damage: on both, each run silently
+drops one of the two branches and which one a given backup holds is decided by
+nothing. The likeliest explanation for the difference is the git version rather than
+the filesystem - NTFS is case-insensitive too, so 2.45.1 would have detected it if it
+had been looking - but two data points cannot separate the variables, and it does not
+matter to the design either way.
 
-A source repository can hold both on NTFS even though `git branch feature` refuses
-with `a branch named 'feature' already exists`: the pair arrives together in
-`packed-refs`, which is a single file, from a clone of a case-sensitive filesystem.
-That is the realistic way a Windows machine acquires one.
+**What matters is that a green exit is available on both.** On the older git every
+fetch is green; on the newer one every second fetch is. So the pre-fetch check is not
+an optimisation over letting git notice, and this section's original claim - that git
+errors on first exposure and only the *next* fetch is silent - was half right on one
+machine and wrong on the other. The check runs before the fetch, on every platform,
+and is the only thing that does not depend on which git is installed.
+
+A source repository can hold both even though `git branch feature` refuses with `a
+branch named 'feature' already exists`: the pair arrives together in `packed-refs`,
+which is a single file, from a clone of a case-sensitive filesystem. That is the
+realistic way either machine acquires one.
 
 The two halves of a destination refname need the fold for different reasons.
 Percent-encoding leaves `<key>` pure ASCII, so only case can collide there. The

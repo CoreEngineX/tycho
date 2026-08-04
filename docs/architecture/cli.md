@@ -223,9 +223,16 @@ file, so an agent's log never contains an escape sequence.
 | Code | Meaning |
 | --- | --- |
 | 0 | Success, including a run where an optional remote is merely unplugged |
-| 1 | Failure: a run failed, a required remote is unreachable, the config has errors, or `status --check` / `doctor` found red |
+| 1 | Failure: a run failed, a required remote is unreachable, the config has errors, `status --check` / `doctor` found red, or a `restore` did not write every path its backup holds |
 | 3 | Yellow only: `status --check --strict`, `doctor`, or a `restore` that refused an overlay file rather than resolving it |
 | 2 | Usage error, which clap emits |
+
+**The two `restore` rows are the distinction, not a duplication.** A refused overlay
+file is yellow because the material is still in the staging tree and can be copied out
+by hand. A path the extraction could not write is not anywhere, so it is red. That
+separation is the reason 3 exists at all, and `restore` originally exited 0 for the
+red case while reserving 3 for the yellow one - a script that deletes the original on
+success read that as success.
 
 `status --check` exits non-zero on **red only** by default; `--strict` makes yellow
 non-zero too. This is what makes `run` and `status --check` agree: an optional remote
