@@ -38,8 +38,34 @@ const LOGO: &str = r"
                               *@@+
                               +@@+";
 
+/// clap 4 ships colour *support* on by default and an **empty palette**, so help
+/// renders monochrome until a `Styles` is supplied. clap 3 coloured without asking;
+/// the opt-in is the change. Reusing the SGR codes `render` already defines keeps one
+/// answer to "what colour is a heading" in the binary.
+fn help_styles() -> clap::builder::Styles {
+    use clap::builder::styling::{AnsiColor, Style};
+    clap::builder::Styles::styled()
+        .header(
+            Style::new()
+                .bold()
+                .underline()
+                .fg_color(Some(AnsiColor::Yellow.into())),
+        )
+        .usage(
+            Style::new()
+                .bold()
+                .underline()
+                .fg_color(Some(AnsiColor::Yellow.into())),
+        )
+        .literal(Style::new().fg_color(Some(AnsiColor::Cyan.into())))
+        .placeholder(Style::new().fg_color(Some(AnsiColor::Green.into())))
+        .valid(Style::new().fg_color(Some(AnsiColor::Cyan.into())))
+        .invalid(Style::new().bold().fg_color(Some(AnsiColor::Red.into())))
+        .error(Style::new().bold().fg_color(Some(AnsiColor::Red.into())))
+}
+
 #[derive(Debug, Parser)]
-#[command(name = "tycho", version, about, before_help = LOGO)]
+#[command(name = "tycho", version, about, before_help = LOGO, styles = help_styles())]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,

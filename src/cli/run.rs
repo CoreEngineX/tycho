@@ -757,6 +757,15 @@ pub(crate) fn load(override_path: Option<PathBuf>) -> Option<(Parsed, String)> {
     };
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
+        // The first thing anyone hits after installing, and a bare `os error 2` names
+        // neither the file's purpose nor the one command that creates it.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("error: no config file at {}", path.display());
+            eprintln!("  |");
+            eprintln!("  help: tycho config init writes a starter file with the");
+            eprintln!("        shape and the comments explaining each key");
+            return None;
+        }
         Err(error) => {
             eprintln!("tycho: cannot read {}: {error}", path.display());
             return None;

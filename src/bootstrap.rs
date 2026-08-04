@@ -54,6 +54,7 @@ pub fn run(args: &BootstrapArgs) -> Result<(), String> {
         install_binary(&source, args.debug)?;
         write_completions()?;
         persist_source_env(&source);
+        starter_config();
     }
 
     println!();
@@ -63,6 +64,38 @@ pub fn run(args: &BootstrapArgs) -> Result<(), String> {
         paint(Shell::detect().reload_hint(), CYAN)
     );
     Ok(())
+}
+
+/// Writes a starter config if there is none, so the first command after installing
+/// finds a file rather than an `os error 2`.
+///
+/// Never overwrites: an existing config is the user's, and `config init` already
+/// refuses one without `--force`. Silent when it declines, because "you already have
+/// a config" is not news at install time.
+fn starter_config() {
+    let Ok(path) = crate::platform::config_path() else {
+        return;
+    };
+    let path = path.as_path();
+    if path.exists() {
+        row(
+            "config",
+            &format!("{} (already there)", path.display()),
+            DIM,
+        );
+        return;
+    }
+    let Some(home) = std::env::home_dir() else {
+        return;
+    };
+    let starter = crate::config_edit::starter(&home.to_string_lossy());
+    if path
+        .parent()
+        .is_some_and(|dir| std::fs::create_dir_all(dir).is_ok())
+        && crate::sys::fs::write_atomic(path, starter.as_bytes()).is_ok()
+    {
+        row("config", &path.display().to_string(), CYAN);
+    }
 }
 
 fn row(label: &str, value: &str, colour: &str) {

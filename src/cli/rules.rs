@@ -12,6 +12,15 @@ pub fn dispatch(list: List, args: &RuleArgs) -> Exit {
             return Exit::Failure;
         }
     };
+    if !path.exists() {
+        // The first thing anyone hits after installing. A bare `os error 2` names
+        // neither what the file is for nor the one command that creates it.
+        eprintln!("error: no config file at {}", path.display());
+        eprintln!("  |");
+        eprintln!("  help: tycho config init writes a starter file, with the shape");
+        eprintln!("        and a comment explaining each key");
+        return Exit::Failure;
+    }
     let mut editing = match Editing::open(&path) {
         Ok(editing) => editing,
         Err(error) => {
