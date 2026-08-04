@@ -51,9 +51,8 @@ impl Progress {
         if !self.active {
             return;
         }
-        let (plain_len, painted) = line(profile, step);
-        let pad = render::WIDTH.saturating_sub(plain_len);
-        let _ = write!(out, "\r{painted}{}", " ".repeat(pad));
+        let (_, painted) = line(profile, step);
+        let _ = write!(out, "\r{ERASE}{painted}");
         let _ = out.flush();
     }
 
@@ -61,10 +60,19 @@ impl Progress {
         if !self.active {
             return;
         }
-        let _ = write!(out, "\r{}\r", " ".repeat(render::WIDTH));
+        let _ = write!(out, "\r{ERASE}");
         let _ = out.flush();
     }
 }
+
+/// Erase from the cursor to the end of the line.
+///
+/// **Padding to a fixed width cannot do this job.** It has to guess how wide the last
+/// frame was, and it is wrong in both directions: a frame longer than the pad leaves
+/// the previous frame's tail on screen, and a terminal narrower than the pad wraps, so
+/// the `\r` returns to the start of the second visual row and the first survives. The
+/// terminal knows the answer to both; this asks it.
+const ERASE: &str = "\x1b[K";
 
 /// A phase's row: the label field, dim, then its value - or nothing after it, for a
 /// phase that has none. Returns the visible width alongside the text to print, because
@@ -109,7 +117,13 @@ fn line(profile: &str, step: &Step) -> (usize, String) {
                     render::count(*done),
                     render::plural(*total, "repository")
                 );
-                let shown = render::fit(repo, 40);
+                // Clamped to what is left of the row rather than to a constant: a
+                // wrapped line puts the tail on a second visual row, and `\r` returns
+                // to the start of that one, so the first row is never erased.
+                let room = render::WIDTH
+                    .saturating_sub(INDENT + LABEL + 2 + head.chars().count() + 2)
+                    .max(8);
+                let shown = render::fit(repo, room);
                 (
                     format!("{head}  {shown}"),
                     format!("{head}  {}", paint(&shown, CYAN)),
@@ -202,6 +216,40 @@ mod tests {
 
     /// The width returned alongside the text is the plain one, so colour can never
     /// change how much of the redraw a shorter next line has to erase.
+    /// A line wider than the terminal wraps, and `\r` then returns to the start of the
+    /// **second** visual row - so the first is never erased and the redraw leaves a
+    /// trail. Erase-to-end-of-line cannot undo that; only not wrapping can.
+    #[test]
+    fn no_line_can_be_wide_enough_to_wrap() {
+        set_colour_for_test(false);
+        let worst = "CoreEngineX/products/photoflick/photoflick-android/deeply/nested/thing";
+        for step in [
+            Step::Planning,
+            Step::Hashing { files: 8_675_309 },
+            Step::Capturing {
+                repo: worst.to_owned(),
+                done: 999,
+                total: 1_000,
+            },
+            Step::Capturing {
+                repo: worst.to_owned(),
+                done: 1_000,
+                total: 1_000,
+            },
+            Step::Publishing,
+            Step::Pushing {
+                remote: worst.to_owned(),
+            },
+        ] {
+            let (width, text) = line("a-rather-long-profile-name", &step);
+            assert!(
+                width <= crate::cli::render::WIDTH,
+                "{step:?} renders {width} wide, past {}: {text:?}",
+                crate::cli::render::WIDTH
+            );
+        }
+    }
+
     #[test]
     fn colour_never_changes_the_reported_width() {
         set_colour_for_test(false);
