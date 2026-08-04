@@ -17,11 +17,48 @@ pub use launchd::{Agent, Ended, Job, Loaded};
 ///
 /// A `#[cfg]`-selected module rather than a trait: there is exactly one
 /// implementation per target and it is chosen at compile time, which is the same
-/// reasoning `notify` records.
+/// reasoning `notify` records. What a trait would have bought - a checked surface -
+/// is bought instead by the private `contract` module below, at no run-time cost and
+/// with no `dyn`.
 #[cfg(target_os = "macos")]
 pub use launchd as scheduler;
 #[cfg(windows)]
 pub use schtasks as scheduler;
+
+/// The eleven items `service` and `doctor` call on [`scheduler`], declared once.
+///
+/// A module alias is duck-typed: nothing makes `launchd` and `schtasks` agree, so a
+/// signature that drifted was a discovery on the *other* machine rather than an error
+/// on this one. Coercing each to a function pointer of the declared type turns that
+/// into a compile error on whichever host builds - which is the whole of what a trait
+/// would have given, without an indirection for a choice made at compile time.
+///
+/// It costs nothing at run time: every item here is discarded, and a `const` binding
+/// of a function pointer emits no code.
+#[cfg(any(target_os = "macos", windows))]
+mod contract {
+    use super::{Agent, Job, Loaded, scheduler};
+    use crate::config::Schedule;
+    use crate::primitives::path::{AbsPath, PathError};
+    use crate::sys::process::RunError;
+    use std::path::{Path, PathBuf};
+
+    const _: fn() -> Result<AbsPath, PathError> = scheduler::definitions_dir;
+    const _: fn(&Agent) -> Result<PathBuf, PathError> = scheduler::definition_path;
+    const _: fn(&Job<'_>, Schedule) -> String = scheduler::backup_definition;
+    const _: fn(&Job<'_>) -> String = scheduler::catchup_definition;
+    const _: fn(&Job<'_>) -> String = scheduler::probe_definition;
+    const _: fn(&str) -> Vec<u8> = scheduler::encode;
+    const _: fn(&[u8]) -> String = scheduler::decode;
+    const _: fn(&Agent, &Path) -> Result<(), scheduler::Error> = scheduler::register;
+    const _: fn(&Agent) -> Result<(), scheduler::Error> = scheduler::deregister;
+    const _: fn(&Agent) -> Result<Loaded, RunError> = scheduler::state;
+    const _: fn(&str) -> Option<Schedule> = scheduler::scheduled_in;
+
+    /// `service` bridges a `state` failure into the scheduler's own error, which only
+    /// works because both carry a `#[from] RunError`. Nothing else checked that.
+    const _: fn(RunError) -> scheduler::Error = scheduler::Error::from;
+}
 
 use crate::primitives::path::{AbsPath, PathError};
 

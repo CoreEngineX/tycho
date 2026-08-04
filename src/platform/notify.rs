@@ -63,15 +63,10 @@ impl Urgency {
 /// over this**: a machine in a Focus mode suppresses delivery, which is expected.
 #[cfg(target_os = "macos")]
 pub fn notify(urgency: Urgency, body: &str) -> Result<(), NotifyError> {
-    // AppleScript string literals take backslash and double-quote escapes and nothing
-    // else, so a message carrying either would otherwise end the literal early and
-    // turn the rest into script. Every body here is Tycho's own text, but a remote
-    // name or a path reaches it, and those are not.
-    let escape = |text: &str| text.replace('\\', r"\\").replace('"', "\\\"");
     let script = format!(
         "display notification \"{}\" with title \"{}\"",
-        escape(body),
-        escape(urgency.title())
+        applescript_literal(body),
+        applescript_literal(urgency.title())
     );
 
     let out = command("osascript", &["-e", &script], Timeout::QUICK)?;
@@ -82,6 +77,19 @@ pub fn notify(urgency: Urgency, body: &str) -> Result<(), NotifyError> {
         "osascript".to_owned(),
         String::from_utf8_lossy(&out.stderr).trim().to_owned(),
     ))
+}
+
+/// AppleScript string literals take backslash and double-quote escapes and nothing
+/// else, so a message carrying either would end the literal early and turn the rest
+/// into script. Every body is Tycho's own text, but a remote name or a path reaches
+/// it, and those are not.
+///
+/// A named function rather than a closure inside `notify` so its test can reach the
+/// shipping code: the test used to redefine the same closure and assert on its own
+/// copy, which could not fail however the real one changed.
+#[cfg(target_os = "macos")]
+fn applescript_literal(text: &str) -> String {
+    text.replace('\\', r"\\").replace('"', "\\\"")
 }
 
 /// Windows PowerShell's own `AppUserModelID`, which is what the toast is attributed
@@ -296,7 +304,8 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn the_escape_rule_is_what_applescript_actually_accepts() {
-        let escape = |text: &str| text.replace('\\', r"\\").replace('"', "\\\"");
+        use super::applescript_literal as escape;
+
         assert_eq!(escape(r#"say "hi""#), r#"say \"hi\""#);
         assert_eq!(escape(r"C:\path"), r"C:\\path");
     }

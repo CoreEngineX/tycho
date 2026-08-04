@@ -23,6 +23,17 @@
 //! `docs/architecture/overview.md` is the contract; `docs/build-plan.md` is the order
 //! of work.
 
+// Said once, here, rather than left to surface as four unresolved imports inside
+// `platform` that never mention the platform. Every scheduler, notifier and path
+// convention in this crate is one of these two; a third would need its own, and the
+// honest way to find that out is to be told.
+#[cfg(not(any(target_os = "macos", windows)))]
+compile_error!(
+    "Tycho supports macOS and Windows. Porting it means a `platform::scheduler` \
+     backend, a `platform::notify` arm, and the `DATA_DIR`/`LOG_DIR` conventions in \
+     `platform.rs`."
+);
+
 pub mod capture;
 pub mod cli;
 pub mod config;
