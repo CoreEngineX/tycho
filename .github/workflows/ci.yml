@@ -1,0 +1,50 @@
+# The same gate `scripts/ci-check.sh` runs locally, on both supported platforms.
+#
+# Windows is the reason this exists. Neither maintainer machine can run the other
+# platform's arm, and this project has twice shipped code that compiled, read
+# correctly, and was wrong - so the only honest check on the Windows side is a
+# machine that actually executes it.
+#
+# On pushes to `main` only. `dev` is where work happens and is pushed many times a
+# day; gating there would turn a green tick into noise, and `ci-check` already runs
+# before every local commit.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Prebuilt binaries; `cargo install` for these costs minutes per run.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest,cargo-audit
+
+      # bash is present on the Windows runners via Git for Windows, and the script
+      # falls back to running the checks directly when `cex` is absent - which it
+      # always is here, since that tool is not public.
+      - name: ci-check
+        shell: bash
+        run: bash scripts/ci-check.sh
