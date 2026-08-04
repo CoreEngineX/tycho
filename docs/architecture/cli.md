@@ -14,6 +14,15 @@ tycho restore [PROFILE] [--store PATH] [--at TIME] [--bundle] [--force] [-- PATH
 tycho watch add|rm|list [-p PROFILE] [PATH]
 tycho ignore add|rm|list [-p PROFILE] [PATTERN]
 tycho reinclude add|rm|list [-p PROFILE] [PATH]
+tycho profile list
+tycho profile add NAME [--watch PATH]... [--remote NAME=PATH]... [--optional NAME]...
+                        [--trust-ownership NAME]... [--schedule SPEC] [--local-only] [--dry-run]
+tycho profile rm NAME [--keep-store | --delete-store]
+tycho remote list [-p PROFILE]
+tycho remote add NAME PATH [-p PROFILE] [--optional] [--trust-ownership] [--behind-tolerance N]
+tycho remote rm NAME [-p PROFILE] [--local-only]
+tycho schedule show|off [-p PROFILE]
+tycho schedule set SPEC [-p PROFILE]
 tycho config check|path|init [--force] [--config PATH]
 tycho service install|uninstall|status|restart [PROFILE]
 tycho doctor [--deep] [--remote NAME]
@@ -31,6 +40,9 @@ global: --no-color
 | `history` | The store's commits, rendered. `--path` limits it to backups that touched one path |
 | `restore` | Recover to a destination directory. See section 7 |
 | `watch` / `ignore` / `reinclude` | Rule management, editing the config in place |
+| `profile` | Add, remove or list profiles. `add` writes a `[[profile]]` block; `--dry-run` prints it instead. `rm` requires `--keep-store` or `--delete-store` |
+| `remote` | Add, remove or list a profile's destinations |
+| `schedule` | Show, replace or clear a profile's schedule |
 | `config` | Validate, locate, or create the config file |
 | `service` | Scheduler lifecycle for the per-profile backup agents and the shared catch-up agent - launchd on macOS, Task Scheduler on Windows |
 | `doctor` | Environment, service, remotes, volumes and object-database health |
@@ -52,9 +64,9 @@ otherwise indistinguishable to a parser and to a reader.
 | `run` | store, state file, remotes, log |
 | `push` | remotes, state file, and the store, since `gc --auto` runs |
 | `restore` | the destination directory only |
-| `config init`, `watch`, `ignore`, `reinclude` | the config file |
+| `config init`, `watch`, `ignore`, `reinclude`, `profile add|rm`, `remote add|rm`, `schedule set|off` | the config file |
 | `service` | `~/Library/LaunchAgents`, and the log directory on install |
-| `status`, `history`, `doctor`, `log`, `config check|path` | nothing |
+| `status`, `history`, `doctor`, `log`, `config check|path`, `profile list`, `remote list`, `schedule show` | nothing |
 
 `push` touching the store is why it takes the same profile lock as `run`.
 
@@ -307,11 +319,14 @@ destination without `--force`.** It puts files somewhere you name and you do the
 yourself. A restore that overwrote in place would be one typo away from turning a
 one-file problem into a directory-sized one.
 
-Contents are byte-exact. **Metadata is not restored**: permissions beyond the
-execute bit, ownership, timestamps, extended attributes, Finder tags and ACLs are all
-lost, because git does not store them. A file that was `0600` comes back `0644`.
-`store.md` section 7 has the full list, and it matters most for anything
-secret-bearing - a restored private key is world-readable until you fix it.
+Contents are byte-exact. **On a full restore** (naming no path), the mode, extended
+attributes and, when run as root, ownership come back too, replayed from the
+metadata manifest that travels inside the backup - `store.md` section 7 has the
+full list, including what is never recorded (timestamps, ACLs, anything on
+Windows). **Restoring a single path** (`restore -- PATH`) skips that manifest
+entirely: the file lands at whatever mode the destination's umask gives it, the same
+as `git show` would leave it. That distinction matters most for anything
+secret-bearing - a `.env` recovered by name alone is `0644` until you `chmod` it back.
 
 The overlay is applied with a copy that **does not follow symlinks and refuses type
 mismatches**, reporting each conflict. A plain recursive copy writes through a
@@ -321,25 +336,30 @@ source machine.
 A restore that reports a conflict exits 3. Everything else landed; one awkward
 filename does not cost you the other nine hundred.
 
-**The staging tree at `<dest>/.tycho/` is kept, always.** `git archive` extracts it
-alongside your files - `.tycho/config.toml` and one `REPO.txt` and `overlay/` per
-captured repository - and restore leaves it there. It costs the overlay's size twice
-over, and it is the only reason a reported conflict can be settled by hand: the file
-the copy declined to write is still sitting in `overlay/`, so you can look at both
-versions and put the right one in place. Delete the staging tree and the conflict
-becomes unrecoverable from the destination, forcing a second full restore just to see
-what was refused. Restore deletes nothing.
+**On a full restore, the staging tree at `<dest>/.tycho/` is kept, always.** `git
+archive` extracts it alongside your files - `.tycho/config.toml`, `metadata.tsv`, and
+one `REPO.txt` and `overlay/` per captured repository - and restore leaves it there.
+It costs the overlay's size twice over, and it is the only reason a reported
+conflict can be settled by hand: the file the copy declined to write is still
+sitting in `overlay/`, so you can look at both versions and put the right one in
+place. Delete the staging tree and the conflict becomes unrecoverable from the
+destination, forcing a second full restore just to see what was refused. Restore
+deletes nothing. **A single-path restore never runs `git archive` and so never
+creates `.tycho/`** - it writes only the file you named.
 
 ### Cross-platform restore
 
-Windows cannot represent reserved device names (`CON`, `AUX`, `NUL`, `COM1`-`COM9`,
-`LPT1`-`LPT9`), trailing dots and spaces, the characters `<>:"|?*`, or paths beyond
-260 characters without the extended-length prefix.
+The store holds every name faithfully - most of what Windows does with a name outside
+its own conventions (reserved device names, a trailing dot or space, a bare `:`) is a
+silent rename or redirect on write, not a refusal, so capture on macOS is unaffected
+either way. A smaller set of characters (`<>"|?*`, control characters, `\` and `/`)
+is genuinely refused by NTFS. `docs/architecture/config.md` section 10 has the full
+measured table.
 
-The store holds them all faithfully. On Windows, `restore` **reports a per-file skip
-list and continues** rather than aborting or failing silently. `doctor` warns when a
-watched tree contains such names, which is knowable years before anyone needs the
-restore.
+On Windows, `restore` **reports a per-file skip list and continues** rather than
+aborting or failing silently when one of those refused paths comes up. `doctor` does
+not warn about any of this at capture time - nothing implements that check yet, even
+though the tree is on disk years before anyone needs the restore.
 
 ## 8. Dry run
 

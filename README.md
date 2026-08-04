@@ -1,23 +1,81 @@
 # tycho
 
+[![CI](https://github.com/CoreEngineX/tycho/actions/workflows/ci.yml/badge.svg)](https://github.com/CoreEngineX/tycho/actions/workflows/ci.yml)
+[![Licence: Apache-2.0](https://img.shields.io/badge/licence-Apache--2.0-blue.svg)](LICENSE)
+
 <img src="docs/logo.svg" alt="Tycho" width="132">
 
-A backup daemon that treats git as the storage format rather than as one of the
-things being backed up.
+**A backup daemon that treats git as the storage format, not one of the things being
+backed up.** It captures exactly what git itself refuses to track - gitignored
+secrets, untracked drafts, uncommitted edits - into a bare git repository, and pushes
+that repository to external drives and synced cloud folders, so a restore anywhere
+is `git log` and a checkout rather than a plea to whatever cloud client did or did
+not finish uploading.
 
-Watched paths are captured into a bare git repository, one commit per run, with a
-message a human can read. Directories that are themselves git repositories are
-captured as repositories - their full history fetched into the store's object
-database, plus an overlay holding the uncommitted, untracked and gitignored files
-that history alone cannot restore. The store is then pushed to bare repositories in
-synced cloud folders and on external drives, so every destination holds identical
-history and going back is `git log` and a checkout.
+## See it work
 
-**Complete, on macOS and Windows.** Every command in `docs/architecture/cli.md`
-works: capture, push to remotes, verify, restore whole trees or single files or a
-point in time, rebuild captured repositories with their history, the scheduled agent
-on launchd or Task Scheduler, and `doctor`. The architecture is documented in full
-under `docs/`, and `docs/build-plan.md` carries the order it was built in.
+A repository with a secret git would leave behind, and a draft it never saw:
+
+```text
+$ git status --short
+?? notes.md
+
+$ ls -la .env
+-rw-------  1 you  staff  29 .env       # 0600, gitignored, never tracked
+```
+
+A run captures both, plus the repository's own history:
+
+```text
+$ tycho run personal
+personal  e88afc1
+  captured     5 added                                                 0 B
+  written      in 0s                                               73.7 KB
+```
+
+The repository is gone from disk. Recovering it from what was already pushed:
+
+```text
+$ tycho restore personal --into ~/recovered
+reading   1 backup, 2026-08-04 to 2026-08-04
+using     e88afc1
+restored  5 files                                                  2.96 KB
+metadata  7 modes restored, 1 attribute
+restored  1 repository with full history
+          Documents/project                 main        overlay: 2
+
+note      timestamps are not restored, and a rebuilt repository's own tree
+          comes from git, which keeps only the execute bit
+
+done      ~/recovered
+```
+
+`.env` comes back at content `DATABASE_URL=postgres://prod`, mode `0600` and its
+extended attribute intact - git alone would have given back neither the file (it was
+gitignored) nor, had it been tracked, anything stricter than `0644`. `notes.md`,
+never committed anywhere, comes back too. The repository is a real repository again,
+with both of its commits, not a directory of files that happen to match a snapshot.
+
+## The problems this actually solves
+
+- **Gitignored files are backed up too.** Tycho never consults `.gitignore` when
+  deciding what to capture - that file exists to keep noise out of commits, and a
+  backup tool that reused it for a different purpose would be the reason a `.env` or
+  a private key silently had no copy anywhere. Untracked and uncommitted changes are
+  captured the same way, in an overlay alongside each repository's own history.
+- **The full permission mode and extended attributes survive a restore**, from a
+  manifest written at capture time and replayed at restore - the `metadata` line
+  above. A git tree records one bit per file, so without this every restored secret
+  comes back world-readable regardless of what it left the source machine as.
+  Ownership is attempted too, but only takes effect when the restore runs as root.
+- **Restore refuses to write through a symlink.** `cp -R` follows a symlink in the
+  destination and silently overwrites whatever it points at, fabricating a file that
+  never existed on the source machine. Tycho reports the conflict and leaves both
+  versions for you to resolve by hand instead.
+- **Volumes that record no ownership - exFAT, FAT32, most external drives - are
+  refused explicitly**, with the reason, rather than failing with a bare git error at
+  push time or silently trusting a filesystem nothing vouches for. Trusting one is an
+  opt-in per remote, never inferred.
 
 ## Install
 
@@ -41,14 +99,16 @@ is from source; it would not be if a prebuilt binary were ever published.
 ```text
 tycho config init                       # a starter ~/.config/tycho/tycho.toml
 tycho watch add ~/Documents             # what to back up
+tycho remote add drive ~/Library/CloudStorage/GoogleDrive-Acct/My\ Drive/Backups
 tycho config check                      # every problem at once, not the first
 tycho run --dry-run                     # the plan, before anything is written
 tycho run                               # capture, commit, push
 ```
 
-Then add a `[[profile.remotes]]` block and a `schedule` to the config and:
+Then, for a schedule instead of running it by hand:
 
 ```text
+tycho schedule set weekly:sunday:12:00
 tycho service install                   # launchd or Task Scheduler
 tycho status                            # what ran, where it went, what is behind
 tycho doctor                            # everything that could be wrong, in one table
@@ -62,6 +122,10 @@ tycho restore --store /path/to/backup.git --into ./recovered
 
 That is the disaster path, and it reads no config file at all - on a replacement
 machine there is nothing to read.
+
+Full command reference: [`docs/architecture/cli.md`](docs/architecture/cli.md).
+The whole lifecycle as terminal sessions, including this one and a full destroyed-machine
+recovery: [`docs/walkthrough.md`](docs/walkthrough.md).
 
 ## Why
 
@@ -105,10 +169,12 @@ engineering for large binary datasets - point it at a 4K video library and you w
 be disappointed. The store keeps full history forever, which is the right trade for
 documents and source, and the wrong one for a media collection.
 
-**What a restore gives back is file contents, not filesystem state.** Permissions
-beyond the execute bit, ownership, timestamps, extended attributes and ACLs are not
-preserved, because git does not store them. A restored private key comes back
-world-readable. `docs/architecture/store.md` section 7 has the full list.
+**Metadata is best-effort, not universal.** Mode and extended attributes round-trip
+through a manifest on Unix, replayed on a full restore; ownership round-trips too,
+but only takes hold when the restore runs as root. Timestamps never come back,
+deliberately - see `docs/architecture/store.md` section 7. Restoring a single path
+with `restore -- PATH` skips the manifest and gives back plain content, the same as
+git itself would. On Windows there is no mode or uid to capture at all.
 
 ## Status
 

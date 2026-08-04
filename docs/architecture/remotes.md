@@ -503,8 +503,10 @@ push never deletes refs, so a ref that leaves the store stays on the remote fore
 
 That divergence is deliberate. A backup destination that quietly forgot things the
 store forgot would be a worse backup. `doctor` reports refs present on a remote and
-absent from the store, and `tycho remote prune` exists as an explicit manual act in
-the shape of `store.md` section 10 - never as something a scheduled run does.
+absent from the store. Tycho has no command to prune one - forgetting something on
+purpose is the `filter-repo` rewrite in `store.md` section 10, an explicit manual act
+with a hand-run `git push` to rebuild each remote afterward, never something a
+scheduled run does.
 
 For scale on the current machine: the two repositories the old script protected
 bundle to 7.7 MB and 112 KB. Under the old scheme each Sunday copied both bundles in

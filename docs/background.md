@@ -98,8 +98,10 @@ their GitHub remotes existing.
 1. **Silent scheduled failure.** The line-33 bug above. Requirements it created:
    verification must run in a correct context; every failure must be loud
    (non-zero exit, red status, desktop notification); `doctor` and
-   `status --check` make health one command; the integration suite carries a
-   line-33 memorial test that runs bundle verify with cwd set to a non-repo.
+   `status --check` make health one command. Structurally, every git invocation
+   goes through the single call site in `sys::process::Git`, which always passes
+   an explicit `-C <cwd>` (`src/sys/process.rs`) - the bug's root cause, a call that
+   trusted the process's ambient working directory, cannot recur by construction.
 2. **The Google Drive folder-sync deletion, July 2026.** A Drive live-sync
    misconfiguration deleted files under the repo. Git restored everything except
    `handbook/CLAUDE.md`, which was gitignored: the only unprotected file was

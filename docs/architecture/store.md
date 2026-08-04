@@ -493,10 +493,11 @@ directory, but `GIT_DIR` overrides repository *discovery* and outranks it - so a
 Tycho invoked from a git hook, a `rebase --exec` or `bisect run` would write the
 store's objects into that repository instead, at exit 0. `GIT_DIR`, `GIT_WORK_TREE`,
 `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`,
-`GIT_COMMON_DIR`, `GIT_NAMESPACE`, `GIT_CEILING_DIRECTORIES`, `GIT_CONFIG` and
-`GIT_CONFIG_COUNT` are removed, and whichever of them Tycho needs it then sets
-itself. `GIT_TERMINAL_PROMPT=0` is set for the same reason the timeout exists: a
-credential prompt under launchd would otherwise block until it fires.
+`GIT_COMMON_DIR`, `GIT_NAMESPACE`, `GIT_CEILING_DIRECTORIES`, `GIT_CONFIG`,
+`GIT_CONFIG_COUNT`, `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` are removed, and
+whichever of them Tycho needs it then sets itself. `GIT_TERMINAL_PROMPT=0` is set
+for the same reason the timeout exists: a credential prompt under launchd would
+otherwise block until it fires.
 
 **The identity variables are removed for a second reason: they outrank the `-c`
 pins.** Verified - with `-c user.name=tycho` on the command line, an inherited
@@ -505,10 +506,14 @@ hook's user as the author of your history. `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`
 `GIT_AUTHOR_DATE` and the three `GIT_COMMITTER_*` equivalents are stripped alongside
 the rest.
 
-`GIT_CONFIG_GLOBAL` is deliberately **not** cleared. Command-line `-c` already
-outranks every environment and file source for the settings that matter, and
-clearing it would break `safe.directory`, which is what lets git read a repository
-owned by a different user.
+`GIT_CONFIG_GLOBAL` is cleared like the rest, then replaced with Tycho's own file
+rather than left alone, because command-line `-c` cannot carry `safe.directory` -
+measured, passing `-c safe.directory=<path>` changes nothing and the push still
+fails. Git reads that setting only from a config file, deliberately, so a repository
+cannot whitelist itself. Tycho's replacement file `include.path`s the user's own
+global config first, so trusting a remote costs them none of their settings and an
+ambient `GIT_CONFIG_GLOBAL` cannot smuggle in anything Tycho did not choose to
+include.
 
 ### Read failures do not truncate the backup
 
@@ -541,21 +546,45 @@ The last row is not hygiene. `hash-object` on a FIFO or `/dev/zero` blocks forev
 and with a blocking lock that silently ends all future backups. A socket fails
 loudly instead, which without the explicit skip would abort the batch.
 
-### What is not preserved
+### What a full restore preserves, and what it does not
 
-Git stores content and one permission bit. Everything else is lost, and a restore is
-therefore not a faithful reproduction of the filesystem:
+Git stores content and one permission bit. Everything else needs the metadata
+manifest Tycho writes alongside the tree at capture time and replays at restore -
+`.tycho/metadata.tsv`, `src/metadata.rs`.
 
-- **Permissions** beyond the owner execute bit. A `0600` file restores as `0644`
-- **Ownership**, `mtime` and `atime` - every restored file gets a fresh timestamp
-- **Extended attributes**, Finder tags, quarantine flags, resource forks
-- **ACLs**, hardlink identity, sparseness
+On a full restore (`tycho restore`, naming no path), on Unix:
+
+- **The full permission mode**, not just the execute bit git keeps - a `0600` file
+  comes back `0600`, not `0644`
+- **Extended attributes**, except `com.apple.provenance` and `com.apple.quarantine`,
+  which are the system's to set, not a backup's to restore
+- **Ownership**, by name rather than uid, but only when the restoring process is
+  root - otherwise it is reported refused rather than silently skipped
+
+Never recorded, on any platform, because recording it would be actively worse than
+not:
+
+- **`mtime` and `atime`.** A restored file gets the extraction time. Recording the
+  original would mean an unchanged file still shows a diff every run, and the
+  history stops being a record of what changed
+- **ACLs, hardlink identity, sparseness**
 - **Empty directories** - git has no tree entry for one, so a directory containing
   only structure restores as nothing. A `.gitkeep` shim would mean Tycho writing
   into your data
 
+**Nothing in this section applies on Windows.** NTFS has no POSIX mode and no uid,
+and a manifest that invented values would restore them onto a machine that could
+not act on them, so `metadata::capture` returns empty there and there is nothing to
+replay.
+
+**Restoring a single path (`restore -- PATH`) skips the manifest entirely** and
+writes the blob's bytes with no mode or attribute applied, same as `git show` would -
+a single-path restore never touches `.tycho/metadata.tsv` at all, so there is nothing
+to read. Metadata replay is a full-restore guarantee only.
+
 "Byte-identical" in this document and in `../disaster-recovery.md` means file
-contents, never metadata.
+contents; the metadata manifest is a separate, best-effort layer on top of that
+guarantee, not part of it.
 
 ### Why hash everything, every run
 

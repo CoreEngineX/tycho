@@ -3,11 +3,10 @@
 The whole lifecycle as terminal sessions - install, first backup, ordinary use,
 recovering one damaged file, and recovering from a destroyed machine.
 
-**This is the designed interface, not a recording of working software.** No code
-exists yet. It is here so the UX can be argued with before it is built, and so the
-build has something concrete to match. The git mechanics underneath section 8 have
-been executed for real and are recorded in `disaster-recovery.md`, with that
-document's verification scope stated precisely at its top.
+**This is the built interface**, kept close to `src/cli.rs` so it stays a real
+reference rather than an aspiration. The git mechanics underneath section 8 have been
+executed for real and are recorded in `disaster-recovery.md`, with that document's
+verification scope stated precisely at its top.
 
 Timeline for every example below: installed Saturday 2026-08-01, weekly schedule on
 Sunday at 12:00, "now" in sections 5 onward is Monday 2026-11-02.
@@ -248,9 +247,11 @@ backup time, while repository history holds what you committed.
 you do the copy. A restore that overwrote in place would be one typo away from
 turning a one-file problem into a directory-sized one.
 
-Note what the copy does not carry back: **permissions, timestamps and extended
-attributes are not restored**. For a markdown file that is irrelevant; for a private
-key it means re-securing the file after the copy.
+Note what naming a single file like this does not carry back: **permissions and
+extended attributes are not restored**, because a single-path restore never touches
+the metadata manifest a full restore replays - see section 8 below. For a markdown
+file that is irrelevant; for a private key it means re-securing the file after the
+copy, or restoring the whole backup instead of one path.
 
 ## 7. No internet on backup day
 
@@ -316,14 +317,16 @@ reading   coreenginex.git   15 backups, 2026-08-02 to 2026-11-08
 using     3e01aa9  backup of 2026-11-08 12:00 -0400  (16:00 UTC)
 
 restored  8,538 files                                          1.53 GB
+metadata  8,201 modes restored, 44 attributes
+          312 paths kept their original owner only for root; these are yours now
 restored  12 repositories with full history
           CoreEngineX/org                   main aef686f  overlay: 1 untracked
           CoreEngineX/org/handbook      main 1930b99  overlay: clean
           CoreEngineX/products/a sibling project   dev  41c8ee2  overlay: 3 modified
           and 9 more
 
-note      file permissions, timestamps and extended attributes are not
-          restored - re-secure anything secret-bearing
+note      timestamps are not restored, and a rebuilt repository's own tree
+          comes from git, which keeps only the execute bit
 
 done in 4m 12s. ~/recovered
 ```

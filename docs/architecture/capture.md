@@ -284,7 +284,7 @@ pruned - the refs are additive, and the next run's commit records them.
 | Rule tree | Table-driven unit tests on plain values, no filesystem, covering the truth table in `config.md` section 5 |
 | Plan | Temporary directory trees asserting classification, non-descent of the content walk, and recursion of the discovery walk |
 | Nested repositories | An outer repository containing a nested one, asserting no `.git` component appears in the tree and the inner repository is captured independently |
-| Submodules | The `org` plus four submodules shape, asserting each submodule is captured with history rather than as a gitlink |
+| Submodules | A repository with a submodule whose `.git` is a file pointing at the parent's `.git/modules/`, asserting the submodule is captured with history rather than as a gitlink |
 | Overlay filtering | A repository with a gitignored `node_modules` and a gitignored `CLAUDE.md`, asserting the first is excluded and the second captured |
 | Hostile filenames | Newline, tab, quote, backslash and non-UTF-8 bytes in filenames, through both pipeline legs. APFS rejects a non-UTF-8 filename with `EILSEQ`, so that row is covered by encoder unit tests rather than end to end on macOS, and the filesystem test asserts that the only names it could not create are the non-UTF-8 ones |
 | Batch scale | More than 5,000 files, asserting no deadlock. The small fixtures elsewhere cannot reach the threshold |
@@ -293,5 +293,5 @@ pruned - the refs are additive, and the next run's commit records them.
 | Retention | Capture a branch, delete it upstream, re-run, `gc --prune=now`, assert the commit is still readable |
 | Sanity gate | A root made unreadable, asserting the run fails rather than committing empty |
 | Refnames | A repository under a dot-directory, and one carrying both `Feature` and `feature` |
-| Store | Round-trip: run, restore, compare **bytes** - metadata is not preserved, per `store.md` section 7 |
-| Regression | `git bundle verify` invoked with the working directory set to a non-repository, the failure that started this project |
+| Store | Round-trip: run, restore, compare **bytes**, per `store.md` section 7 |
+| Metadata | A directory made `0700` to hold a private key, asserting the mode comes back on the directory too, not only on the files inside it |
