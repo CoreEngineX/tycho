@@ -82,6 +82,7 @@ pub struct RawRemote {
     pub path: Option<String>,
     pub optional: Option<bool>,
     pub behind_tolerance: Option<u32>,
+    pub trust_ownership: Option<bool>,
     #[serde(flatten)]
     pub unknown: Unknown,
 }

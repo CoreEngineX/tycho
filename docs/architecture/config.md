@@ -116,6 +116,7 @@ coreenginex    2 roots, 2 ignores, 1 reinclude, 3 remotes, weekly Sun 12:00
 | `profile.remote.path` | path | required | Folder holding the bare repo |
 | `profile.remote.optional` | bool | `false` | An unreachable optional remote is behind, not failed |
 | `profile.remote.behind_tolerance` | int | `4` | Runs a remote may lag before it becomes a failure |
+| `profile.remote.trust_ownership` | bool | `false` | Let git use this remote on a filesystem that records no ownership - exFAT, FAT32, most external drives. Off by default and never inferred; see `remotes.md` |
 
 There is deliberately **no `notify_on_failure` key**. Failure is loud, always. A
 setting whose only function is to silence the loudest signal would contradict the

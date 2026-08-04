@@ -433,6 +433,7 @@ fn validate_profile(
             path,
             optional: raw_remote.optional.unwrap_or(false),
             behind_tolerance: raw_remote.behind_tolerance.unwrap_or(4),
+            trust_ownership: raw_remote.trust_ownership.unwrap_or(false),
         });
     }
 

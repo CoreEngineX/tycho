@@ -195,10 +195,32 @@ in illegal positions: a leading `.` in any component (a repo under `~/.config/nv
 produces one, and git rejects it) and a `.lock` suffix.
 
 **Case and Unicode collisions are detected, not left to the filesystem.** Loose refs
-are files, so on APFS a repository carrying both `Feature` and `feature` maps two
-branches onto one path. Git errors on first exposure but the *next* fetch is silent
-and clobbers the captured tip. Before each fetch, case-fold and NFC-normalise every
+are files, so on APFS or NTFS a repository carrying both `Feature` and `feature` maps
+two branches onto one path. Before each fetch, case-fold and NFC-normalise every
 destination refname and fail loudly on a duplicate.
+
+**On NTFS git never notices at all**, which is worse than this section used to claim.
+The old text said git errors on first exposure and only the *next* fetch is silent.
+Measured on Windows: every fetch exits 0 with no message, and the store keeps
+whichever of the two it wrote last, so the captured branch oscillates. Five
+consecutive fetches of the same unchanged source:
+
+```text
+fetch 1 (exit 0): 8790bbf refs/tycho/demo/heads/feature
+fetch 2 (exit 0): 33bb590 refs/tycho/demo/heads/Feature
+fetch 3 (exit 0): 8790bbf refs/tycho/demo/heads/feature
+fetch 4 (exit 0): 33bb590 refs/tycho/demo/heads/Feature
+fetch 5 (exit 0): 8790bbf refs/tycho/demo/heads/feature
+```
+
+Each run silently drops the other branch, and which one a given backup holds is
+decided by nothing. There is no exposure at which git complains, so the pre-fetch
+check is not an optimisation over letting git notice - it is the only thing there is.
+
+A source repository can hold both on NTFS even though `git branch feature` refuses
+with `a branch named 'feature' already exists`: the pair arrives together in
+`packed-refs`, which is a single file, from a clone of a case-sensitive filesystem.
+That is the realistic way a Windows machine acquires one.
 
 The two halves of a destination refname need the fold for different reasons.
 Percent-encoding leaves `<key>` pure ASCII, so only case can collide there. The

@@ -294,6 +294,14 @@ pub struct Remote {
     pub path: AbsPath,
     pub optional: bool,
     pub behind_tolerance: u32,
+    /// Opt in to git operating on this remote despite the filesystem recording no
+    /// ownership - exFAT and FAT32, which is what an external drive usually is.
+    ///
+    /// Off by default and never inferred. `safe.directory` exists because a
+    /// repository on removable media can be attacker-controlled, hooks included, so
+    /// the decision is the user's to write down per remote rather than Tycho's to
+    /// make for every path in a config file.
+    pub trust_ownership: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

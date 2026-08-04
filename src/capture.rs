@@ -193,9 +193,20 @@ fn check_object_format(git: &Git<'_>, source: &Path) -> Result<(), CaptureError>
 }
 
 /// Loose refs are files, so on a case-insensitive volume a repository carrying both
-/// `Feature` and `feature` maps two branches onto one path. Git errors on first
-/// exposure and the *next* fetch is silent, clobbering the captured tip - so this
-/// runs before the fetch rather than relying on git to notice.
+/// `Feature` and `feature` maps two branches onto one path.
+///
+/// **Git never notices, on NTFS.** The comment here used to say it errors on first
+/// exposure and goes silent afterwards. Measured on Windows, every fetch exits 0 with
+/// no message and the store keeps whichever of the two it wrote last, so the captured
+/// branch *oscillates*: five consecutive fetches of the same unchanged source gave
+/// `feature`, `Feature`, `feature`, `Feature`, `feature`. Each run silently drops the
+/// other branch, and which one is in a given backup is decided by nothing.
+///
+/// So this runs before the fetch and is the only thing standing between a colliding
+/// repository and a backup whose contents change identity between runs. A source can
+/// carry both on NTFS even though `git branch` refuses to create the second: they
+/// arrive together in `packed-refs`, which is one file, from a clone of a
+/// case-sensitive filesystem.
 fn check_collisions(source: &Path, key: &str) -> Result<(), CaptureError> {
     let refs = list_refs(source)?;
     let destinations: Vec<RefName> = refs

@@ -35,7 +35,9 @@ const PINNED: [&str; 13] = [
 /// directory, so an inherited `GIT_DIR` would write the store's objects into a git
 /// hook's repository at exit 0; and the identity variables outrank `-c user.name`,
 /// so an inherited one would author a backup as whoever the hook was running for.
-const HIJACKING: [&str; 16] = [
+const HIJACKING: [&str; 18] = [
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
@@ -103,6 +105,25 @@ pub enum RunError {
         #[source]
         source: io::Error,
     },
+}
+
+/// A replacement global config for git, used for exactly one setting.
+///
+/// `safe.directory` is the only thing Tycho needs that **cannot** be pinned with
+/// `-c`: git reads it from the system and global config files and nowhere else,
+/// deliberately, so that a repository cannot whitelist itself. Measured - passing
+/// `-c safe.directory=<path>` changes nothing, and the push still fails.
+///
+/// `GIT_CONFIG_GLOBAL` is the one lever left, and it replaces the user's global
+/// config wholesale, so the file written here `include.path`s theirs first. That way
+/// a trusted remote costs them none of their own settings and leaves no trace on the
+/// machine, which `git config --global --add safe.directory` would not.
+static TRUST_CONFIG: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Installs the scoped config for this process. Later calls are ignored, so the
+/// composition root decides once.
+pub fn trust_config(path: std::path::PathBuf) {
+    let _ = TRUST_CONFIG.set(path);
 }
 
 /// A git invocation target: a directory, and optionally the scratch index that
@@ -178,6 +199,11 @@ impl<'a> Git<'a> {
         }
         // A credential prompt under launchd would block until the timeout.
         command.env("GIT_TERMINAL_PROMPT", "0");
+        // Set after the removals above, which strip an inherited one, so the only
+        // replacement global config git can see is the one Tycho wrote.
+        if let Some(config) = TRUST_CONFIG.get() {
+            command.env("GIT_CONFIG_GLOBAL", config);
+        }
         if let Some(index) = self.index {
             command.env("GIT_INDEX_FILE", index);
         }

@@ -25,13 +25,48 @@ swallowed: the first command Tycho runs after `init` is `git config`, and git an
 a non-repository with `fatal: not in a git directory`, which says nothing about
 ownership. **A remote that cannot be used should say why**, and this one does not.
 
-The remedy is the `git config --global --add safe.directory <path>` git prints.
-Tycho does **not** add it automatically, and that is a deliberate refusal rather than
-an omission: `safe.directory` exists because a repository on removable media can be
-attacker-controlled, hooks included, and a backup tool that quietly disables the
-protection for any path in a config file is doing the thing the protection is for.
-The same volume is also refused as a `store_path`, for a second reason - see
-`store.md` section 2 on `NO_ACCESS_CONTROL`.
+### `trust_ownership`
+
+Say so per remote, and Tycho applies the exception to its own git invocations only:
+
+```toml
+remotes = [
+  { name = "microsd", path = 'D:\AcmeBackups', trust_ownership = true },
+]
+```
+
+**Off by default and never inferred.** `safe.directory` exists because a repository
+on removable media can be attacker-controlled: `git push` to a local path runs
+`receive-pack` there, which runs that repository's hooks. A backup tool that quietly
+disabled the protection for every path in a config file would be doing the thing the
+protection is for. What the flag removes is not the decision but its cost.
+
+The mechanism, because it is not the one git suggests. `safe.directory` **cannot** be
+pinned with `-c`: git reads it from the system and global config and nowhere else,
+deliberately, so that a repository cannot whitelist itself. Measured - `-c
+safe.directory=<path>` changes nothing and the push still fails. The remaining lever
+is `GIT_CONFIG_GLOBAL`, which replaces the user's global config, so Tycho writes a
+file that `include.path`s theirs first and adds only the trusted repositories:
+
+```gitconfig
+[include]
+	path = C:\\Users\\you\\.gitconfig
+[safe]
+	directory = D:\\AcmeBackups\\acme.git
+	directory = D:/AcmeBackups/acme.git
+```
+
+Both spellings, because git matches the value literally and reports the path with
+backslashes on Windows while a forward-slash entry does not match it - measured, as a
+classification that passed followed by a push that still failed.
+
+The result is that trusting a remote costs the user none of their own git settings and
+leaves nothing behind on the machine, which `git config --global --add` would not:
+that is permanent, machine-wide, and applies to every tool they run.
+
+A volume with no ownership is also refused as a `store_path`, for a second and
+unrelated reason - see `store.md` section 2 on `NO_ACCESS_CONTROL`. `trust_ownership`
+does not affect that and is not meant to.
 
 ## 1. Why a bare repo in the folder, rather than files
 

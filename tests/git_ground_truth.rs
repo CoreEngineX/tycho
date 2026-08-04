@@ -348,3 +348,112 @@ fn a_reserved_name_is_dropped_at_exit_zero() {
         );
     }
 }
+
+/// The ground truth `capture::check_collisions` exists for.
+///
+/// A repository holding both `Feature` and `feature` maps two refs onto one file on a
+/// case-insensitive volume. The comment on that check used to say git errors on first
+/// exposure and only the following fetch is silent. On NTFS git never says anything:
+/// every fetch exits 0 and keeps whichever it wrote last, so the captured branch
+/// oscillates between runs and each run drops the other one.
+///
+/// Pinned because the check is the *only* thing that notices. If a future git starts
+/// refusing, this fails and the check can be reconsidered; until then it must not be
+/// weakened into trusting git to complain.
+#[cfg(windows)]
+#[test]
+fn colliding_refs_are_fetched_silently_and_oscillate() {
+    let work = tempfile::tempdir().expect("temp dir");
+    let src = work.path().join("src");
+    std::fs::create_dir_all(&src).expect("mkdir");
+
+    assert!(
+        git(&src, &["init", "-q", "-b", "main", "."])
+            .status
+            .success()
+    );
+    let commit = |message: &str| {
+        let out = Command::new("git")
+            .current_dir(&src)
+            .args([
+                "-c",
+                "user.email=a@b",
+                "-c",
+                "user.name=a",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                message,
+            ])
+            .output()
+            .expect("git runs");
+        assert!(out.status.success(), "{out:?}");
+    };
+    commit("one");
+    let first = String::from_utf8_lossy(&git(&src, &["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_owned();
+    commit("two");
+    let second = String::from_utf8_lossy(&git(&src, &["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_owned();
+    assert_ne!(first, second, "the two tips must differ for a swap to show");
+
+    // `git branch feature` refuses here - the pair only arrives via packed-refs, the
+    // way a clone of a case-sensitive filesystem delivers it.
+    std::fs::write(
+        src.join(".git").join("packed-refs"),
+        format!(
+            "# pack-refs with: peeled fully-peeled sorted\n\
+             {first} refs/heads/Feature\n{second} refs/heads/feature\n{second} refs/heads/main\n"
+        ),
+    )
+    .expect("write packed-refs");
+    let _ = std::fs::remove_file(src.join(".git").join("refs").join("heads").join("main"));
+
+    let store = bare_repo();
+    let source = src.display().to_string();
+    let mut seen = Vec::new();
+    for round in 0..4 {
+        let out = git(
+            store.path(),
+            &[
+                "fetch",
+                "-q",
+                "--no-tags",
+                &source,
+                "+refs/*:refs/tycho/demo/*",
+            ],
+        );
+        assert!(
+            out.status.success(),
+            "round {round}: git is expected to say nothing at all: {out:?}"
+        );
+        assert!(
+            out.stderr.is_empty(),
+            "round {round}: git complained, which it never did when measured: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let listed = git(
+            store.path(),
+            &[
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/tycho/demo/heads/",
+            ],
+        );
+        let names = String::from_utf8_lossy(&listed.stdout);
+        let held: Vec<&str> = names
+            .lines()
+            .filter(|line| line.to_lowercase().ends_with("feature"))
+            .collect();
+        assert_eq!(held.len(), 1, "exactly one of the pair survives: {names}");
+        seen.push(held[0].to_owned());
+    }
+
+    assert!(
+        seen.iter().any(|name| name != &seen[0]),
+        "the captured branch is expected to swap between fetches, got {seen:?}"
+    );
+}

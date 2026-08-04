@@ -8,6 +8,7 @@
 
 pub mod recovery;
 pub mod state;
+pub mod trust;
 
 use crate::config::Remote;
 use crate::git::refs::{PushOutcome, Refspec};
