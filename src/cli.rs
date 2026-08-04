@@ -554,10 +554,7 @@ pub fn dispatch(command: Command) -> Exit {
         Command::Log(args) => run::log(&args),
         Command::Doctor(args) => doctor::dispatch(&args),
         Command::ProbeAccess(args) => doctor::probe_access(&args),
-        Command::Bootstrap(args) => match crate::bootstrap::run(&args) {
-            Ok(()) => Exit::Ok,
-            Err(error) => report::report! { error: "{error}" },
-        },
+        Command::Bootstrap(args) => crate::bootstrap::run(&args),
         Command::Watch(args) => rules::dispatch(crate::config_edit::List::Watch, &args),
         Command::Ignore(args) => rules::dispatch(crate::config_edit::List::Ignore, &args),
         Command::Reinclude(args) => rules::dispatch(crate::config_edit::List::Reinclude, &args),

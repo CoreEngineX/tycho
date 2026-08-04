@@ -294,7 +294,8 @@ pub fn execute(
         // After the extraction and before anything reads the tree: `tar` writes the
         // archive's modes, which git reduced to 0644 and 0755, so until this runs a
         // restored `.env` is readable by everyone on the machine.
-        done.metadata = read_manifest(&into).map(|manifest| metadata::apply(&into, &manifest));
+        done.metadata =
+            read_manifest(store, backup.commit()).map(|manifest| metadata::apply(&into, &manifest));
         // A single-file or bundle restore rebuilds nothing: you asked for a file.
         if wanted.paths.is_empty() && !wanted.bundle {
             for key in backup.keys() {
@@ -481,9 +482,18 @@ fn rebuild(
 
 /// Read off the extracted tree rather than out of the store, so a restore of a
 /// subset carries only what that subset needs.
-fn read_manifest(into: &Path) -> Option<metadata::Manifest> {
-    let text = std::fs::read_to_string(into.join(metadata::MANIFEST)).ok()?;
-    Some(metadata::parse(&text))
+/// Read out of the store rather than out of what was extracted.
+///
+/// A single-path restore extracts the one path you asked for and nothing else, so the
+/// manifest is never written into the tree - and reading it from there returned
+/// nothing, silently leaving every such file at the `0644` git had reduced it to.
+/// The store holds it either way.
+fn read_manifest(store: &Store, commit: Oid) -> Option<metadata::Manifest> {
+    let bytes = store
+        .repo()
+        .blob_at(commit, Path::new(metadata::MANIFEST))
+        .ok()?;
+    Some(metadata::parse(&String::from_utf8_lossy(&bytes)))
 }
 
 fn read_recorded(store: &Store, backup: &Backup, key: &str) -> Result<Recorded, RestoreError> {

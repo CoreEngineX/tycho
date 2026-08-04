@@ -17,6 +17,7 @@
 //! worse than the ergonomics are good.
 
 use crate::cli::Cli;
+use crate::cli::Exit;
 use crate::cli::render::{CYAN, DIM, GREEN, paint};
 use crate::cli::report::{at_file, report};
 use clap::{Args, CommandFactory};
@@ -42,12 +43,23 @@ pub struct BootstrapArgs {
     pub debug: bool,
 }
 
-/// # Errors
+/// A step that failed **after saying why**.
 ///
-/// If no checkout can be found, or cargo, the completion write or the rc patch fails -
-/// each already prints its own diagnostic, so the message itself is not meant to be
-/// shown again.
-pub fn run(args: &BootstrapArgs) -> Result<(), String> {
+/// It carries nothing, and that is the point: every failure here renders its own
+/// diagnostic block, so an error value holding text is one the caller would print a
+/// second time. The empty string that used to stand for "already reported" made that
+/// second printing a blank `error:` line under every real one.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Reported;
+
+pub fn run(args: &BootstrapArgs) -> Exit {
+    match attempt(args) {
+        Ok(()) => Exit::Ok,
+        Err(Reported) => Exit::Failure,
+    }
+}
+
+fn attempt(args: &BootstrapArgs) -> Result<(), Reported> {
     println!("{}", paint("tycho __bootstrap", "1"));
     println!();
 
@@ -111,7 +123,7 @@ fn row(label: &str, value: &str, colour: &str) {
     );
 }
 
-fn resolve_source() -> Result<PathBuf, String> {
+fn resolve_source() -> Result<PathBuf, Reported> {
     let config = crate::platform::config_path()
         .ok()
         .and_then(|path| config_source(path.as_path()));
@@ -129,7 +141,7 @@ fn resolve_source_with(
     env: Option<String>,
     config: Option<PathBuf>,
     scan: impl FnOnce() -> Option<PathBuf>,
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf, Reported> {
     if let Some(raw) = env {
         let path = expand_home(&raw);
         if is_tycho_checkout(&path) {
@@ -156,7 +168,7 @@ fn resolve_source_with(
     }
     let cwd = std::env::current_dir().map_err(|error| {
         let _ = report! { error: "cannot read the current directory: {error}" };
-        String::new()
+        Reported
     })?;
     if is_tycho_checkout(&cwd) {
         return Ok(cwd);
@@ -172,7 +184,7 @@ fn resolve_source_with(
                roots all came up empty",
         recovery: { "{example}" => "point it at the repo" },
     };
-    Err(String::new())
+    Err(Reported)
 }
 
 /// The config file's own `source` key alone: top-level, a sibling of `version`, and
@@ -250,7 +262,7 @@ fn is_tycho_checkout(path: &Path) -> bool {
         .is_ok_and(|text| text.contains("name = \"tycho\""))
 }
 
-fn install_binary(source: &Path, debug: bool) -> Result<(), String> {
+fn install_binary(source: &Path, debug: bool) -> Result<(), Reported> {
     row(
         "binary",
         if debug {
@@ -275,7 +287,7 @@ fn install_binary(source: &Path, debug: bool) -> Result<(), String> {
     // backup would kill it.
     let status = crate::sys::process::interactive("cargo", &args).map_err(|error| {
         let _ = report! { error: "failed to spawn cargo: {error}" };
-        String::new()
+        Reported
     })?;
     if !status.success() {
         let code = status.code();
@@ -284,7 +296,7 @@ fn install_binary(source: &Path, debug: bool) -> Result<(), String> {
             error: "cargo install failed (exit {code:?})",
             recovery: { "cargo install --path {shown}" => "run it by hand to see why" },
         };
-        return Err(String::new());
+        return Err(Reported);
     }
     row("binary", "installed", GREEN);
     Ok(())
@@ -322,11 +334,8 @@ impl Shell {
     }
 }
 
-fn write_completions() -> Result<(), String> {
-    let home = home().map_err(|error| {
-        let _ = report! { error: "{error}" };
-        String::new()
-    })?;
+fn write_completions() -> Result<(), Reported> {
+    let home = home()?;
     let mut cmd = Cli::command();
 
     match Shell::detect() {
@@ -426,7 +435,7 @@ fn write_completion_file(
     file: &str,
     shell: CompShell,
     cmd: &mut clap::Command,
-) -> Result<(), String> {
+) -> Result<(), Reported> {
     std::fs::create_dir_all(dir).map_err(|error| {
         let shown = dir.display();
         let _ = report! {
@@ -434,7 +443,7 @@ fn write_completion_file(
             at: at_file(dir),
             note: "{error}",
         };
-        String::new()
+        Reported
     })?;
     let path = dir.join(file);
     let mut buf = Vec::new();
@@ -446,7 +455,7 @@ fn write_completion_file(
             at: at_file(&path),
             note: "{error}",
         };
-        String::new()
+        Reported
     })?;
     row("completions", &path.display().to_string(), CYAN);
     Ok(())
@@ -454,7 +463,7 @@ fn write_completion_file(
 
 /// Appends the block once, keyed on a marker, so running this repeatedly does not
 /// grow the file.
-fn patch_rc(rc: &Path, marker: &str, block: &str) -> Result<(), String> {
+fn patch_rc(rc: &Path, marker: &str, block: &str) -> Result<(), Reported> {
     if std::fs::read_to_string(rc)
         .unwrap_or_default()
         .contains(marker)
@@ -502,7 +511,7 @@ fn persist_source_env(source: &Path) {
     }
 }
 
-fn append(path: &Path, text: &str) -> Result<(), String> {
+fn append(path: &Path, text: &str) -> Result<(), Reported> {
     // A PowerShell profile often has no directory yet on a fresh install.
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
@@ -512,7 +521,7 @@ fn append(path: &Path, text: &str) -> Result<(), String> {
                 at: at_file(parent),
                 note: "{error}",
             };
-            String::new()
+            Reported
         })?;
     }
     let mut file = std::fs::OpenOptions::new()
@@ -526,7 +535,7 @@ fn append(path: &Path, text: &str) -> Result<(), String> {
                 at: at_file(path),
                 note: "{error}",
             };
-            String::new()
+            Reported
         })?;
     file.write_all(text.as_bytes()).map_err(|error| {
         let shown = path.display();
@@ -535,12 +544,18 @@ fn append(path: &Path, text: &str) -> Result<(), String> {
             at: at_file(path),
             note: "{error}",
         };
-        String::new()
+        Reported
     })
 }
 
-fn home() -> Result<PathBuf, String> {
-    std::env::home_dir().ok_or_else(|| "there is no home directory".to_owned())
+fn home() -> Result<PathBuf, Reported> {
+    std::env::home_dir().ok_or_else(|| {
+        let _ = report! {
+            error: "there is no home directory, so there is nowhere to write completions",
+            note: "$HOME is unset or empty",
+        };
+        Reported
+    })
 }
 
 /// Expands a leading `~/`, `~\`, `$HOME/` or `${HOME}/` - the same two spellings

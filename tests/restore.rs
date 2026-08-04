@@ -886,6 +886,43 @@ fn at_selects_the_newest_backup_at_or_before_the_moment() {
     );
 }
 
+/// Asking for one file must not cost it its mode.
+///
+/// The manifest lives in the store's tree, and a single-path restore extracts only
+/// the path asked for - so reading the manifest out of the destination found nothing
+/// and left the file at the `0644` git reduced it to. A secret restored one file at a
+/// time is exactly the case this whole manifest exists for.
+#[cfg(unix)]
+#[test]
+fn one_path_on_its_own_still_gets_its_mode_back() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut fixture = fixture();
+    let secret = fixture.root().join("private").join("key.pem");
+    write(&secret, b"-----BEGIN-----\n");
+    fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).expect("chmod");
+    fixture.run();
+
+    let into = fixture.dest("recovered");
+    fixture.restore(
+        &into,
+        &Wanted {
+            paths: vec![PathBuf::from("A/private/key.pem")],
+            bundle: false,
+        },
+    );
+
+    let back = fs::metadata(into.join("A").join("private").join("key.pem"))
+        .expect("the file came back")
+        .permissions()
+        .mode()
+        & 0o7777;
+    assert_eq!(
+        back, 0o600,
+        "a key restored on its own must not come back world-readable: {back:04o}"
+    );
+}
+
 /// A directory's own mode, which the manifest has to derive: the plan enumerates
 /// files, so nothing else names `A/private` at all.
 #[cfg(unix)]
