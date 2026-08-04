@@ -96,6 +96,15 @@ fn a_run_produces_a_store_plain_git_can_read() {
     let listed = fixture.git(&["ls-tree", "-r", "--name-only", "HEAD"]);
     let mut names: Vec<&str> = listed.lines().collect();
     names.sort_unstable();
+    // The metadata manifest is part of the backup rather than something kept beside
+    // it, so a recovery with git and no Tycho can read the modes too - which is what
+    // `disaster-recovery.md` is written for.
+    #[cfg(unix)]
+    assert_eq!(
+        names,
+        vec![".tycho/metadata.tsv", "A/one.md", "A/sub/two.md"]
+    );
+    #[cfg(not(unix))]
     assert_eq!(names, vec!["A/one.md", "A/sub/two.md"]);
 
     // The bytes, not just the names.
@@ -105,6 +114,11 @@ fn a_run_produces_a_store_plain_git_can_read() {
     let subject = fixture.git(&["log", "-1", "--format=%s"]);
     assert!(subject.starts_with("backup "), "{subject}");
     assert!(subject.trim().ends_with("- demo"), "{subject}");
+    // Two files plus the metadata manifest, which is a tree entry like
+    // `.tycho/config.toml` and `REPO.txt` and is counted the same way.
+    #[cfg(unix)]
+    assert_eq!(done.summary.added, 3);
+    #[cfg(not(unix))]
     assert_eq!(done.summary.added, 2);
 }
 

@@ -708,6 +708,26 @@ pub fn restored(into: &std::path::Path, done: &crate::restore::Done) -> String {
             );
         }
     }
+    // Reported rather than assumed: a mode that was not put back leaves a file more
+    // readable than it was captured, and nothing else on screen would say so.
+    if let Some(meta) = &done.metadata {
+        let _ = writeln!(
+            out,
+            "metadata  {} restored, {}",
+            plural(meta.modes, "mode"),
+            plural(meta.xattrs, "attribute")
+        );
+        if !meta.owner_refused.is_empty() {
+            let _ = writeln!(
+                out,
+                "          {} kept their original owner only for root; these are yours now",
+                plural(meta.owner_refused.len(), "path")
+            );
+        }
+        for failure in meta.failed.iter().take(REPO_TABLE_ROWS) {
+            let _ = writeln!(out, "          {}", clip(failure, 46));
+        }
+    }
     if !done.repos.is_empty() {
         let _ = writeln!(
             out,

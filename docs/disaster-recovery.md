@@ -287,9 +287,12 @@ The store contains no absolute paths - files are stored under their root alias, 
 under `/Users/<you>/…` - so the recovered tree drops anywhere and the person
 recovering does not need the same username, home directory or operating system.
 
-Two constraints do apply. **Metadata is not restored**: permissions beyond the
-execute bit, ownership, timestamps and extended attributes are lost, so anything
-secret-bearing comes back world-readable and should be re-secured immediately. And
+Two constraints do apply. **Timestamps are not restored**, and neither is ownership
+unless you recover as root. Permissions and extended attributes are: a git tree
+records one bit per file, so `tycho restore` replays them from
+`.tycho/metadata.tsv`, which travels inside the backup. A recovery with plain git and
+no Tycho gets the files at `0644` and `0755` - read that file and `chmod` from it, or
+anything secret-bearing is world-readable until you do. And
 **on Windows**, some names do not survive the restore. `config.md` section 10 has
 the measured table and it is not the one this paragraph used to give: `<>:"|?*` and
 control characters are refused outright, but reserved device names are created as

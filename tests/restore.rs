@@ -636,6 +636,82 @@ fn a_name_outside_ascii_survives_the_empty_environment_a_scheduled_run_has() {
     );
 }
 
+/// **A secret comes back a secret.**
+///
+/// Git records one bit per file, so a `0600` `.env` is stored as `100644` and `tar`
+/// writes it back readable by everyone on the machine. The store keeps gitignored
+/// content precisely because that is where `.env` files and keys live, so restoring
+/// them world-readable undoes the reason the store is kept private in the first place.
+///
+/// Run against the full ladder, because a manifest that only handled `0600` would be
+/// a special case rather than a mechanism.
+#[cfg(unix)]
+#[test]
+fn the_permission_bits_git_cannot_store_come_back_anyway() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let modes = [
+        (".env", 0o600u32),
+        ("deploy.sh", 0o700),
+        ("notes.md", 0o644),
+        ("shared.txt", 0o664),
+    ];
+
+    let mut fixture = fixture();
+    for (name, mode) in modes {
+        let path = fixture.root().join(name);
+        write(&path, b"content\n");
+        fs::set_permissions(&path, fs::Permissions::from_mode(mode)).expect("chmod");
+    }
+    fixture.run();
+
+    let into = fixture.dest("recovered");
+    let done = fixture.restore(&into, &Wanted::default());
+
+    let applied = done
+        .metadata
+        .as_ref()
+        .expect("the backup carried a manifest");
+    assert_eq!(applied.modes, modes.len(), "{applied:?}");
+    assert!(applied.failed.is_empty(), "{applied:?}");
+
+    for (name, mode) in modes {
+        let back = fs::metadata(into.join("A").join(name))
+            .unwrap_or_else(|error| panic!("{name}: {error}"))
+            .permissions()
+            .mode()
+            & 0o7777;
+        assert_eq!(
+            back, mode,
+            "{name} came back {back:04o} and was captured {mode:04o}"
+        );
+    }
+}
+
+/// The manifest travels in the tree, so a plain `git archive` recovery can read it
+/// too - `disaster-recovery.md` is written for someone who has git and not Tycho.
+#[cfg(unix)]
+#[test]
+fn the_manifest_is_in_the_backup_rather_than_beside_it() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut fixture = fixture();
+    let path = fixture.root().join(".env");
+    write(&path, b"SECRET=1\n");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("chmod");
+    fixture.run();
+
+    let into = fixture.dest("recovered");
+    fixture.restore(&into, &Wanted::default());
+
+    let text = fs::read_to_string(into.join(".tycho/metadata.tsv"))
+        .expect("the manifest is a file in the tree");
+    assert!(
+        text.lines().any(|line| line.starts_with("f\t0600\t")),
+        "the captured mode must be in it: {text}"
+    );
+}
+
 /// Restore never writes into a destination that already holds things.
 #[test]
 fn a_non_empty_destination_is_refused_without_force() {

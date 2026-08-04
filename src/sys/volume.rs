@@ -74,6 +74,39 @@ pub fn exposure(path: &Path) -> Result<Option<String>, VolumeError> {
     Ok(None)
 }
 
+/// Whether the volume holding `path` records ownership at all.
+///
+/// Public because a **remote** holds the same gitignored content as the store and gets
+/// no exposure check: refusing one would ban the cross-platform external drive
+/// entirely, since exFAT is the only filesystem both macOS and Windows can write and
+/// it records nothing. `doctor` warns instead, which leaves the choice where it
+/// belongs.
+///
+/// # Errors
+///
+/// If `mount` cannot be run or fails.
+#[cfg(unix)]
+pub fn records_ownership(path: &Path) -> Result<bool, VolumeError> {
+    let root = std::fs::metadata("/").map_err(io("reading /".to_owned()))?;
+    let here = std::fs::metadata(path).map_err(io(format!("reading {}", path.display())))?;
+    use std::os::unix::fs::MetadataExt as _;
+    if here.dev() == root.dev() {
+        return Ok(true);
+    }
+    ignores_ownership(path).map(|ignores| !ignores)
+}
+
+/// NTFS records ownership; exFAT and FAT32 are caught by the DACL check instead, which
+/// sees them as `NO_ACCESS_CONTROL`.
+///
+/// # Errors
+///
+/// Never.
+#[cfg(windows)]
+pub fn records_ownership(path: &Path) -> Result<bool, VolumeError> {
+    Ok(exposure(path)?.is_none())
+}
+
 /// Whether the volume holding `path` is mounted `noowners`.
 ///
 /// Asked of `mount` because there is no way to reach `statfs(2)`'s `f_flags` from

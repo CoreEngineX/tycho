@@ -17,7 +17,7 @@
 //! | 1 | `sys` | processes and files |
 //! | 2 | `git` | git, typed |
 //! | 3 | `config` | the domain, purely |
-//! | 4 | `plan`, `capture`, `store`, `remote`, `restore`, `state` | backups |
+//! | 4 | `plan`, `capture`, `store`, `metadata`, `remote`, `restore`, `state` | backups |
 //! | 5 | `config_edit`, `platform`, `service`, `doctor`, `cli` | the outside |
 //!
 //! `docs/architecture/overview.md` is the contract; `docs/build-plan.md` is the order
@@ -40,6 +40,7 @@ pub mod config;
 pub mod config_edit;
 pub mod doctor;
 pub mod git;
+pub mod metadata;
 pub mod plan;
 pub mod platform;
 pub mod primitives;

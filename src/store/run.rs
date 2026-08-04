@@ -170,6 +170,29 @@ fn finish(
                     .push((tycho_path(".tycho/config.toml")?, text.as_bytes().to_vec()));
             }
 
+            // Read after the overlay is collected and before anything is hashed, so
+            // the manifest covers every path the tree will hold. A git tree records
+            // one bit per file, so without this a `0600` file restores `0644` - and
+            // the store keeps gitignored content precisely because that is where
+            // secrets live.
+            let sources: Vec<(crate::primitives::path::AbsPath, TreePath)> = plan
+                .roots
+                .iter()
+                .flat_map(|root| &root.entries)
+                .filter_map(|entry| match entry {
+                    plan::Entry::Plain(file) => Some((file.source.clone(), file.stored.clone())),
+                    plan::Entry::Repo(_) => None,
+                })
+                .chain(contribution.files.iter().cloned())
+                .collect();
+            let manifest = crate::metadata::capture(&sources);
+            if !manifest.is_empty() {
+                contribution.generated.push((
+                    tycho_path(crate::metadata::MANIFEST)?,
+                    crate::metadata::render(&manifest).into_bytes(),
+                ));
+            }
+
             let (overlay, missed) = store.hash_files(&contribution.files)?;
             entries.extend(overlay);
             entries.extend(store.hash_generated(&contribution.generated)?);

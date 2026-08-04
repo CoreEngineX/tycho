@@ -28,8 +28,7 @@ an HFS+ or APFS external drive is exposed too, not only exFAT and FAT32. The vol
 asked of `mount`, and only when the store is not on the boot volume, which an `st_dev`
 comparison settles for free.
 
-**On Windows it is the DACL**,
-and the guarantee is equivalent rather than weaker - which is a measurement, not an
+**On Windows it is the DACL**, and the guarantee is equivalent rather than weaker - which is a measurement, not an
 assurance. A directory created under the user profile carries exactly three entries:
 
 ```text
@@ -125,6 +124,43 @@ a silent backup.
 The conversion is a join and never a `replace('\\', "/")`: `\` is a legal byte in a
 Unix filename and a reserved one in an NTFS name, so rewriting bytes would corrupt a
 Unix path in order to fix a Windows one.
+
+## 2a. What the tree cannot hold, and the manifest that does
+
+A git tree entry is `100644`, `100755`, `120000` or `040000`. That is one bit per
+file, so a `0600` file is stored as `100644` and `tar` writes it back readable by
+everyone on the restoring machine - which matters here more than it would in a source
+repository, because the store deliberately keeps gitignored content and that is where
+`.env` files and keys live. Everything above about keeping the *store* private is
+undone if the *restore* hands the same secrets out at `0644`.
+
+`cp`, `cp -p` and `rsync -a` all preserve the mode, so this is a property of the
+storage format rather than of backing up. `.tycho/metadata.tsv` closes it: one line
+per fact, sorted, percent-encoded paths, written at capture and replayed at restore.
+
+```text
+f	0600	me	staff	A%2F.env
+x	com.apple.metadata:_kMDItemUserTags	52656400	A%2Fnotes.md
+```
+
+One line per fact rather than per path, so changing one attribute changes one line in
+a file committed on every run. Paths go through the same percent encoder refnames use,
+because a filename may hold a tab or a newline and a manifest a filename can corrupt is
+not a manifest. An unparsable line is skipped rather than failing the restore: a
+manifest written by a newer version must not stop an older one recovering the files.
+
+**Deliberately not recorded.** Modification times, because the manifest would then
+change whenever a file was touched and every run would commit a diff that says nothing.
+`com.apple.provenance`, which macOS attaches to almost every file. And
+`com.apple.quarantine` - restoring it would have Gatekeeper treat a recovered file as
+downloaded from the internet, which is worse than losing the attribute.
+
+**What a restore can and cannot put back.** The mode always: it needs no privilege.
+The owner only when the process can, which in practice means root, so an ordinary
+recovery reports the paths it left owned by whoever ran it rather than failing.
+Extended attributes best-effort, named individually when one does not take. On Windows
+nothing is recorded, because NTFS has no mode and no uid and its ACLs map onto neither
+- an empty manifest rather than an invented one.
 
 ## 3. Byte-exactness, and why it needs three separate mechanisms
 

@@ -12,6 +12,7 @@ pub mod when;
 use crate::capture::{Recorded, parse_repo_txt};
 use crate::git::Repo;
 use crate::git::refs::{Refspec, fetch_from};
+use crate::metadata;
 use crate::primitives::oid::Oid;
 use crate::spine::spine;
 use crate::store::{REPOS_PREFIX, Store, StoreError};
@@ -104,6 +105,11 @@ pub struct Done {
     /// privilege, says so, and **carries on with the rest**, so the only honest
     /// account of what a restore produced is what is actually there.
     pub missing: Vec<String>,
+    /// What the metadata manifest put back, when the backup carried one.
+    ///
+    /// `None` for a backup taken before manifests existed, or by a platform that
+    /// records none - which is not the same as one that recorded nothing.
+    pub metadata: Option<metadata::Applied>,
 }
 
 impl Done {
@@ -285,6 +291,10 @@ pub fn execute(
 
     let run = run.advance(|Extracted { into, backup, done }| {
         let mut done = done;
+        // After the extraction and before anything reads the tree: `tar` writes the
+        // archive's modes, which git reduced to 0644 and 0755, so until this runs a
+        // restored `.env` is readable by everyone on the machine.
+        done.metadata = read_manifest(&into).map(|manifest| metadata::apply(&into, &manifest));
         // A single-file or bundle restore rebuilds nothing: you asked for a file.
         if wanted.paths.is_empty() && !wanted.bundle {
             for key in backup.keys() {
@@ -467,6 +477,13 @@ fn rebuild(
         overlay: 0,
         conflicts: Vec::new(),
     })
+}
+
+/// Read off the extracted tree rather than out of the store, so a restore of a
+/// subset carries only what that subset needs.
+fn read_manifest(into: &Path) -> Option<metadata::Manifest> {
+    let text = std::fs::read_to_string(into.join(metadata::MANIFEST)).ok()?;
+    Some(metadata::parse(&text))
 }
 
 fn read_recorded(store: &Store, backup: &Backup, key: &str) -> Result<Recorded, RestoreError> {

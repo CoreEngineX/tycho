@@ -439,6 +439,23 @@ fn profile_section(profile: &Profile, state: &State, scope: &Scope) -> Section {
         });
 
         if let Ok(folder) = remote::resolve(&configured.path) {
+            // The store is refused on a volume like this; a remote is only warned
+            // about. Refusing it would ban the cross-platform external drive outright,
+            // because exFAT is the only filesystem macOS and Windows can both write and
+            // it records no ownership - and no offsite copy is worse than an exposed
+            // one. The choice is the user's; saying nothing would take it from them.
+            if crate::sys::volume::records_ownership(&folder).is_ok_and(|records| !records) {
+                checks.push(Check::new(
+                    &format!("{name} privacy"),
+                    Verdict::Warn,
+                    format!(
+                        "{} records no ownership, so this backup is readable by anyone \
+                         with the disk; encrypt the volume or accept it",
+                        folder.display()
+                    ),
+                ));
+            }
+
             let found = artifacts::scan(&folder);
             if !found.is_empty() {
                 let first = &found[0];
