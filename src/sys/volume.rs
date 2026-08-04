@@ -115,6 +115,11 @@ pub fn records_ownership(path: &Path) -> Result<bool, VolumeError> {
 /// cheaper than the `icacls` the Windows arm pays on every command.
 #[cfg(unix)]
 fn ignores_ownership(path: &Path) -> Result<bool, VolumeError> {
+    Ok(mounted_noowners(&mount_listing()?, path))
+}
+
+#[cfg(unix)]
+fn mount_listing() -> Result<String, VolumeError> {
     let out = crate::sys::process::command("mount", &[], crate::sys::process::Timeout::QUICK)
         .map_err(|error| VolumeError::Unreadable(error.to_string()))?;
     if !out.status.success() {
@@ -123,20 +128,17 @@ fn ignores_ownership(path: &Path) -> Result<bool, VolumeError> {
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
-    Ok(mounted_noowners(
-        &String::from_utf8_lossy(&out.stdout),
-        path,
-    ))
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// The longest mount point containing `path`, and whether it says `noowners`.
+/// The longest mount point containing `path`, with its options.
 ///
 /// Longest rather than first, because `/` contains everything and would answer for a
 /// volume mounted under it. Compared by component so `/Volumes/Backup` does not match
 /// `/Volumes/BackupOld`.
 #[cfg(unix)]
-fn mounted_noowners(listing: &str, path: &Path) -> bool {
-    let mut best: Option<(usize, bool)> = None;
+fn deepest_mount<'a>(listing: &'a str, path: &Path) -> Option<(&'a Path, &'a str)> {
+    let mut best: Option<(usize, &Path, &str)> = None;
     for line in listing.lines() {
         let Some((_, rest)) = line.split_once(" on ") else {
             continue;
@@ -149,15 +151,41 @@ fn mounted_noowners(listing: &str, path: &Path) -> bool {
             continue;
         }
         let depth = point.components().count();
-        if best.is_none_or(|(deepest, _)| depth > deepest) {
-            // The closing paren belongs to the line, not to the last option, and
-            // `noowners` is often last: without this it reads as `noowners)` and the
-            // volume passes.
-            let options = options.trim_end_matches(')');
-            best = Some((depth, options.split(", ").any(|item| item == "noowners")));
+        if best.is_none_or(|(deepest, ..)| depth > deepest) {
+            // The closing paren belongs to the line, not to the last option, and an
+            // option is often last: without this `noowners` reads as `noowners)`.
+            best = Some((depth, point, options.trim_end_matches(')')));
         }
     }
-    best.is_some_and(|(_, noowners)| noowners)
+    best.map(|(_, point, options)| (point, options))
+}
+
+#[cfg(unix)]
+fn mounted_noowners(listing: &str, path: &Path) -> bool {
+    deepest_mount(listing, path)
+        .is_some_and(|(_, options)| options.split(", ").any(|item| item == "noowners"))
+}
+
+/// Where the volume holding `path` is mounted.
+///
+/// # Errors
+///
+/// If `mount` cannot be run or fails.
+#[cfg(unix)]
+pub fn mount_point(path: &Path) -> Result<Option<std::path::PathBuf>, VolumeError> {
+    let listing = mount_listing()?;
+    Ok(deepest_mount(&listing, path).map(|(point, _)| point.to_path_buf()))
+}
+
+/// Not asked on Windows: `.Spotlight-V100` is Apple's, and the hazard it carries is
+/// too.
+///
+/// # Errors
+///
+/// Never.
+#[cfg(windows)]
+pub fn mount_point(_path: &Path) -> Result<Option<std::path::PathBuf>, VolumeError> {
+    Ok(None)
 }
 
 /// The NTFS equivalent: a store whose DACL names any trustee other than the owner,

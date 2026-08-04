@@ -168,6 +168,49 @@ fn long_paths() -> Option<Check> {
     })
 }
 
+/// Whether Spotlight is indexing a removable backup volume, which can destroy it.
+///
+/// Observed on a 512 GB exFAT drive that stopped mounting on macOS: `fsck_exfat`
+/// reported nineteen faults and **every one of them was a duplicate name inside
+/// `.Spotlight-V100/Store-V2/`** - `0.indexBigDates`, `live.0.indexTermIds` and so on.
+/// None were in user data. It gave up at `Cannot create a generated name for
+/// 0.indexBigDates` and declared the volume unrepairable, and the volume has not
+/// mounted since, read-only or otherwise.
+///
+/// exFAT folds case and Spotlight writes names that collide when it does, so the index
+/// corrupts the filesystem holding it. `.metadata_never_index` at the volume root is
+/// what stops it, and only the root works - Spotlight has no per-directory opt-out.
+///
+/// A `Warn` rather than a `Fail`, and advisory rather than automatic: excluding a whole
+/// disk from search is the user's call to make about their disk, not a side effect of
+/// pointing a backup at it.
+#[cfg(target_os = "macos")]
+fn spotlight(folder: &std::path::Path, name: &str) -> Option<Check> {
+    let volume = crate::sys::volume::mount_point(folder).ok()??;
+    if volume == std::path::Path::new("/") || volume.join(".metadata_never_index").exists() {
+        return None;
+    }
+    if !volume.join(".Spotlight-V100").exists() {
+        return None;
+    }
+    Some(Check::new(
+        &format!("{name} spotlight"),
+        Verdict::Warn,
+        format!(
+            "Spotlight is indexing {}; on exFAT its index writes case-colliding names \
+             that fsck cannot repair. touch {}/.metadata_never_index",
+            volume.display(),
+            volume.display()
+        ),
+    ))
+}
+
+/// Spotlight is Apple's, and so is the failure.
+#[cfg(not(target_os = "macos"))]
+fn spotlight(_folder: &std::path::Path, _name: &str) -> Option<Check> {
+    None
+}
+
 fn environment(config: &Config, scope: &Scope) -> Section {
     let mut checks = Vec::new();
 
@@ -454,6 +497,10 @@ fn profile_section(profile: &Profile, state: &State, scope: &Scope) -> Section {
                         folder.display()
                     ),
                 ));
+            }
+
+            if let Some(check) = spotlight(&folder, &name) {
+                checks.push(check);
             }
 
             let found = artifacts::scan(&folder);

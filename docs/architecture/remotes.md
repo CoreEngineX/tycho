@@ -86,6 +86,31 @@ A volume with no ownership is also refused as a `store_path`, for a second and
 unrelated reason - see the store-permissions note at the top of `store.md`. `trust_ownership`
 does not affect that and is not meant to.
 
+### Spotlight can destroy an exFAT backup drive
+
+Observed, on a 512 GB exFAT drive that stopped mounting on macOS. `fsck_exfat`
+reported nineteen faults and every one was a duplicate name inside
+`.Spotlight-V100/Store-V2/` - `0.indexBigDates`, `live.0.indexTermIds`,
+`0.directoryStoreFile.shadow`. None were in user data. It gave up at
+
+```text
+Cannot create a generated name for 0.indexBigDates
+** The volume Ghost was found corrupt and can not be repaired.
+```
+
+and the volume has not mounted since, read-only or otherwise.
+
+exFAT folds case, Spotlight writes index names that collide once it does, and
+`fsck_exfat` has no way to rename its way out. So the search index corrupts the
+filesystem holding it, on exactly the removable drive this document recommends as the
+offline copy.
+
+`.metadata_never_index` at the volume root is the fix, and only the root works -
+Spotlight has no per-directory opt-out, which is why Tycho does not create the file
+itself: excluding a whole disk from search is a decision about that disk rather than a
+side effect of pointing a backup at it. `doctor` warns when the volume holding a remote
+is being indexed and has no such file, and prints the `touch` that stops it.
+
 ## 1. Why a bare repo in the folder, rather than files
 
 The cloud sync clients are the hazard here, not the transport. A live git working
