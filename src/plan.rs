@@ -79,6 +79,36 @@ pub enum Warning {
     },
 }
 
+/// A sentence, because these reach the reader.
+///
+/// Without one the only rendering available was `{warning:?}`, which printed
+/// `BrokenRepo { path: "..." }` at somebody who wanted to know whether their backup
+/// was in trouble.
+impl std::fmt::Display for Warning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unreadable { path, reason } => write!(f, "{path} could not be read: {reason}"),
+            Self::Skipped { path, reason } => {
+                write!(
+                    f,
+                    "{path} is not a regular file, so it was skipped: {reason:?}"
+                )
+            }
+            Self::NotStorable { path, reason } => {
+                write!(f, "{path} cannot be stored: {reason}")
+            }
+            // Says what happened to the contents, because "broken" on its own reads
+            // as data lost when nothing was.
+            Self::BrokenRepo { path } => write!(
+                f,
+                "{path} has a `.git` that git will not open - a stale worktree pointer, \
+                 or a submodule whose gitdir is gone. Its files were captured as \
+                 ordinary files, so nothing is missing, but its history was not"
+            ),
+        }
+    }
+}
+
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum PlanError {
     #[error("watched root {root} could not be read: {reason}")]

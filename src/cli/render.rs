@@ -104,7 +104,7 @@ pub fn count(value: usize) -> String {
 pub use crate::primitives::bytes::size;
 
 fn rule(out: &mut String) {
-    let _ = writeln!(out, "{}", "-".repeat(WIDTH));
+    let _ = writeln!(out, "{}", chrome(&"-".repeat(WIDTH)));
 }
 
 /// `1 file`, `4 files`, `1 repository`, `12 repositories`.
@@ -182,15 +182,19 @@ fn reason_label(reason: ExcludeReason) -> String {
 pub fn dry_run(plan: &Plan, repos: &[(String, Inspection)], quick: bool) -> String {
     let mut out = String::new();
 
-    let _ = writeln!(out, "{:<45}{:>12}{:>17}", "roots", "files", "size");
+    let _ = writeln!(
+        out,
+        "{}",
+        chrome(&format!("{:<45}{:>12}{:>17}", "roots", "files", "size"))
+    );
     rule(&mut out);
     for root in &plan.roots {
         let _ = writeln!(
             out,
             "  {:<43}{:>12}{:>17}",
             format!(
-                "{:<14}{}",
-                root.alias,
+                "{}{}",
+                name(&format!("{:<14}", root.alias)),
                 fit(&abbreviate(&root.root.to_string()), 29)
             ),
             count(root.files),
@@ -200,31 +204,42 @@ pub fn dry_run(plan: &Plan, repos: &[(String, Inspection)], quick: bool) -> Stri
 
     if !quick {
         let _ = writeln!(out);
-        let _ = writeln!(out, "{:<42}{:<18}state", "repositories", "head");
+        let _ = writeln!(
+            out,
+            "{}",
+            chrome(&format!("{:<42}{:<18}state", "repositories", "head"))
+        );
         rule(&mut out);
         for (key, inspection) in repos.iter().take(REPO_TABLE_ROWS) {
+            // Only a repository with uncommitted work is worth stopping on; "clean"
+            // is the answer for almost every row and must not compete with it.
+            let state = inspection.state();
+            let painted = if state == "clean" {
+                chrome(&state)
+            } else {
+                paint(&state, YELLOW)
+            };
             let _ = writeln!(
                 out,
-                "  {:<40}{:<18}{}",
-                fit(key, 39),
-                short(&inspection.head),
-                inspection.state()
+                "  {}{:<18}{painted}",
+                name(&format!("{:<40}", fit(key, 39))),
+                short(&inspection.head)
             );
         }
         // Truncated so the count and the rows agree.
         if repos.len() > REPO_TABLE_ROWS {
             let _ = writeln!(
                 out,
-                "  {:<40}{:<18}and {} more",
+                "  {:<40}{:<18}{}",
                 "",
                 "",
-                repos.len() - REPO_TABLE_ROWS
+                chrome(&format!("and {} more", repos.len() - REPO_TABLE_ROWS))
             );
         }
     }
 
     let _ = writeln!(out);
-    let _ = writeln!(out, "{:<50}reason", "excluded");
+    let _ = writeln!(out, "{}", chrome(&format!("{:<50}reason", "excluded")));
     rule(&mut out);
     for (rule_text, reason) in &plan.excluded {
         let _ = writeln!(
@@ -240,8 +255,8 @@ pub fn dry_run(plan: &Plan, repos: &[(String, Inspection)], quick: bool) -> Stri
     let objects: u64 = repos.iter().map(|(_, item)| item.objects).sum();
     let _ = writeln!(
         out,
-        "  {:<13}{:<40}{:>19}",
-        "to read",
+        "  {}{:<40}{:>19}",
+        chrome(&format!("{:<13}", "to read")),
         format!("{} files", count(plan.files())),
         size(plan.bytes())
     );

@@ -61,7 +61,7 @@ fn one_run(args: &RunArgs, profile: &Profile, config_text: &str) -> Exit {
         };
         print!("{}", render::dry_run(&plan, &repos, args.quick));
         for warning in plan.warnings() {
-            let _ = report! { warning: "{warning:?}" };
+            let _ = report! { warning: "{warning}" };
         }
         return Exit::Ok;
     }
