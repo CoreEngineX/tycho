@@ -1,5 +1,8 @@
 //! Layer 5. The clap surface, the exit-code contract, and rendering.
 
+#[cfg(test)]
+pub mod fixture;
+
 pub mod doctor;
 pub mod profile;
 pub mod remote;

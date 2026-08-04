@@ -263,26 +263,24 @@ fn open(config: Option<PathBuf>, profile: Option<&str>) -> Result<(Editing, usiz
 #[cfg(test)]
 mod tests {
     use super::{RemoteAddArgs, RemoteArgs, RemoteRmArgs, add_remote, remove_remote};
+    use crate::cli::fixture::{self, Fixture};
     use crate::cli::{Exit, RemoteAction};
 
-    fn config_with_one_remote() -> (tempfile::TempDir, std::path::PathBuf) {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("tycho.toml");
-        std::fs::write(
-            &path,
-            r#"version = 1
-
-[[profile]]
-name = "demo"
-watch = ["/tmp/watched"]
-remotes = [
-  { name = "drive", path = "/tmp/drive" },
-]
-schedule = { every = "6h" }
-"#,
-        )
-        .expect("write");
-        (dir, path)
+    /// The remote's path is a real directory, so the ownership check reaches a
+    /// filesystem it can actually interrogate rather than the not-present warning.
+    fn config_with_one_remote() -> Fixture {
+        let fixture = Fixture::new();
+        let drive = fixture.dir("drive");
+        let profile = fixture.profile(
+            "demo",
+            &format!(
+                "remotes = [\n  {{ name = \"drive\", path = {} }},\n]\n\
+                 schedule = {{ every = \"6h\" }}\n",
+                fixture::literal(&drive)
+            ),
+        );
+        fixture.append(&profile);
+        fixture
     }
 
     fn args(path: &std::path::Path, action: RemoteAction) -> RemoteArgs {
@@ -297,7 +295,8 @@ schedule = { every = "6h" }
     /// unless `--local-only` says the profile should become local-only.
     #[test]
     fn removing_the_last_remote_is_refused_without_local_only() {
-        let (_dir, path) = config_with_one_remote();
+        let fixture = config_with_one_remote();
+        let path = fixture.path.clone();
         let outcome = remove_remote(
             &args(&path, RemoteAction::List),
             &RemoteRmArgs {
@@ -310,7 +309,8 @@ schedule = { every = "6h" }
 
     #[test]
     fn removing_the_last_remote_with_local_only_marks_the_profile_local_only() {
-        let (_dir, path) = config_with_one_remote();
+        let fixture = config_with_one_remote();
+        let path = fixture.path.clone();
         let outcome = remove_remote(
             &args(&path, RemoteAction::List),
             &RemoteRmArgs {
@@ -326,13 +326,14 @@ schedule = { every = "6h" }
 
     #[test]
     fn removing_a_remote_that_is_not_the_last_one_needs_no_flag() {
-        let (dir, path) = config_with_one_remote();
+        let fixture = config_with_one_remote();
+        let path = fixture.path.clone();
         // A second remote first, so removing "drive" is no longer the last-remote case.
         let added = add_remote(
             &args(&path, RemoteAction::List),
             &RemoteAddArgs {
                 name: "t7".to_owned(),
-                path: dir.path().join("t7").display().to_string(),
+                path: fixture.dir("t7").display().to_string(),
                 optional: true,
                 trust_ownership: false,
                 behind_tolerance: None,
@@ -352,7 +353,8 @@ schedule = { every = "6h" }
 
     #[test]
     fn removing_an_unconfigured_remote_is_refused() {
-        let (_dir, path) = config_with_one_remote();
+        let fixture = config_with_one_remote();
+        let path = fixture.path.clone();
         let outcome = remove_remote(
             &args(&path, RemoteAction::List),
             &RemoteRmArgs {
