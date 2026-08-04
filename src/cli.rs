@@ -2,6 +2,7 @@
 
 pub mod doctor;
 pub mod render;
+pub mod report;
 pub mod rules;
 pub mod run;
 pub mod service;

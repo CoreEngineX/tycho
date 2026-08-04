@@ -1,38 +1,41 @@
 //! `tycho watch`, `tycho ignore` and `tycho reinclude`: the same three verbs over
 //! three lists, so one implementation serves all of them.
 
+use crate::cli::report::{at_file, report};
 use crate::cli::{Exit, RuleAction, RuleArgs};
 use crate::config_edit::{Editing, List};
 
 pub fn dispatch(list: List, args: &RuleArgs) -> Exit {
     let path = match crate::cli::run::config_location(args.config.clone()) {
         Ok(path) => path,
-        Err(error) => {
-            eprintln!("tycho: {error}");
-            return Exit::Failure;
-        }
+        Err(error) => return report! { error: "{error}" },
     };
     if !path.exists() {
         // The first thing anyone hits after installing. A bare `os error 2` names
         // neither what the file is for nor the one command that creates it.
-        eprintln!("error: no config file at {}", path.display());
-        eprintln!("  |");
-        eprintln!("  help: tycho config init writes a starter file, with the shape");
-        eprintln!("        and a comment explaining each key");
-        return Exit::Failure;
+        let shown = path.display();
+        return report! {
+            error: "no config file at {shown}",
+            at: at_file(&path),
+            note: "a config file lists what to watch and where to send it; every \
+                   command but `config init` needs one",
+            recovery: {
+                "tycho config init" => "writes a starter file, with a comment on each key",
+                "tycho config path" => "says where it would go",
+            },
+        };
     }
     let mut editing = match Editing::open(&path) {
         Ok(editing) => editing,
-        Err(error) => {
-            eprintln!("tycho: {error}");
-            return Exit::Failure;
-        }
+        Err(error) => return report! { error: "{error}", at: at_file(&path) },
     };
     let profile = match editing.which(args.profile.as_deref()) {
         Ok(index) => index,
         Err(error) => {
-            eprintln!("tycho: {error}");
-            return Exit::Failure;
+            return report! {
+                error: "{error}",
+                recovery: { "tycho profile list" => "names every profile in this file" },
+            };
         }
     };
 
@@ -53,18 +56,12 @@ pub fn dispatch(list: List, args: &RuleArgs) -> Exit {
                     Exit::Ok
                 }
                 Ok(true) => finish(&editing, "added", value),
-                Err(error) => {
-                    eprintln!("tycho: {error}");
-                    Exit::Failure
-                }
+                Err(error) => report! { error: "{error}" },
             }
         }
         RuleAction::Rm { value } => match editing.remove(profile, list, value) {
             Ok(()) => finish(&editing, "removed", value),
-            Err(error) => {
-                eprintln!("tycho: {error}");
-                Exit::Failure
-            }
+            Err(error) => report! { error: "{error}" },
         },
     }
 }
@@ -76,14 +73,17 @@ pub fn dispatch(list: List, args: &RuleArgs) -> Exit {
 /// that will match nothing - and only the resulting file can be checked for that.
 fn finish(editing: &Editing, verb: &str, value: &str) -> Exit {
     if let Err(error) = editing.save() {
-        eprintln!("tycho: {error}");
-        return Exit::Failure;
+        return report! { error: "{error}" };
     }
     println!("{verb:<14} {value}");
 
     let Ok(parsed) = crate::config::parse(&editing.text()) else {
-        eprintln!("warn  the file no longer parses; check it by hand");
-        return Exit::Failure;
+        return report! {
+            error: "the file no longer parses, so the edit was written but cannot be read back",
+            note: "the edit itself is on disk; what follows it in the file is what \
+                   stopped parsing",
+            recovery: { "tycho config path" => "prints the file to open" },
+        };
     };
     if parsed.diagnostics.is_empty() {
         return Exit::Ok;
