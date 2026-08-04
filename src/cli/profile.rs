@@ -338,18 +338,23 @@ mod tests {
         assert_eq!(add_profile(None, &neither), Exit::Failure, "both given");
     }
 
+    /// Pointed at a temp config, never at the machine's own.
+    ///
+    /// The second half needs to get *past* validation, so it opens a config file -
+    /// and `None` resolves to the user's real one, which exists on a developer's
+    /// machine and not on a clean runner. That is a test asserting the environment.
     #[test]
     fn an_optional_name_must_match_a_declared_remote() {
-        let mut args = add_args("demo");
-        args.remote = vec!["drive=/Volumes/Drive".to_owned()];
+        let (dir, path) = config_with_one_profile();
+        let mut args = add_args("fresh");
+        args.remote = vec![format!("drive={}", dir.path().join("nowhere").display())];
         args.optional = vec!["ghost".to_owned()];
-        assert_eq!(add_profile(None, &args), Exit::Failure);
+        assert_eq!(add_profile(Some(path.clone()), &args), Exit::Failure);
 
         args.optional = vec!["drive".to_owned()];
-        // `--dry-run` avoids touching a real config file, and the remote path does
-        // not exist on this machine, so this is the "cannot verify yet" warning, not
-        // a hard failure.
-        assert_ne!(add_profile(None, &args), Exit::Failure);
+        // The remote path does not exist, so ownership cannot be checked: that is the
+        // warning, not a refusal.
+        assert_ne!(add_profile(Some(path), &args), Exit::Failure);
     }
 
     #[test]
@@ -360,22 +365,31 @@ mod tests {
         assert_eq!(add_profile(None, &args), Exit::Failure);
     }
 
+    /// A real directory on this machine, quoted as a TOML **literal** string.
+    ///
+    /// Two things a hardcoded `/tmp` hid: it is not a path on Windows, so the
+    /// re-validation every write runs called it an error; and the watched root's own
+    /// name becomes a git refname, which `tempfile`'s `.tmpXXXX` cannot be. Hence a
+    /// named subdirectory, and literal quoting so a `C:\...` path needs no escaping.
     fn config_with_one_profile() -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("tycho.toml");
-        std::fs::write(
-            &path,
-            r#"version = 1
-
-[[profile]]
-name = "demo"
-watch = ["/tmp"]
-local_only = true
-schedule = { every = "6h" }
-"#,
-        )
-        .expect("write");
+        std::fs::write(&path, profile_toml("demo", &watched(&dir))).expect("write");
         (dir, path)
+    }
+
+    fn watched(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        let root = dir.path().join("watched");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        root
+    }
+
+    fn profile_toml(name: &str, root: &std::path::Path) -> String {
+        format!(
+            "version = 1\n\n[[profile]]\nname = \"{name}\"\nwatch = ['{}']\n\
+             local_only = true\nschedule = {{ every = \"6h\" }}\n",
+            root.display()
+        )
     }
 
     /// Requirement 4(a): the last profile in the file can never be removed, since a
@@ -396,12 +410,10 @@ schedule = { every = "6h" }
 
     #[test]
     fn removing_one_of_several_profiles_succeeds() {
-        let (_dir, path) = config_with_one_profile();
+        let (dir, path) = config_with_one_profile();
         let mut text = std::fs::read_to_string(&path).expect("read");
-        text.push_str(
-            "\n[[profile]]\nname = \"second\"\nwatch = [\"/tmp\"]\nlocal_only = true\n\
-             schedule = { every = \"6h\" }\n",
-        );
+        let second = profile_toml("second", &watched(&dir));
+        text.push_str(second.split_once("\n\n").expect("a profile table").1);
         std::fs::write(&path, text).expect("write");
 
         let outcome = remove_profile(
