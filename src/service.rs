@@ -1,9 +1,10 @@
 //! Layer 5. Installing, removing and reporting on the agents that make Tycho run
 //! without anybody typing anything.
 //!
-//! Layer 5 rather than 4 because it is policy over launchd specifically: it names a
-//! plist, a domain and a `launchctl` verb, so it belongs on the same side of the line
-//! as `platform`, not above it.
+//! Layer 5 rather than 4 because it is policy over a specific scheduler: it names a
+//! definition, a registry and a verb, so it belongs on the same side of the line as
+//! `platform`, not above it. Which scheduler is `platform::scheduler` - launchd on
+//! macOS, Task Scheduler on Windows.
 //!
 //! Tycho has no resident process. This is the whole of the lifecycle: the OS
 //! scheduler starts a run, it does its work, and it exits.

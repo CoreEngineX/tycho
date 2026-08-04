@@ -290,7 +290,7 @@ pub enum Command {
     Reinclude(RuleArgs),
     /// Validate, locate or create the config file
     Config(ConfigArgs),
-    /// launchd lifecycle for the backup agents
+    /// Scheduler lifecycle for the backup agents
     Service(ServiceArgs),
     /// Environment, service, remote and volume health
     Doctor(DoctorArgs),

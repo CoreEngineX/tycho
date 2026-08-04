@@ -102,6 +102,46 @@ pub fn run(config: &Config, state: &State, scope: &Scope) -> Report {
     report
 }
 
+/// Nothing to ask on a platform with no path-length limit to switch off.
+#[cfg(not(windows))]
+const fn long_paths() -> Option<Check> {
+    None
+}
+
+/// Whether git will open a path past 260 characters.
+///
+/// This is a `Warn` and not a `Fail` because most trees never reach the limit, and a
+/// row that is red on every machine is a row people learn to ignore. It earns its
+/// place because of *how* it fails: with `core.longpaths` off, `git add` on a
+/// directory past the limit prints `Filename too long`, **exits 0**, and stages
+/// nothing - so a captured repository loses files while the run stays green. That is
+/// the failure class this project exists to prevent, and it is invisible without
+/// being told.
+///
+/// `config.md` section 10 records the measurement. The Windows-wide
+/// `LongPathsEnabled` is a separate switch and does not stand in for this one: git
+/// consults its own.
+#[cfg(windows)]
+fn long_paths() -> Option<Check> {
+    let enabled = command(
+        "git",
+        &["config", "--get", "core.longpaths"],
+        Timeout::QUICK,
+    )
+    .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).trim() == "true");
+
+    Some(if enabled {
+        Check::new("core.longpaths", Verdict::Ok, "true")
+    } else {
+        Check::new(
+            "core.longpaths",
+            Verdict::Warn,
+            "unset; git skips paths past 260 characters at exit 0. \
+             git config --global core.longpaths true",
+        )
+    })
+}
+
 fn environment(config: &Config, scope: &Scope) -> Section {
     let mut checks = Vec::new();
 
@@ -129,6 +169,10 @@ fn environment(config: &Config, scope: &Scope) -> Section {
             crate::cli::render::plural(config.profiles.len(), "profile")
         ),
     ));
+
+    if let Some(check) = long_paths() {
+        checks.push(check);
+    }
 
     checks.push(match log_dir() {
         Ok(dir) => {
@@ -197,6 +241,12 @@ fn environment(config: &Config, scope: &Scope) -> Section {
     // An interactive doctor runs with the terminal's TCC grant, which is a different
     // grant from the agent's - so reading a watched root here proves nothing about
     // what the agent can do. Only a probe through launchd measures the real thing.
+    //
+    // macOS only, because TCC is. Windows has no per-application grant over the user's
+    // own files, so the row would warn on every machine forever and say nothing - and
+    // a health check whose rows are always yellow teaches people to skim it. What
+    // *can* deny a scheduled run there is an ACL, and that fails the run loudly.
+    #[cfg(target_os = "macos")]
     checks.push(Check::new(
         "full disk access",
         Verdict::Warn,
