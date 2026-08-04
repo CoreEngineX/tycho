@@ -155,6 +155,13 @@ change whenever a file was touched and every run would commit a diff that says n
 `com.apple.quarantine` - restoring it would have Gatekeeper treat a recovered file as
 downloaded from the internet, which is worse than losing the attribute.
 
+**Files only.** The manifest is built from the plan's entries, which are files; a
+directory has no record and comes back at whatever `tar` gives it. Measured on the
+Acme fixture: 15 file records against 20 tree paths, and `Contracts/signed` went in at
+`drwxrwxrwx` and came back `drwxr-xr-x`. The files inside it are correct, which is
+where the secrets are, but the containing directory is not - worth closing, and worth
+not implying otherwise in the meantime.
+
 **What a restore can and cannot put back.** The mode always: it needs no privilege.
 The owner only when the process can, which in practice means root, so an ordinary
 recovery reports the paths it left owned by whoever ran it rather than failing.

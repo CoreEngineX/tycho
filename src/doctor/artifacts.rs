@@ -25,11 +25,22 @@ pub enum Kind {
     StrayRef,
     /// The shapes sync clients leave anywhere: `... (1).ext`, `...conflicted copy...`.
     Conflicted,
+    /// `._name`, which macOS writes beside every file on a volume that cannot hold an
+    /// extended attribute - which is every exFAT and FAT32 drive, and `remotes.md`
+    /// expects an external backup to be one.
+    ///
+    /// Not cosmetic. Git globs `objects/pack/*.idx`, so `._pack-<hex>.idx` is opened
+    /// as a pack index and answered with `non-monotonic index`; every `._` under
+    /// `refs/` is a `badRefName`. Measured on a real drive: one push produced 49 of
+    /// them and `git fsck` reported errors on both. Given its own kind because the
+    /// remedy is specific and nothing else here shares it.
+    AppleDouble,
 }
 
 impl std::fmt::Display for Kind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.pad(match self {
+            Self::AppleDouble => "macOS sidecar; run dot_clean -m on the folder",
             Self::StrayPack => "not a packfile name",
             Self::StrayRef => "not a ref name",
             Self::Conflicted => "a sync conflict copy",
@@ -112,7 +123,11 @@ fn walk(root: &Path, dir: &Path, found: &mut Vec<Artifact>) {
                 .any(|part| part.as_os_str() == segment)
         };
 
-        let kind = if inside("pack") && inside("objects") && !is_packfile(&name) {
+        // Before the others, because an AppleDouble in `objects/pack/` is also a
+        // stray packfile name and the sidecar is the useful half of the answer.
+        let kind = if name.starts_with("._") {
+            Some(Kind::AppleDouble)
+        } else if inside("pack") && inside("objects") && !is_packfile(&name) {
             Some(Kind::StrayPack)
         } else if inside("refs") && !is_ref_component(&name) {
             Some(Kind::StrayRef)
@@ -196,6 +211,10 @@ mod tests {
         fs::write(repo.join("objects/pack/pack-abc123 (1).pack"), "").expect("a duplicate");
         fs::write(repo.join("refs/heads/main"), "").expect("a real ref");
         fs::write(repo.join("refs/heads/main (1)"), "").expect("a conflicted ref");
+        // What macOS writes beside every file on exFAT. Measured on a real drive:
+        // one push produced 49 of them, and git read `._pack-<hex>.idx` as a pack
+        // index and answered `non-monotonic index`.
+        fs::write(repo.join("objects/pack/._pack-abc123.idx"), "").expect("an AppleDouble sidecar");
         fs::write(dir.path().join("RECOVERY.md"), "").expect("ours");
 
         let found = scan(dir.path());
@@ -210,7 +229,7 @@ mod tests {
             })
             .collect();
 
-        assert_eq!(found.len(), 2, "{names:?}");
+        assert_eq!(found.len(), 3, "{names:?}");
         let kind_of = |name: &str| {
             found
                 .iter()
@@ -218,6 +237,9 @@ mod tests {
                 .map(|item| item.kind)
         };
         assert_eq!(kind_of("pack-abc123 (1).pack"), Some(Kind::StrayPack));
+        // Measured on a real exFAT drive: git reads `._pack-<hex>.idx` as a pack index
+        // and reports `non-monotonic index`, so this is wreckage rather than litter.
+        assert_eq!(kind_of("._pack-abc123.idx"), Some(Kind::AppleDouble));
         assert_eq!(kind_of("main (1)"), Some(Kind::StrayRef));
     }
 

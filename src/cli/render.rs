@@ -767,8 +767,8 @@ pub fn restored(into: &std::path::Path, done: &crate::restore::Done) -> String {
 
     let _ = writeln!(
         out,
-        "\nnote      file permissions, timestamps and extended attributes are not\n\
-         \x20         restored - re-secure anything secret-bearing\n\n\
+        "\nnote      timestamps are not restored, and directories come back at the\n\
+         \x20         default mode - the manifest records files\n\n\
          done      {}",
         abbreviate(&into.display().to_string())
     );
