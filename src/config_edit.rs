@@ -328,6 +328,23 @@ impl Editing {
             })
     }
 
+    /// Whether a profile has **said** it wants no remotes.
+    ///
+    /// Not the same question as having none. A profile with an empty `remotes` and no
+    /// `local_only` is unfinished setup and fails `config check`; one with the flag is
+    /// a deliberate choice that passes. Reporting both as "local only" told somebody
+    /// their broken config was a decision they had made.
+    #[must_use]
+    pub fn is_local_only(&self, profile: usize) -> bool {
+        self.document
+            .get("profile")
+            .and_then(Item::as_array_of_tables)
+            .and_then(|tables| tables.get(profile))
+            .and_then(|table| table.get("local_only"))
+            .and_then(Item::as_bool)
+            .unwrap_or(false)
+    }
+
     /// Sets or clears `local_only` on a profile.
     ///
     /// # Errors

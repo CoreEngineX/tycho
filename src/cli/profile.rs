@@ -41,11 +41,14 @@ fn list(config: Option<PathBuf>) -> Exit {
             .len();
         let remotes = editing.remotes(index).len();
         // Painted after padding, so colour never changes a column's width.
-        let remotes_cell = format!("{:<14}", render::plural(remotes, "remote"));
-        let remotes_cell = if remotes == 0 {
-            render::paint(&format!("{:<14}", "local only"), render::YELLOW)
-        } else {
-            remotes_cell
+        //
+        // No remotes and no `local_only` is unfinished setup, which `config check`
+        // calls an error - so it must not read the same as the flag that makes it
+        // deliberate.
+        let remotes_cell = match (remotes, editing.is_local_only(index)) {
+            (0, true) => render::paint(&format!("{:<14}", "local only"), render::YELLOW),
+            (0, false) => render::paint(&format!("{:<14}", "none"), render::RED),
+            (count, _) => format!("{:<14}", render::plural(count, "remote")),
         };
         let schedule = if editing.has_schedule(index) {
             render::paint("set", render::GREEN)
@@ -393,6 +396,23 @@ mod tests {
             keep_store: false,
             delete_store: false,
         }
+    }
+
+    /// Having no remotes and having *said* you want none are different states, and
+    /// `config check` calls the first an error. The table showed both as "local only",
+    /// so the starter config - which is the first thing any new user sees - reported
+    /// its own unfinished setup as a decision they had made.
+    #[test]
+    fn no_remotes_is_not_the_same_as_local_only() {
+        let fixture = Fixture::new();
+        let unfinished = fixture.profile("unfinished", "schedule = { every = \"6h\" }\n");
+        fixture.append(&unfinished);
+        let deliberate = fixture.profile("deliberate", LOCAL);
+        fixture.append(&deliberate);
+
+        let editing = crate::config_edit::Editing::open(&fixture.path).expect("open");
+        assert!(!editing.is_local_only(0), "no flag was written");
+        assert!(editing.is_local_only(1), "{}", fixture.text());
     }
 
     /// Requirement 4(a): the last profile in the file can never be removed, since a
