@@ -455,8 +455,18 @@ fn repo_txt(git: &Git<'_>, inspection: &Inspection, source: &Path) -> String {
 
     let origin = field(&["config", "--get", "remote.origin.url"]);
     let head = match &inspection.head {
+        // The branch line's sha is for a human reading the file; the restore checks
+        // out `name`. The detached line's is not - it is the only thing a restore has
+        // to check out, so it is written in full.
+        //
+        // `Oid::short` is a fixed 7-character truncation with no uniqueness check,
+        // unlike `git rev-parse --short`, which lengthens a prefix until it is
+        // unambiguous. Nothing guarantees the restored object population is the one
+        // that made 7 characters enough, so a large repository's restore could fail
+        // on an ambiguous prefix. Reading tolerates either form, so backups written
+        // before this still restore.
         RepoHead::Branch { name, sha } => format!("{name} @ {}", sha.short()),
-        RepoHead::Detached { sha } => format!("detached @ {}", sha.short()),
+        RepoHead::Detached { sha } => format!("detached @ {sha}"),
         RepoHead::Unborn => "unborn".to_owned(),
     };
     let stashes = field(&["stash", "list"])
@@ -506,9 +516,9 @@ pub fn parse_repo_txt(text: &str) -> Recorded {
         };
         let value = value.trim();
         match field {
-            // `main @ de4c69c`, `detached @ de4c69c`, or `unborn`. The short sha is
-            // enough: git resolves an unambiguous prefix, and a branch name is what a
-            // restore wants anyway.
+            // `main @ de4c69c`, `detached @ <full sha>`, or `unborn`. Whatever
+            // follows `detached @ ` is passed to `git checkout` as written, so a
+            // short sha from an older backup still resolves where it is unambiguous.
             "head" => {
                 found.head = match value.split_once(" @ ") {
                     Some(("detached", sha)) => Some(sha.trim().to_owned()),
@@ -615,7 +625,7 @@ mod repo_txt_tests {
     #[test]
     fn a_detached_head_reads_back_as_its_sha() {
         let recorded = round_trip(RepoHead::Detached { sha: sha() });
-        assert_eq!(recorded.head.as_deref(), Some(sha().short().as_str()));
+        assert_eq!(recorded.head.as_deref(), Some(sha().to_string().as_str()));
     }
 
     /// A repository with no commits has nothing to check out, and that is not an
