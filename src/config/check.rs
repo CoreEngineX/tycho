@@ -86,6 +86,7 @@ pub enum DiagnosticKind {
         path: String,
         root: String,
     },
+    NoProfiles,
     NoRemotes,
     NoSchedule,
     InvalidSchedule {
@@ -151,6 +152,10 @@ impl fmt::Display for DiagnosticKind {
             Self::PathInsideWatchedRoot { what, path, root } => {
                 write!(f, "the {what} {path} is inside watched root {root}")
             }
+            Self::NoProfiles => write!(
+                f,
+                "this config defines no profiles, so there is nothing to back up"
+            ),
             Self::NoRemotes => write!(
                 f,
                 "this profile has nowhere to send its backups, so they never leave this machine"
@@ -186,6 +191,24 @@ impl Diagnostic {
             //
             // The indent matches what the renderer puts before the first line, so a
             // multi-line hint stays in its column.
+            // The starter file ships every profile key commented out, so this is the
+            // first thing a new install says. It has to be the whole of getting
+            // started, not a description of what is absent.
+            DiagnosticKind::NoProfiles => Some(
+                [
+                    "one command sets up a whole profile - what to watch, where to send",
+                    "it, and when to run:",
+                    "",
+                    "  tycho profile add me \\",
+                    "    --watch ~/Documents \\",
+                    "    --remote drive=/Volumes/<your drive>/Backups \\",
+                    "    --schedule daily:12:00",
+                    "",
+                    "add --trust-ownership drive if that drive is exFAT or FAT32, and",
+                    "--local-only instead of --remote to keep the backup on this machine",
+                ]
+                .join("\n          "),
+            ),
             DiagnosticKind::NoRemotes => Some(
                 [
                     "add somewhere to send them, under this profile:",
@@ -284,6 +307,9 @@ pub(crate) fn validate(
         }
     }
     collector.profile = None;
+    if profiles.is_empty() {
+        collector.error(DiagnosticKind::NoProfiles);
+    }
 
     crate::config::Parsed {
         config: Config {

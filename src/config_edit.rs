@@ -570,41 +570,45 @@ pub fn starter(home: &str) -> String {
          # This checkout's path, so `tycho __bootstrap` does not have to guess it.\n\
          # source = \"{home}/Developer/tycho\"\n\
          \n\
-         [[profile]]\n\
-         name = \"personal\"\n\
-         \n\
+         # Nothing is watched until a profile exists. `tycho profile add` writes one, and\n\
+         # `tycho config check` prints the exact command - everything below is what it\n\
+         # produces, so hand-editing instead is equally supported.\n\
+         #\n\
+         # [[profile]]\n\
+         # name = \"personal\"\n\
+         #\n\
          # Everything under these is captured. A git repository inside one is captured\n\
          # with its full history, plus what git alone could never bring back:\n\
          # uncommitted edits, untracked files, and anything gitignored.\n\
-         watch = [\n\
-         \x20 \"{home}/Documents\",\n\
-         ]\n\
-         \n\
+         # watch = [\n\
+         #   \"{home}/Documents\",\n\
+         # ]\n\
+         #\n\
          # Paths and globs to leave out. `tycho run --dry-run` reports every rule that\n\
          # matched nothing, which is how a typo surfaces before it costs you gigabytes.\n\
-         ignore = [\n\
-         ]\n\
-         \n\
+         # ignore = []\n\
+         #\n\
          # Exceptions to the line above, for something inside a path you ignored.\n\
-         reinclude = [\n\
-         ]\n\
-         \n\
+         # reinclude = []\n\
+         #\n\
          # Where the backup goes: a synced cloud folder, or a drive. Tycho creates the\n\
          # repository inside it on first run and writes nowhere else. Mark a removable\n\
-         # drive optional so being unplugged is a warning rather than a failure.\n\
+         # drive optional so being unplugged is a warning rather than a failure, and add\n\
+         # trust_ownership on one that records none - exFAT and FAT32 - which git\n\
+         # otherwise refuses to operate on.\n\
          #\n\
          # `name` is a label for this destination, not a location - `path` finds the\n\
-         # drive. It is what `status` and `doctor` call the remote, so make it read\n\
-         # like the thing printed on the drive. Renaming it later starts that\n\
-         # remote's history over: the state file keys last-seen and behind-count by\n\
-         # the name, so a rename shows as `unseen` and re-verifies from scratch.\n\
-         remotes = [\n\
-         \x20 # {{ name = \"drive\", path = \"{home}/Library/CloudStorage/…/Backups\" }},\n\
-         \x20 # {{ name = \"t7\", path = \"/Volumes/T7/tycho\", optional = true }},\n\
-         ]\n\
-         \n\
+         # drive. It is what `status` and `doctor` call the remote, so make it read like\n\
+         # the thing printed on the drive. Renaming it later starts that remote's\n\
+         # history over: the state file keys last-seen and behind-count by the name, so\n\
+         # a rename shows as `unseen` and re-verifies from scratch.\n\
+         # remotes = [\n\
+         #   {{ name = \"drive\", path = \"{home}/Library/CloudStorage/Drive/Backups\" }},\n\
+         #   {{ name = \"t7\", path = \"/Volumes/T7/tycho\", optional = true, trust_ownership = true }},\n\
+         # ]\n\
+         #\n\
          # When it runs by itself, once `tycho service install` has been run.\n\
-         schedule = {{ weekly = {{ day = \"sunday\", at = \"12:00\" }} }}\n"
+         # schedule = {{ weekly = {{ day = \"sunday\", at = \"12:00\" }} }}\n"
     )
 }
 
@@ -759,22 +763,51 @@ watch = [
         assert!(editing.which(None).is_err(), "ambiguous must not guess");
     }
 
-    /// `config init` must not hand somebody a file that `config check` rejects.
+    /// The starter defines nothing and says exactly that.
+    ///
+    /// It used to ship an active profile with its remotes commented out, so a new
+    /// install answered `config check` with `NoRemotes` - a profile that looked
+    /// configured and could not run. Everything is commented now, and the single
+    /// finding is the one whose hint is the command that sets a profile up.
     #[test]
-    fn the_starter_file_parses_and_only_warns_about_what_it_cannot_know() {
+    fn the_starter_file_parses_and_reports_only_that_it_has_no_profiles() {
         let text = starter(HOME);
         let parsed = crate::config::parse_with(&text, Some(std::path::Path::new(HOME)), |_| None)
             .expect("valid TOML");
 
-        // `NoRemotes` is expected and unavoidable: only the person running it knows
-        // where their cloud folder is, so the starter comments the examples out.
-        let unexpected: Vec<_> = parsed
+        let kinds: Vec<_> = parsed
             .diagnostics
             .iter()
-            .filter(|item| item.severity == crate::config::Severity::Error)
-            .filter(|item| item.kind != crate::config::DiagnosticKind::NoRemotes)
+            .map(|item| item.kind.clone())
             .collect();
-        assert!(unexpected.is_empty(), "{unexpected:#?}");
+        assert_eq!(
+            kinds,
+            vec![crate::config::DiagnosticKind::NoProfiles],
+            "{:#?}",
+            parsed.diagnostics
+        );
+    }
+
+    /// The command the starter's own hint tells a new user to run has to work against
+    /// the file the starter just wrote, from zero profiles.
+    #[test]
+    fn a_profile_can_be_added_to_the_starter_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("tycho.toml");
+        std::fs::write(&path, starter(HOME)).expect("write");
+
+        let mut editing = Editing::open(&path).expect("open");
+        assert!(editing.profiles().is_empty(), "the starter defines none");
+        editing
+            .add_profile(&super::NewProfile {
+                name: "me".to_owned(),
+                watch: vec![home("/Documents")],
+                remotes: vec![new_remote("drive", REMOTE)],
+                schedule: None,
+                local_only: false,
+            })
+            .expect("add to a file with no profile array at all");
+        assert_eq!(editing.profiles(), ["me"]);
     }
 
     fn new_remote(name: &str, path: &str) -> super::NewRemote {
