@@ -10,6 +10,7 @@ use crate::primitives::path::AbsPath;
 use jiff::Zoned;
 use std::fmt;
 use std::path::Path;
+use std::str::FromStr;
 use std::time::Duration;
 
 pub use check::{Diagnostic, DiagnosticKind, Severity};
@@ -235,6 +236,41 @@ impl Schedule {
                 }
                 at.on(date).to_zoned(tz)
             }
+        }
+    }
+}
+
+impl FromStr for Schedule {
+    type Err = String;
+
+    /// `daily:HH:MM`, `weekly:<weekday>:HH:MM`, `every:<N>h` or `every:<N>m`.
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let bad = || {
+            format!("'{text}' is not daily:HH:MM, weekly:<weekday>:HH:MM, every:<N>h or every:<N>m")
+        };
+        let Some((kind, rest)) = text.split_once(':') else {
+            return Err(bad());
+        };
+        match kind {
+            "daily" => Ok(Self::Daily {
+                at: TimeOfDay::parse(rest)?,
+            }),
+            "weekly" => {
+                let Some((day, at)) = rest.split_once(':') else {
+                    return Err(bad());
+                };
+                Ok(Self::Weekly {
+                    day: Weekday::parse(day)?,
+                    at: TimeOfDay::parse(at)?,
+                })
+            }
+            "every" => {
+                if !matches!(rest.chars().last(), Some('h' | 'm')) {
+                    return Err(bad());
+                }
+                parse_interval(rest).map(Self::Every)
+            }
+            _ => Err(bad()),
         }
     }
 }
@@ -506,6 +542,64 @@ mod schedule_tests {
         let next = every.next_after(&before).expect("next");
 
         assert_eq!(next.strftime("%F %H:%M").to_string(), "2027-03-14 13:00");
+    }
+}
+
+#[cfg(test)]
+mod parse_tests {
+    use super::{Schedule, TimeOfDay, Weekday};
+    use std::time::Duration;
+
+    #[test]
+    fn daily_parses_the_time_of_day() {
+        assert_eq!(
+            "daily:12:30".parse::<Schedule>().expect("parses"),
+            Schedule::Daily {
+                at: TimeOfDay {
+                    hour: 12,
+                    minute: 30
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn weekly_parses_the_day_and_time() {
+        assert_eq!(
+            "weekly:sunday:09:00".parse::<Schedule>().expect("parses"),
+            Schedule::Weekly {
+                day: Weekday::Sunday,
+                at: TimeOfDay { hour: 9, minute: 0 }
+            }
+        );
+    }
+
+    #[test]
+    fn every_accepts_hours_and_minutes_only() {
+        assert_eq!(
+            "every:6h".parse::<Schedule>().expect("parses"),
+            Schedule::Every(Duration::from_secs(6 * 3_600))
+        );
+        assert_eq!(
+            "every:30m".parse::<Schedule>().expect("parses"),
+            Schedule::Every(Duration::from_secs(30 * 60))
+        );
+    }
+
+    #[test]
+    fn every_rejects_units_outside_the_documented_grammar() {
+        assert!("every:6s".parse::<Schedule>().is_err());
+        assert!("every:2d".parse::<Schedule>().is_err());
+    }
+
+    #[test]
+    fn an_unrecognised_shape_names_every_accepted_form() {
+        let error = "hourly:12:00".parse::<Schedule>().expect_err("rejected");
+        assert!(error.contains("daily:HH:MM"), "{error}");
+        assert!(error.contains("every:<N>m"), "{error}");
+
+        assert!("nonsense".parse::<Schedule>().is_err());
+        assert!("weekly:sunday".parse::<Schedule>().is_err());
     }
 }
 

@@ -44,33 +44,12 @@ fn list(args: &RemoteArgs) -> Exit {
             .map_or_else(|| "4 (default)".to_owned(), |n| n.to_string());
         println!(
             "  {:<10}{:<32}{:<18}{tolerance}",
-            clip(&remote.name, 9),
-            fit(&remote.path, 31),
+            render::clip(&remote.name, 9),
+            render::fit(&remote.path, 31),
             flags
         );
     }
     Exit::Ok
-}
-
-/// Keeps a name inside its column, losing the end rather than the start.
-fn clip(text: &str, width: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= width {
-        return text.to_owned();
-    }
-    let kept: String = chars[..width.saturating_sub(1)].iter().collect();
-    format!("{kept}~")
-}
-
-/// Keeps a path inside its column, losing the start rather than the end - a path's
-/// tail is the informative half.
-fn fit(text: &str, width: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= width {
-        return text.to_owned();
-    }
-    let kept: String = chars[chars.len() - (width - 1)..].iter().collect();
-    format!("~{kept}")
 }
 
 fn add_remote(args: &RemoteArgs, add: &RemoteAddArgs) -> Exit {

@@ -6,8 +6,9 @@
 //! persisted store, and writes that variable back into the shell rc file so the next
 //! run skips discovery.
 //!
-//! Resolution order: `TYCHO_SRC` if it points at a Tycho checkout, then a bounded scan
-//! of the usual checkout roots, then the current directory.
+//! Resolution order: `TYCHO_SRC` if it points at a Tycho checkout, then the config
+//! file's `source` key if it points at one, then a bounded scan of the usual checkout
+//! roots, then the current directory.
 //!
 //! Colour goes through `cli::render` rather than the `colored` crate the sibling tools
 //! use. Not a dependency argument - `colored` has no transitive ones - but this crate
@@ -19,6 +20,7 @@ use crate::cli::Cli;
 use crate::cli::render::{CYAN, DIM, GREEN, paint};
 use clap::{Args, CommandFactory};
 use clap_complete::{Shell as CompShell, generate};
+use serde::Deserialize;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -107,8 +109,26 @@ fn row(label: &str, value: &str, colour: &str) {
 }
 
 fn resolve_source() -> Result<PathBuf, String> {
-    if let Some(raw) = std::env::var_os(SRC_ENV) {
-        let path = expand_tilde(&raw.to_string_lossy());
+    let config = crate::platform::config_path()
+        .ok()
+        .and_then(|path| config_source(path.as_path()));
+    resolve_source_with(
+        std::env::var_os(SRC_ENV).map(|value| value.to_string_lossy().into_owned()),
+        config,
+        discover,
+    )
+}
+
+/// The decision itself, with every source of a candidate passed in rather than read
+/// live - which is what lets a bad or absent one be exercised without a real
+/// `$TYCHO_SRC`, config file or home directory.
+fn resolve_source_with(
+    env: Option<String>,
+    config: Option<PathBuf>,
+    scan: impl FnOnce() -> Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    if let Some(raw) = env {
+        let path = expand_home(&raw);
         if is_tycho_checkout(&path) {
             return Ok(path);
         }
@@ -118,7 +138,17 @@ fn resolve_source() -> Result<PathBuf, String> {
             path.display()
         );
     }
-    if let Some(found) = discover() {
+    if let Some(path) = config {
+        if is_tycho_checkout(&path) {
+            return Ok(path);
+        }
+        eprintln!(
+            "  {} the config's source = '{}' is not a tycho checkout - ignoring",
+            paint("note:", DIM),
+            path.display()
+        );
+    }
+    if let Some(found) = scan() {
         return Ok(found);
     }
     let cwd = std::env::current_dir().map_err(|error| format!("cannot read cwd: {error}"))?;
@@ -133,6 +163,21 @@ fn resolve_source() -> Result<PathBuf, String> {
     Err(format!(
         "no tycho checkout found.\n  Set {SRC_ENV} to the repo path, e.g.\n    {example}"
     ))
+}
+
+/// The config file's own `source` key alone: top-level, a sibling of `version`, and
+/// read leniently rather than through `config::parse`, which validates backup
+/// semantics this key is not part of and would refuse a file this build cannot fully
+/// understand - exactly the file `__bootstrap` is most likely to be run against.
+#[derive(Debug, Default, Deserialize)]
+struct SourceProbe {
+    source: Option<String>,
+}
+
+fn config_source(path: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let probe: SourceProbe = toml::from_str(&text).ok()?;
+    probe.source.map(|raw| expand_home(&raw))
 }
 
 /// Where a checkout plausibly lives, per platform.
@@ -443,8 +488,16 @@ fn home() -> Result<PathBuf, String> {
     std::env::home_dir().ok_or_else(|| "there is no home directory".to_owned())
 }
 
-fn expand_tilde(text: &str) -> PathBuf {
-    match text.strip_prefix("~/").or_else(|| text.strip_prefix("~\\")) {
+/// Expands a leading `~/`, `~\`, `$HOME/` or `${HOME}/` - the same two spellings
+/// `config`'s watch paths accept unexpanded, so a value stored either way in
+/// `TYCHO_SRC` or the config file resolves the same.
+fn expand_home(text: &str) -> PathBuf {
+    let rest = text
+        .strip_prefix("~/")
+        .or_else(|| text.strip_prefix("~\\"))
+        .or_else(|| text.strip_prefix("$HOME/"))
+        .or_else(|| text.strip_prefix("${HOME}/"));
+    match rest {
         Some(rest) => std::env::home_dir().map_or_else(|| PathBuf::from(text), |h| h.join(rest)),
         None => PathBuf::from(text),
     }
@@ -452,7 +505,18 @@ fn expand_tilde(text: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{SKIP_DIRS, is_tycho_checkout};
+    use super::{SKIP_DIRS, config_source, expand_home, is_tycho_checkout, resolve_source_with};
+    use std::path::PathBuf;
+
+    fn checkout() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"tycho\"\n",
+        )
+        .expect("write");
+        dir
+    }
 
     /// The manifest's `name`, not the directory's: a checkout cloned under another
     /// name is still a checkout, and a folder called `tycho` holding something else
@@ -483,5 +547,88 @@ mod tests {
     fn the_scan_skips_the_directories_that_would_make_it_slow() {
         assert!(SKIP_DIRS.contains(&"target"));
         assert!(SKIP_DIRS.contains(&"node_modules"));
+    }
+
+    #[test]
+    fn expand_home_accepts_dollar_home_as_well_as_tilde() {
+        let home = std::env::home_dir().expect("a home dir for the test host");
+        assert_eq!(
+            expand_home("~/Developer/tycho"),
+            home.join("Developer/tycho")
+        );
+        assert_eq!(
+            expand_home("$HOME/Developer/tycho"),
+            home.join("Developer/tycho")
+        );
+        assert_eq!(
+            expand_home("${HOME}/Developer/tycho"),
+            home.join("Developer/tycho")
+        );
+        assert_eq!(
+            expand_home("/already/absolute"),
+            PathBuf::from("/already/absolute")
+        );
+    }
+
+    #[test]
+    fn config_source_reads_the_top_level_key() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("tycho.toml");
+        std::fs::write(&path, "version = 1\nsource = \"~/Developer/tycho\"\n").expect("write");
+        assert_eq!(config_source(&path), Some(expand_home("~/Developer/tycho")));
+    }
+
+    #[test]
+    fn config_source_is_none_without_the_key_the_file_or_valid_toml() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("tycho.toml");
+
+        std::fs::write(&path, "version = 1\n").expect("write");
+        assert_eq!(config_source(&path), None, "no source key");
+
+        std::fs::write(&path, "not valid toml =====").expect("write");
+        assert_eq!(config_source(&path), None, "malformed file");
+
+        assert_eq!(
+            config_source(&dir.path().join("missing.toml")),
+            None,
+            "no file at all"
+        );
+    }
+
+    /// Requirement: the config's source is used when nothing else names one.
+    #[test]
+    fn config_source_wins_over_the_scan() {
+        let config = checkout();
+        let scanned = checkout();
+        let result = resolve_source_with(None, Some(config.path().to_path_buf()), || {
+            Some(scanned.path().to_path_buf())
+        });
+        assert_eq!(result, Ok(config.path().to_path_buf()));
+    }
+
+    /// Requirement: a config `source` that is not a checkout is a note, not a
+    /// failure - the scan still runs.
+    #[test]
+    fn a_bad_config_source_falls_through_to_the_scan() {
+        let not_a_checkout = tempfile::tempdir().expect("temp dir");
+        let scanned = checkout();
+        let result = resolve_source_with(None, Some(not_a_checkout.path().to_path_buf()), || {
+            Some(scanned.path().to_path_buf())
+        });
+        assert_eq!(result, Ok(scanned.path().to_path_buf()));
+    }
+
+    /// Requirement: `TYCHO_SRC` outranks the config, which outranks the scan.
+    #[test]
+    fn tycho_src_still_beats_the_config() {
+        let env = checkout();
+        let config = checkout();
+        let result = resolve_source_with(
+            Some(env.path().display().to_string()),
+            Some(config.path().to_path_buf()),
+            || None,
+        );
+        assert_eq!(result, Ok(env.path().to_path_buf()));
     }
 }

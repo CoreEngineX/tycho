@@ -88,7 +88,7 @@ pub fn plural(value: usize, word: &str) -> String {
 
 /// Keeps a value inside its column. A path's tail is the informative half, so an
 /// over-long one loses its head rather than its name.
-fn fit(text: &str, width: usize) -> String {
+pub(crate) fn fit(text: &str, width: usize) -> String {
     let chars: Vec<char> = text.chars().collect();
     if chars.len() <= width {
         return text.to_owned();
@@ -102,7 +102,7 @@ fn fit(text: &str, width: usize) -> String {
 /// The opposite of [`fit`], and both are right: a path's tail is its name, while a
 /// sentence's head is its subject. Truncating "available, delivery not tested" from
 /// the left produced "~able, delivery not tested", which reads as a different word.
-fn clip(text: &str, width: usize) -> String {
+pub(crate) fn clip(text: &str, width: usize) -> String {
     let chars: Vec<char> = text.chars().collect();
     if chars.len() <= width {
         return text.to_owned();

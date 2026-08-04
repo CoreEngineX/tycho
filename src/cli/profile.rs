@@ -45,23 +45,12 @@ fn list(config: Option<PathBuf>) -> Exit {
         };
         println!(
             "  {:<14}{:<14}{:<14}{schedule}",
-            clip(name, 13),
+            render::clip(name, 13),
             render::plural(watch, "root"),
             remotes_label
         );
     }
     Exit::Ok
-}
-
-/// Keeps a name inside its column, losing the end rather than the start - a name is
-/// its own subject, unlike a path whose tail is the informative half.
-fn clip(text: &str, width: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= width {
-        return text.to_owned();
-    }
-    let kept: String = chars[..width.saturating_sub(1)].iter().collect();
-    format!("{kept}~")
 }
 
 /// One `--remote NAME=PATH` after splitting, before the ownership check that
