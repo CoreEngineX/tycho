@@ -54,6 +54,39 @@ pub const GREEN: &str = "32";
 pub const DIM: &str = "2";
 pub const CYAN: &str = "36";
 
+/// The header row and the rule under it: structure rather than content.
+#[must_use]
+pub fn chrome(text: &str) -> String {
+    paint(text, DIM)
+}
+
+/// Something the reader will retype - a profile, a remote, a path. The same cyan
+/// `report!` gives a location, so one colour means one thing across the whole binary.
+#[must_use]
+pub fn name(text: &str) -> String {
+    paint(text, CYAN)
+}
+
+/// Which direction a change went.
+///
+/// Passed in rather than read off the verb, because `verdict_word` already records why
+/// the palette must not depend on prose: a reworded message would silently recolour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Change {
+    Gained,
+    Lost,
+}
+
+/// What a command did: `added          cex`.
+#[must_use]
+pub fn echo(change: Change, verb: &str, value: &str) -> String {
+    let colour = match change {
+        Change::Gained => GREEN,
+        Change::Lost => YELLOW,
+    };
+    format!("{} {}", paint(&format!("{verb:<14}"), colour), name(value))
+}
+
 /// `8,412`.
 #[must_use]
 pub fn count(value: usize) -> String {
@@ -250,7 +283,7 @@ pub fn config_check(summaries: &[String], diagnostics: &[Diagnostic]) -> String 
     let warnings = diagnostics.len() - errors;
 
     if diagnostics.is_empty() {
-        let _ = writeln!(out, "\nok, no errors");
+        let _ = writeln!(out, "\n{}", paint("ok, no errors", GREEN));
         return out;
     }
 

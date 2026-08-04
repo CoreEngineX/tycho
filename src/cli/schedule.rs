@@ -1,5 +1,6 @@
 //! `tycho schedule`: show, set or clear a profile's run schedule.
 
+use crate::cli::render::Change;
 use crate::cli::report::report;
 use crate::cli::{Exit, ScheduleAction, ScheduleArgs, render};
 use crate::config::{Config, Profile, Schedule};
@@ -22,10 +23,19 @@ fn show(args: &ScheduleArgs) -> Exit {
         Ok(profile) => profile,
         Err(exit) => return exit,
     };
-    let name = render::clip(profile.name.as_str(), 13);
+    let name = render::name(&format!("{:<14}", render::clip(profile.name.as_str(), 13)));
     match profile.schedule {
-        Some(schedule) => println!("{name:<14}  {}", render::say(schedule)),
-        None => println!("{name:<14}  no schedule, runs only when invoked by hand"),
+        Some(schedule) => println!(
+            "{name}  {}",
+            render::paint(&render::say(schedule), render::GREEN)
+        ),
+        None => println!(
+            "{name}  {}",
+            render::paint(
+                "no schedule, runs only when invoked by hand",
+                render::YELLOW
+            )
+        ),
     }
     Exit::Ok
 }
@@ -55,7 +65,7 @@ fn set(args: &ScheduleArgs, spec: &str) -> Exit {
         return report! { error: "{error}" };
     }
     let said = render::say(schedule);
-    finish(&editing, "scheduled", &said)
+    finish(&editing, Change::Gained, "scheduled", &said)
 }
 
 fn off(args: &ScheduleArgs) -> Exit {
@@ -66,14 +76,14 @@ fn off(args: &ScheduleArgs) -> Exit {
     if let Err(error) = editing.clear_schedule(index) {
         return report! { error: "{error}" };
     }
-    finish(&editing, "cleared", "schedule")
+    finish(&editing, Change::Lost, "cleared", "schedule")
 }
 
-fn finish(editing: &Editing, verb: &str, value: &str) -> Exit {
+fn finish(editing: &Editing, change: Change, verb: &str, value: &str) -> Exit {
     if let Err(error) = editing.save() {
         return report! { error: "{error}" };
     }
-    println!("{verb:<14} {value}");
+    println!("{}", render::echo(change, verb, value));
 
     let Ok(parsed) = crate::config::parse(&editing.text()) else {
         return report! {

@@ -1,6 +1,7 @@
 //! `tycho watch`, `tycho ignore` and `tycho reinclude`: the same three verbs over
 //! three lists, so one implementation serves all of them.
 
+use crate::cli::render::Change;
 use crate::cli::report::{at_file, report};
 use crate::cli::{Exit, RuleAction, RuleArgs};
 use crate::config_edit::{Editing, List};
@@ -55,12 +56,12 @@ pub fn dispatch(list: List, args: &RuleArgs) -> Exit {
                     println!("already there  {value}");
                     Exit::Ok
                 }
-                Ok(true) => finish(&editing, "added", value),
+                Ok(true) => finish(&editing, Change::Gained, "added", value),
                 Err(error) => report! { error: "{error}" },
             }
         }
         RuleAction::Rm { value } => match editing.remove(profile, list, value) {
-            Ok(()) => finish(&editing, "removed", value),
+            Ok(()) => finish(&editing, Change::Lost, "removed", value),
             Err(error) => report! { error: "{error}" },
         },
     }
@@ -71,11 +72,11 @@ pub fn dispatch(list: List, args: &RuleArgs) -> Exit {
 /// Checking afterwards rather than before is deliberate: the thing worth catching is
 /// a rule that is legal TOML and wrong - a watched root that does not exist, a glob
 /// that will match nothing - and only the resulting file can be checked for that.
-fn finish(editing: &Editing, verb: &str, value: &str) -> Exit {
+fn finish(editing: &Editing, change: Change, verb: &str, value: &str) -> Exit {
     if let Err(error) = editing.save() {
         return report! { error: "{error}" };
     }
-    println!("{verb:<14} {value}");
+    println!("{}", crate::cli::render::echo(change, verb, value));
 
     let Ok(parsed) = crate::config::parse(&editing.text()) else {
         return report! {

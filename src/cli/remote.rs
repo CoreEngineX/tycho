@@ -1,5 +1,6 @@
 //! `tycho remote`: list, add and remove a profile's destinations.
 
+use crate::cli::render::Change;
 use crate::cli::report::{at_profile, at_remote, report};
 use crate::cli::{Exit, RemoteAction, RemoteAddArgs, RemoteArgs, RemoteRmArgs, render};
 use crate::config_edit::{Editing, NewRemote};
@@ -24,8 +25,14 @@ fn list(args: &RemoteArgs) -> Exit {
         println!("no remotes, local only");
         return Exit::Ok;
     }
-    println!("{:<12}{:<32}{:<18}tolerance", "name", "path", "flags");
-    println!("{}", "-".repeat(render::WIDTH));
+    println!(
+        "{}",
+        render::chrome(&format!(
+            "{:<10}{:<41}{:<17}behind",
+            "name", "path", "flags"
+        ))
+    );
+    println!("{}", render::chrome(&"-".repeat(render::WIDTH)));
     for remote in &remotes {
         let mut flags = Vec::new();
         if remote.optional {
@@ -34,19 +41,25 @@ fn list(args: &RemoteArgs) -> Exit {
         if remote.trust_ownership {
             flags.push("trust-ownership");
         }
-        let flags = if flags.is_empty() {
-            "-".to_owned()
+        // `trust-ownership` waives a real check, so it is the one flag worth seeing
+        // from across the table.
+        let flags_cell = format!("{:<17}", flags.join(","));
+        let flags_cell = if flags.is_empty() {
+            render::chrome(&format!("{:<17}", "-"))
+        } else if remote.trust_ownership {
+            render::paint(&flags_cell, render::YELLOW)
         } else {
-            flags.join(",")
+            flags_cell
         };
+        // The number alone, dimmed when it is the default - `4 (default)` spent
+        // eleven columns saying one digit, and the path is what needs them.
         let tolerance = remote
             .behind_tolerance
-            .map_or_else(|| "4 (default)".to_owned(), |n| n.to_string());
+            .map_or_else(|| render::chrome("4"), |n| n.to_string());
         println!(
-            "  {:<10}{:<32}{:<18}{tolerance}",
-            render::clip(&remote.name, 9),
-            render::fit(&remote.path, 31),
-            flags
+            "  {}{:<41}{flags_cell}{tolerance}",
+            render::name(&format!("{:<8}", render::clip(&remote.name, 7))),
+            render::fit(&remote.path, 40)
         );
     }
     Exit::Ok
@@ -98,7 +111,7 @@ fn add_remote(args: &RemoteArgs, add: &RemoteAddArgs) -> Exit {
     if let Err(error) = editing.add_remote(index, &new) {
         return report! { error: "{error}" };
     }
-    finish(&editing, "added", raw_name, floor)
+    finish(&editing, Change::Gained, "added", raw_name, floor)
 }
 
 fn remove_remote(args: &RemoteArgs, rm: &RemoteRmArgs) -> Exit {
@@ -140,7 +153,7 @@ fn remove_remote(args: &RemoteArgs, rm: &RemoteRmArgs) -> Exit {
     {
         return report! { error: "{error}" };
     }
-    finish(&editing, "removed", raw_name, Exit::Ok)
+    finish(&editing, Change::Lost, "removed", raw_name, Exit::Ok)
 }
 
 /// Fails fast, at add time: refuses a remote whose volume git will refuse to trust,
@@ -206,11 +219,11 @@ fn nearest_existing(path: &Path) -> Option<&Path> {
 /// Writes the file, then re-validates it, folding in whatever [`Exit`] the caller had
 /// already earned - the ownership check's warning must not be lost under a clean
 /// re-validation.
-fn finish(editing: &Editing, verb: &str, value: &str, floor: Exit) -> Exit {
+fn finish(editing: &Editing, change: Change, verb: &str, value: &str, floor: Exit) -> Exit {
     if let Err(error) = editing.save() {
         return report! { error: "{error}" };
     }
-    println!("{verb:<14} {value}");
+    println!("{}", render::echo(change, verb, value));
 
     let Ok(parsed) = crate::config::parse(&editing.text()) else {
         return report! {

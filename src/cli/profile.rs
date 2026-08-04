@@ -1,6 +1,7 @@
 //! `tycho profile`: list, add and remove profiles in the config file.
 
 use crate::cli::remote::{check_ownership, worse};
+use crate::cli::render::Change;
 use crate::cli::report::{at_profile, report};
 use crate::cli::{Exit, ProfileAction, ProfileAddArgs, ProfileArgs, ProfileRmArgs, render};
 use crate::config::Schedule;
@@ -26,28 +27,35 @@ fn list(config: Option<PathBuf>) -> Exit {
         println!("no profiles");
         return Exit::Ok;
     }
-    println!("{:<16}{:<14}{:<14}schedule", "name", "watch", "remotes");
-    println!("{}", "-".repeat(render::WIDTH));
+    println!(
+        "{}",
+        render::chrome(&format!(
+            "{:<16}{:<14}{:<14}schedule",
+            "name", "watch", "remotes"
+        ))
+    );
+    println!("{}", render::chrome(&"-".repeat(render::WIDTH)));
     for (index, name) in names.iter().enumerate() {
         let watch = editing
             .entries(index, crate::config_edit::List::Watch)
             .len();
         let remotes = editing.remotes(index).len();
-        let remotes_label = if remotes == 0 {
-            "local only".to_owned()
+        // Painted after padding, so colour never changes a column's width.
+        let remotes_cell = format!("{:<14}", render::plural(remotes, "remote"));
+        let remotes_cell = if remotes == 0 {
+            render::paint(&format!("{:<14}", "local only"), render::YELLOW)
         } else {
-            render::plural(remotes, "remote")
+            remotes_cell
         };
         let schedule = if editing.has_schedule(index) {
-            "set"
+            render::paint("set", render::GREEN)
         } else {
-            "none"
+            render::paint("none", render::YELLOW)
         };
         println!(
-            "  {:<14}{:<14}{:<14}{schedule}",
-            render::clip(name, 13),
-            render::plural(watch, "root"),
-            remotes_label
+            "  {}{:<14}{remotes_cell}{schedule}",
+            render::name(&format!("{:<14}", render::clip(name, 13))),
+            render::plural(watch, "root")
         );
     }
     Exit::Ok
@@ -197,7 +205,7 @@ fn add_profile(config: Option<PathBuf>, args: &ProfileAddArgs) -> Exit {
     if let Err(error) = editing.add_profile(&new_profile) {
         return report! { error: "{error}" };
     }
-    finish(&editing, "added", raw_name, floor)
+    finish(&editing, Change::Gained, "added", raw_name, floor)
 }
 
 fn remove_profile(config: Option<PathBuf>, rm: &ProfileRmArgs) -> Exit {
@@ -260,14 +268,14 @@ fn remove_profile(config: Option<PathBuf>, rm: &ProfileRmArgs) -> Exit {
     if let Err(error) = editing.remove_profile(index) {
         return report! { error: "{error}" };
     }
-    finish(&editing, "removed", raw_name, Exit::Ok)
+    finish(&editing, Change::Lost, "removed", raw_name, Exit::Ok)
 }
 
-fn finish(editing: &Editing, verb: &str, value: &str, floor: Exit) -> Exit {
+fn finish(editing: &Editing, change: Change, verb: &str, value: &str, floor: Exit) -> Exit {
     if let Err(error) = editing.save() {
         return report! { error: "{error}" };
     }
-    println!("{verb:<14} {value}");
+    println!("{}", render::echo(change, verb, value));
 
     let Ok(parsed) = crate::config::parse(&editing.text()) else {
         return report! {
