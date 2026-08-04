@@ -155,12 +155,19 @@ change whenever a file was touched and every run would commit a diff that says n
 `com.apple.quarantine` - restoring it would have Gatekeeper treat a recovered file as
 downloaded from the internet, which is worse than losing the attribute.
 
-**Files only.** The manifest is built from the plan's entries, which are files; a
-directory has no record and comes back at whatever `tar` gives it. Measured on the
-Acme fixture: 15 file records against 20 tree paths, and `Contracts/signed` went in at
-`drwxrwxrwx` and came back `drwxr-xr-x`. The files inside it are correct, which is
-where the secrets are, but the containing directory is not - worth closing, and worth
-not implying otherwise in the meantime.
+**Directories are covered; a rebuilt repository is not.** Each stored path is walked
+up alongside its source, so `Acme/Contracts/signed` carries its own mode and a `0700`
+directory holding a key comes back `0700` rather than listable.
+
+What stays outside is a captured repository's working tree. Those files are restored
+by `git` during the rebuild rather than extracted from the backup tree - their
+manifest records sit under `.tycho/repos/<key>/overlay/`, which is where the overlay
+lives, not where the checkout lands. So a rebuilt repository's directories and files
+take whatever git and the umask give them, and git keeps only the execute bit.
+Measured on the Acme fixture: `Contracts/signed` restored `drwxrwxrwx` exactly, while
+`Projects/atlas-web` - a repository root - came back `drwxr-xr-x`. Closing that means
+recording modes for a checkout git is going to write, which is a different mechanism
+from this one.
 
 **What a restore can and cannot put back.** The mode always: it needs no privilege.
 The owner only when the process can, which in practice means root, so an ordinary

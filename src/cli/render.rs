@@ -768,8 +768,8 @@ pub fn restored(into: &std::path::Path, done: &crate::restore::Done) -> String {
 
     let _ = writeln!(
         out,
-        "\nnote      timestamps are not restored, and directories come back at the\n\
-         \x20         default mode - the manifest records files\n\n\
+        "\nnote      timestamps are not restored, and a rebuilt repository's own tree\n\
+         \x20         comes from git, which keeps only the execute bit\n\n\
          done      {}",
         abbreviate(&into.display().to_string())
     );
