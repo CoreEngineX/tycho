@@ -1,13 +1,16 @@
 //! What `run` and `config` actually do.
 
 use crate::capture::{Inspection, inspect};
+use crate::cli::report::{at_file, at_profile, at_remote, at_store, report};
 use crate::cli::{ConfigAction, ConfigArgs, Exit, RunArgs, render};
 use crate::config::{Config, Parsed, Profile, Schedule};
 use crate::plan::Plan;
+use crate::plan::PlanError;
 use crate::platform;
 use crate::remote::state::RemoteState;
 use crate::restore::{self, resolve};
 use crate::state::State;
+use crate::store::run::RunError;
 use crate::store::{self, Store};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,8 +21,10 @@ pub fn run(args: &RunArgs) -> Exit {
     };
     if parsed.has_errors() {
         eprint!("{}", render::config_check(&[], &parsed.diagnostics));
-        eprintln!("tycho: the config has errors, so nothing was backed up");
-        return Exit::Failure;
+        return report! {
+            error: "the config has errors, so nothing was backed up",
+            recovery: { "tycho config check" => "shows every error and warning" },
+        };
     }
     let Some(profiles) = selected(&parsed.config, args.profile.as_deref(), args.all) else {
         return Exit::Failure;
@@ -40,20 +45,14 @@ fn one_run(args: &RunArgs, profile: &Profile, config_text: &str) -> Exit {
     };
     let mut state = match State::load(paths.state.as_path()) {
         Ok(state) => state,
-        Err(error) => {
-            eprintln!("tycho: {error}");
-            return Exit::Failure;
-        }
+        Err(error) => return report! { error: "{error}", at: at_file(paths.state.as_path()) },
     };
 
     if args.dry_run {
         let previous = state.last_entries(profile.name.as_str());
         let plan = match store::run::dry(profile, &previous, args.allow_shrink) {
             Ok(plan) => plan,
-            Err(error) => {
-                eprintln!("tycho: {error}");
-                return Exit::Failure;
-            }
+            Err(error) => return run_error(&error, profile),
         };
         let repos = if args.quick {
             Vec::new()
@@ -62,17 +61,14 @@ fn one_run(args: &RunArgs, profile: &Profile, config_text: &str) -> Exit {
         };
         print!("{}", render::dry_run(&plan, &repos, args.quick));
         for warning in plan.warnings() {
-            eprintln!("warn  {warning:?}");
+            let _ = report! { warning: "{warning:?}" };
         }
         return Exit::Ok;
     }
 
     let store = match Store::open_or_init(&paths.store) {
         Ok(store) => store,
-        Err(error) => {
-            eprintln!("tycho: {error}");
-            return Exit::Failure;
-        }
+        Err(error) => return report! { error: "{error}", at: at_store(paths.store.as_path()) },
     };
     let run_paths = store::run::Paths {
         lock: paths.lock.as_path(),
@@ -82,15 +78,12 @@ fn one_run(args: &RunArgs, profile: &Profile, config_text: &str) -> Exit {
     let done = match store::run::execute(profile, &store, &run_paths, &mut state, args.allow_shrink)
     {
         Ok(done) => done,
-        Err(error) => {
-            eprintln!("tycho: {error}");
-            return Exit::Failure;
-        }
+        Err(error) => return run_error(&error, profile),
     };
 
     print!("{}", render::run_result(profile.name.as_str(), &done));
     for warning in &done.warnings {
-        eprintln!("warn  {warning}");
+        let _ = report! { warning: "{warning}" };
     }
 
     // A quiet green run over an incomplete backup is the exact failure this project
@@ -101,15 +94,34 @@ fn one_run(args: &RunArgs, profile: &Profile, config_text: &str) -> Exit {
         .repos_found
         .saturating_sub(done.summary.repos_captured);
     if missed > 0 {
-        eprintln!(
-            "warn  {missed} of {} repositories were not captured",
-            done.summary.repos_found
-        );
+        let found = done.summary.repos_found;
+        let _ = report! { warning: "{missed} of {found} repositories were not captured" };
         incomplete = Exit::Warning;
     }
     let outcome = worse(report(&done.remotes), incomplete);
     announce(profile, outcome, &done.remotes);
     outcome
+}
+
+/// A run's failure, structured. `RootShrank` and `InProgress` are worth a specific
+/// recovery; everything else already says what happened in its own message.
+fn run_error(error: &RunError, profile: &Profile) -> Exit {
+    let name = profile.name.as_str();
+    match error {
+        RunError::InProgress(_) => report! {
+            error: "{error}",
+            at: at_profile(name),
+            note: "another `tycho run` for this profile, or its scheduled agent, holds the lock",
+        },
+        RunError::Plan(PlanError::RootShrank { .. }) => report! {
+            error: "{error}",
+            at: at_profile(name),
+            recovery: {
+                "tycho run --profile {name} --allow-shrink" => "back it up anyway",
+            },
+        },
+        _ => report! { error: "{error}", at: at_profile(name) },
+    }
 }
 
 /// Failure is loud on four channels, and this is the third of them: the exit code and
@@ -181,7 +193,7 @@ fn locations(profile: &Profile) -> Option<Locations> {
             // First run on a machine: nothing has made the data directory yet, and
             // the lock file cannot be created inside one that is not there.
             if let Err(error) = std::fs::create_dir_all(dir.as_path()) {
-                eprintln!("tycho: creating {dir}: {error}");
+                let _ = report! { error: "{error}", at: at_file(dir.as_path()) };
                 return None;
             }
             let lock = crate::primitives::path::AbsPath::from_absolute(
@@ -190,13 +202,13 @@ fn locations(profile: &Profile) -> Option<Locations> {
             match lock {
                 Ok(lock) => Some(Locations { store, state, lock }),
                 Err(error) => {
-                    eprintln!("tycho: {error}");
+                    let _ = report! { error: "{error}" };
                     None
                 }
             }
         }
         (Err(error), ..) | (_, Err(error), _) | (_, _, Err(error)) => {
-            eprintln!("tycho: {error}");
+            let _ = report! { error: "{error}" };
             None
         }
     }
@@ -214,10 +226,7 @@ pub fn history(args: &crate::cli::HistoryArgs) -> Exit {
     };
     let store = match Store::open_or_init(&paths.store) {
         Ok(store) => store,
-        Err(error) => {
-            eprintln!("tycho: {error}");
-            return Exit::Failure;
-        }
+        Err(error) => return report! { error: "{error}", at: at_store(paths.store.as_path()) },
     };
     if let Some(path) = &args.path {
         return path_history(&store, path, args.count);
@@ -227,10 +236,7 @@ pub fn history(args: &crate::cli::HistoryArgs) -> Exit {
             print!("{}", render::history(&backups));
             Exit::Ok
         }
-        Err(error) => {
-            eprintln!("tycho: {error}");
-            Exit::Failure
-        }
+        Err(error) => report! { error: "{error}", at: at_store(paths.store.as_path()) },
     }
 }
 
@@ -245,20 +251,14 @@ fn path_history(store: &Store, path: &Path, count: usize) -> Exit {
     };
     let resolved = match resolve::resolve(store, &backup, path) {
         Ok(resolved) => resolved,
-        Err(error) => {
-            eprintln!("tycho: {error}");
-            return Exit::Failure;
-        }
+        Err(error) => return report! { error: "{error}", at: at_file(path) },
     };
     match resolve::history(store, &resolved, count) {
         Ok(commits) => {
             print!("{}", render::path_history(path, &resolved, &commits));
             Exit::Ok
         }
-        Err(error) => {
-            eprintln!("tycho: {error}");
-            Exit::Failure
-        }
+        Err(error) => report! { error: "{error}", at: at_file(path) },
     }
 }
 
@@ -267,18 +267,21 @@ fn newest(store: &Store) -> Option<resolve::Backup> {
     let commit = match store.at(None) {
         Ok(Some(commit)) => commit,
         Ok(None) => {
-            eprintln!("tycho: this store holds no backups yet");
+            let _ = report! {
+                error: "this store holds no backups yet",
+                recovery: { "tycho run" => "creates the first one" },
+            };
             return None;
         }
         Err(error) => {
-            eprintln!("tycho: {error}");
+            let _ = report! { error: "{error}" };
             return None;
         }
     };
     match resolve::Backup::read(store, commit) {
         Ok(backup) => Some(backup),
         Err(error) => {
-            eprintln!("tycho: {error}");
+            let _ = report! { error: "{error}" };
             None
         }
     }
@@ -302,7 +305,11 @@ pub fn push(args: &crate::cli::PushArgs) -> Exit {
 
 fn one_push(profile: &Profile, config_text: &str) -> Exit {
     if profile.remotes.is_empty() {
-        eprintln!("tycho: {} has no remotes to push to", profile.name);
+        let name = profile.name.as_str();
+        let _ = report! {
+            warning: "{name} has no remotes to push to",
+            recovery: { "tycho remote add <name> <path> -p {name}" => "gives it somewhere to push" },
+        };
         return Exit::Ok;
     }
     let Some(paths) = locations(profile) else {
@@ -310,17 +317,11 @@ fn one_push(profile: &Profile, config_text: &str) -> Exit {
     };
     let mut state = match State::load(paths.state.as_path()) {
         Ok(state) => state,
-        Err(error) => {
-            eprintln!("tycho: {error}");
-            return Exit::Failure;
-        }
+        Err(error) => return report! { error: "{error}", at: at_file(paths.state.as_path()) },
     };
     let store = match Store::open_or_init(&paths.store) {
         Ok(store) => store,
-        Err(error) => {
-            eprintln!("tycho: {error}");
-            return Exit::Failure;
-        }
+        Err(error) => return report! { error: "{error}", at: at_store(paths.store.as_path()) },
     };
     let run_paths = store::run::Paths {
         lock: paths.lock.as_path(),
@@ -340,10 +341,7 @@ fn one_push(profile: &Profile, config_text: &str) -> Exit {
             );
             report(&results)
         }
-        Err(error) => {
-            eprintln!("tycho: {error}");
-            Exit::Failure
-        }
+        Err(error) => run_error(&error, profile),
     }
 }
 
@@ -366,15 +364,19 @@ const fn worse(a: Exit, b: Exit) -> Exit {
 fn report(results: &[store::run::RemoteResult]) -> Exit {
     let mut exit = Exit::Ok;
     for result in results {
+        let name = result.name.as_str();
         match &result.state {
             RemoteState::Failed { reason, .. } => {
-                eprintln!("error {}: {reason}", result.name);
+                let _ = report! { error: "{reason}", at: at_remote(name) };
                 exit = Exit::Failure;
             }
-            RemoteState::Behind { runs, .. } => eprintln!(
-                "warn  {} is behind {runs} of {}",
-                result.name, result.tolerance
-            ),
+            RemoteState::Behind { runs, .. } => {
+                let tolerance = result.tolerance;
+                let _ = report! {
+                    warning: "behind {runs} of {tolerance}",
+                    at: at_remote(name),
+                };
+            }
             RemoteState::Synced { .. } | RemoteState::Unseen => {}
         }
     }
@@ -395,11 +397,14 @@ pub fn status(args: &crate::cli::StatusArgs) -> Exit {
     let state = match platform::state_path().map(|path| State::load(path.as_path())) {
         Ok(Ok(state)) => state,
         Ok(Err(error)) => {
-            eprintln!("tycho: {error}");
+            let _ = report! {
+                warning: "{error}",
+                note: "showing status with no run history because the state file could not be read",
+            };
             State::default()
         }
         Err(error) => {
-            eprintln!("tycho: {error}");
+            let _ = report! { warning: "{error}" };
             State::default()
         }
     };
@@ -412,8 +417,14 @@ pub fn status(args: &crate::cli::StatusArgs) -> Exit {
         .filter(|profile| wanted.is_none_or(|name| profile.name.as_str() == name))
         .collect();
     if profiles.is_empty() {
-        eprintln!("tycho: no profile named '{}'", wanted.unwrap_or(""));
-        return Exit::Failure;
+        let Some(name) = wanted else {
+            return report! { error: "the config defines no profiles" };
+        };
+        return report! {
+            error: "no profile named '{name}'",
+            at: at_profile(name),
+            recovery: { "tycho profile list" => "names every profile in this file" },
+        };
     }
 
     let reports: Vec<render::ProfileStatus> = profiles
@@ -550,10 +561,7 @@ pub fn restore(args: &crate::cli::RestoreArgs) -> Exit {
             let now = jiff::Timestamp::now().to_zoned(jiff::tz::TimeZone::system());
             match restore::when::parse(text, &now) {
                 Ok(stamp) => Some(stamp),
-                Err(error) => {
-                    eprintln!("tycho: {error}");
-                    return Exit::Failure;
-                }
+                Err(error) => return report! { error: "{error}" },
             }
         }
         None => None,
@@ -567,13 +575,12 @@ pub fn restore(args: &crate::cli::RestoreArgs) -> Exit {
             render::day(&span.newest)
         ),
         Ok(None) => {
-            eprintln!("tycho: this store holds no backups yet");
-            return Exit::Failure;
+            return report! {
+                error: "this store holds no backups yet",
+                recovery: { "tycho run" => "creates the first one" },
+            };
         }
-        Err(error) => {
-            eprintln!("tycho: {error}");
-            return Exit::Failure;
-        }
+        Err(error) => return report! { error: "{error}" },
     }
 
     let wanted = restore::Wanted {
@@ -598,10 +605,7 @@ pub fn restore(args: &crate::cli::RestoreArgs) -> Exit {
                 Exit::Ok
             }
         }
-        Err(error) => {
-            eprintln!("tycho: {error}");
-            Exit::Failure
-        }
+        Err(error) => report! { error: "{error}" },
     }
 }
 
@@ -612,7 +616,7 @@ fn open_source(args: &crate::cli::RestoreArgs) -> Option<Store> {
         crate::cli::Source::Store(path) => match std::path::absolute(&path) {
             Ok(path) => crate::primitives::path::AbsPath::from_absolute(&path),
             Err(error) => {
-                eprintln!("tycho: {}: {error}", path.display());
+                let _ = report! { error: "{error}", at: at_file(&path) };
                 return None;
             }
         },
@@ -626,7 +630,7 @@ fn open_source(args: &crate::cli::RestoreArgs) -> Option<Store> {
     let path = match path {
         Ok(path) => path,
         Err(error) => {
-            eprintln!("tycho: {error}");
+            let _ = report! { error: "{error}" };
             return None;
         }
     };
@@ -634,7 +638,7 @@ fn open_source(args: &crate::cli::RestoreArgs) -> Option<Store> {
     match Store::open_to_read(&path) {
         Ok(store) => Some(store),
         Err(error) => {
-            eprintln!("tycho: {error}");
+            let _ = report! { error: "{error}", at: at_store(path.as_path()) };
             None
         }
     }
@@ -643,10 +647,7 @@ fn open_source(args: &crate::cli::RestoreArgs) -> Option<Store> {
 pub fn config(args: &ConfigArgs) -> Exit {
     let path = match config_location(args.config.clone()) {
         Ok(path) => path,
-        Err(error) => {
-            eprintln!("tycho: {error}");
-            return Exit::Failure;
-        }
+        Err(error) => return report! { error: "{error}" },
     };
 
     if matches!(args.action, ConfigAction::Path) {
@@ -676,18 +677,18 @@ pub fn config(args: &ConfigArgs) -> Exit {
 fn init(path: &Path, force: bool) -> Exit {
     if path.exists() {
         if !force {
-            eprintln!(
-                "tycho: {} already exists; --force overwrites it after writing a .bak",
-                path.display()
-            );
-            return Exit::Failure;
+            return report! {
+                error: "a config file already exists",
+                at: at_file(path),
+                note: "`--force` overwrites it after writing a `.bak` of the original",
+                recovery: { "tycho config init --force" },
+            };
         }
         // A config is a file somebody wrote by hand, so --force keeps a copy rather
         // than trusting that they meant it.
         let backup = path.with_extension("toml.bak");
         if let Err(error) = std::fs::copy(path, &backup) {
-            eprintln!("tycho: copying to {}: {error}", backup.display());
-            return Exit::Failure;
+            return report! { error: "{error}", at: at_file(&backup) };
         }
         println!("kept           {}", backup.display());
     }
@@ -695,16 +696,14 @@ fn init(path: &Path, force: bool) -> Exit {
     if let Some(parent) = path.parent()
         && let Err(error) = std::fs::create_dir_all(parent)
     {
-        eprintln!("tycho: creating {}: {error}", parent.display());
-        return Exit::Failure;
+        return report! { error: "{error}", at: at_file(parent) };
     }
 
     let home =
         std::env::home_dir().map_or_else(|| "~".to_owned(), |home| home.display().to_string());
     let text = crate::config_edit::starter(&home);
     if let Err(error) = crate::sys::fs::write_atomic(path, text.as_bytes()) {
-        eprintln!("tycho: writing {}: {error}", path.display());
-        return Exit::Failure;
+        return report! { error: "{error}", at: at_file(path) };
     }
 
     println!("wrote          {}", path.display());
@@ -751,7 +750,7 @@ pub(crate) fn load(override_path: Option<PathBuf>) -> Option<(Parsed, String)> {
     let path = match config_location(override_path) {
         Ok(path) => path,
         Err(error) => {
-            eprintln!("tycho: {error}");
+            let _ = report! { error: "{error}" };
             return None;
         }
     };
@@ -760,14 +759,21 @@ pub(crate) fn load(override_path: Option<PathBuf>) -> Option<(Parsed, String)> {
         // The first thing anyone hits after installing, and a bare `os error 2` names
         // neither the file's purpose nor the one command that creates it.
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            eprintln!("error: no config file at {}", path.display());
-            eprintln!("  |");
-            eprintln!("  help: tycho config init writes a starter file with the");
-            eprintln!("        shape and the comments explaining each key");
+            let shown = path.display();
+            let _ = report! {
+                error: "no config file at {shown}",
+                at: at_file(&path),
+                note: "a config file lists what to watch and where to send it; every \
+                       command but `config init` needs one",
+                recovery: {
+                    "tycho config init" => "writes a starter file, with a comment on each key",
+                    "tycho config path" => "says where it would go",
+                },
+            };
             return None;
         }
         Err(error) => {
-            eprintln!("tycho: cannot read {}: {error}", path.display());
+            let _ = report! { error: "{error}", at: at_file(&path) };
             return None;
         }
     };
@@ -785,7 +791,7 @@ pub(crate) fn load(override_path: Option<PathBuf>) -> Option<(Parsed, String)> {
             Some((parsed, text))
         }
         Err(error) => {
-            eprintln!("tycho: {error}");
+            let _ = report! { error: "{error}", at: at_file(&path) };
             None
         }
     }
@@ -800,7 +806,10 @@ pub(crate) fn load(override_path: Option<PathBuf>) -> Option<(Parsed, String)> {
 fn selected<'a>(config: &'a Config, wanted: Option<&str>, all: bool) -> Option<Vec<&'a Profile>> {
     if all {
         if config.profiles.is_empty() {
-            eprintln!("tycho: the config defines no profiles");
+            let _ = report! {
+                error: "the config defines no profiles",
+                recovery: { "tycho profile add <name> --local-only" => "or with --remote NAME=PATH" },
+            };
             return None;
         }
         return Some(config.profiles.iter().collect());
@@ -816,19 +825,34 @@ fn select<'a>(config: &'a Config, wanted: Option<&str>) -> Option<&'a Profile> {
                 .iter()
                 .find(|profile| profile.name.as_str() == name);
             if found.is_none() {
-                eprintln!("tycho: no profile named '{name}'");
+                let _ = report! {
+                    error: "no profile named '{name}'",
+                    at: at_profile(name),
+                    recovery: { "tycho profile list" => "names every profile in this file" },
+                };
             }
             found
         }
         None => match config.profiles.as_slice() {
             [only] => Some(only),
             [] => {
-                eprintln!("tycho: the config defines no profiles");
+                let _ = report! {
+                    error: "the config defines no profiles",
+                    recovery: { "tycho profile add <name> --local-only" => "or with --remote NAME=PATH" },
+                };
                 None
             }
             many => {
-                let names: Vec<&str> = many.iter().map(|p| p.name.as_str()).collect();
-                eprintln!("tycho: name a profile: {}", names.join(", "));
+                let names = many
+                    .iter()
+                    .map(|p| p.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let _ = report! {
+                    error: "more than one profile matches; say which one",
+                    note: "configured profiles: {names}",
+                    help: "pass `--profile <name>` to say which one",
+                };
                 None
             }
         },
@@ -841,7 +865,10 @@ fn inspect_all(plan: &Plan) -> Vec<(String, Inspection)> {
         for repo in root.repos() {
             match inspect(repo.source.as_path()) {
                 Ok(inspection) => out.push((repo.key.clone(), inspection)),
-                Err(error) => eprintln!("warn  {}: {error}", repo.key),
+                Err(error) => {
+                    let key = &repo.key;
+                    let _ = report! { warning: "{key}: {error}" };
+                }
             }
         }
     }
@@ -858,17 +885,11 @@ pub fn log(args: &crate::cli::LogArgs) -> Exit {
     };
     let path = match crate::platform::log::path_for(profile.name.as_str()) {
         Ok(path) => path,
-        Err(error) => {
-            eprintln!("tycho: {error}");
-            return Exit::Failure;
-        }
+        Err(error) => return report! { error: "{error}" },
     };
     if !path.exists() {
-        eprintln!(
-            "tycho: nothing logged yet for {} ({})",
-            profile.name,
-            path.display()
-        );
+        let name = profile.name.as_str();
+        let _ = report! { warning: "nothing logged yet for {name}", at: at_file(&path) };
         return Exit::Ok;
     }
 
@@ -891,9 +912,6 @@ pub fn log(args: &crate::cli::LogArgs) -> Exit {
                 Exit::Failure
             }
         }
-        Err(error) => {
-            eprintln!("tycho: {error}");
-            Exit::Failure
-        }
+        Err(error) => report! { error: "{error}" },
     }
 }

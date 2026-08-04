@@ -1,9 +1,10 @@
 //! What `tycho service` does.
 
+use crate::cli::report::{Diagnostic, at_profile, report};
 use crate::cli::{Exit, ServiceAction, ServiceArgs, render};
 use crate::config::Profile;
 use crate::platform::Agent;
-use crate::service;
+use crate::service::{self, ServiceError};
 
 pub fn dispatch(args: &ServiceArgs) -> Exit {
     let Some((parsed, _)) = crate::cli::run::load(args.config.clone()) else {
@@ -11,8 +12,10 @@ pub fn dispatch(args: &ServiceArgs) -> Exit {
     };
     if parsed.has_errors() && !matches!(args.action, ServiceAction::Status) {
         eprint!("{}", render::config_check(&[], &parsed.diagnostics));
-        eprintln!("tycho: the config has errors, so no agent was touched");
-        return Exit::Failure;
+        return report! {
+            error: "the config has errors, so no agent was touched",
+            recovery: { "tycho config check" => "shows every error and warning" },
+        };
     }
 
     // No profile named means every profile: installing one at a time is the special
@@ -24,16 +27,21 @@ pub fn dispatch(args: &ServiceArgs) -> Exit {
             .iter()
             .find(|profile| profile.name.as_str() == name)
         else {
-            eprintln!("tycho: no profile named '{name}'");
-            return Exit::Failure;
+            return report! {
+                error: "no profile named '{name}'",
+                at: at_profile(name),
+                recovery: { "tycho profile list" => "names every profile in this file" },
+            };
         };
         vec![profile]
     } else {
         parsed.config.profiles.iter().collect()
     };
     if wanted.is_empty() {
-        eprintln!("tycho: the config has no profiles");
-        return Exit::Failure;
+        return report! {
+            error: "the config has no profiles",
+            recovery: { "tycho profile add <name> --local-only" => "or with --remote NAME=PATH" },
+        };
     }
 
     match args.action {
@@ -51,28 +59,31 @@ pub fn dispatch(args: &ServiceArgs) -> Exit {
 fn install(profiles: &[&Profile], config: Option<&std::path::Path>) -> Exit {
     let program = match service::binary() {
         Ok(path) => path,
-        Err(error) => {
-            eprintln!("tycho: {error}");
-            return Exit::Failure;
-        }
+        Err(error) => return report! { error: "{error}" },
     };
     // Absolute, because launchd runs the agent from `/` and a relative `--config`
     // would resolve against a directory nobody chose.
     let config = match config.map(std::path::absolute).transpose() {
         Ok(config) => config,
-        Err(error) => {
-            eprintln!("tycho: {error}");
-            return Exit::Failure;
-        }
+        Err(error) => return report! { error: "{error}" },
     };
 
     let mut installed = Vec::new();
     for profile in profiles {
         match service::install(profile, &program, config.as_deref()) {
             Ok(agents) => installed.extend(agents),
+            Err(error @ ServiceError::NoSchedule { .. }) => {
+                let name = profile.name.as_str();
+                return report! {
+                    error: "{error}",
+                    at: at_profile(name),
+                    recovery: {
+                        "tycho schedule set daily:09:00 -p {name}" => "any of the accepted forms works",
+                    },
+                };
+            }
             Err(error) => {
-                eprintln!("tycho: {error}");
-                return Exit::Failure;
+                return report! { error: "{error}", at: at_profile(profile.name.as_str()) };
             }
         }
     }
@@ -100,8 +111,7 @@ fn uninstall(profiles: &[&Profile], config: &crate::config::Config) -> Exit {
                 }
             }
             Err(error) => {
-                eprintln!("tycho: {error}");
-                return Exit::Failure;
+                return report! { error: "{error}", at: at_profile(profile.name.as_str()) };
             }
         }
     }
@@ -124,11 +134,18 @@ fn status(config: &crate::config::Config) -> Exit {
             // config value to drift from and nothing to compare.
             Agent::Catchup | Agent::Probe => None,
         };
+        let location = match &agent {
+            Agent::Backup(name) => Some(at_profile(name)),
+            Agent::Catchup | Agent::Probe => None,
+        };
         match service::inspect(agent) {
             Ok(installed) => rows.push((installed, wanted)),
             Err(error) => {
-                eprintln!("tycho: {error}");
-                return Exit::Failure;
+                let mut diagnostic = Diagnostic::error(error.to_string());
+                if let Some(location) = location {
+                    diagnostic = diagnostic.location(location);
+                }
+                return diagnostic.emit();
             }
         }
     }

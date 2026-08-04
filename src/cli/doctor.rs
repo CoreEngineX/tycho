@@ -1,5 +1,6 @@
 //! What `tycho doctor` and the hidden `probe-access` do.
 
+use crate::cli::report::{at_file, at_profile, report};
 use crate::cli::{DoctorArgs, Exit, ProbeArgs, render};
 use crate::doctor::{self, Scope, Verdict};
 use crate::platform::log_dir;
@@ -18,8 +19,11 @@ pub fn dispatch(args: &DoctorArgs) -> Exit {
             .profiles
             .retain(|profile| profile.name.as_str() == wanted);
         if config.profiles.is_empty() {
-            eprintln!("tycho: no profile named '{wanted}'");
-            return Exit::Failure;
+            return report! {
+                error: "no profile named '{wanted}'",
+                at: at_profile(wanted),
+                recovery: { "tycho profile list" => "names every profile in this file" },
+            };
         }
     }
 
@@ -216,9 +220,6 @@ pub fn probe_access(args: &ProbeArgs) -> Exit {
     let out: PathBuf = args.out.clone();
     match crate::sys::fs::write_atomic(&out, report.as_bytes()) {
         Ok(()) => Exit::Ok,
-        Err(error) => {
-            eprintln!("tycho: writing {}: {error}", out.display());
-            Exit::Failure
-        }
+        Err(error) => report! { error: "{error}", at: at_file(&out) },
     }
 }

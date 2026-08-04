@@ -556,10 +556,7 @@ pub fn dispatch(command: Command) -> Exit {
         Command::ProbeAccess(args) => doctor::probe_access(&args),
         Command::Bootstrap(args) => match crate::bootstrap::run(&args) {
             Ok(()) => Exit::Ok,
-            Err(error) => {
-                eprintln!("tycho: {error}");
-                Exit::Failure
-            }
+            Err(error) => report::report! { error: "{error}" },
         },
         Command::Watch(args) => rules::dispatch(crate::config_edit::List::Watch, &args),
         Command::Ignore(args) => rules::dispatch(crate::config_edit::List::Ignore, &args),
