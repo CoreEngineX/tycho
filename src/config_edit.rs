@@ -261,6 +261,12 @@ pub fn starter(home: &str) -> String {
          # Where the backup goes: a synced cloud folder, or a drive. Tycho creates the\n\
          # repository inside it on first run and writes nowhere else. Mark a removable\n\
          # drive optional so being unplugged is a warning rather than a failure.\n\
+         #\n\
+         # `name` is a label for this destination, not a location - `path` finds the\n\
+         # drive. It is what `status` and `doctor` call the remote, so make it read\n\
+         # like the thing printed on the drive. Renaming it later starts that\n\
+         # remote's history over: the state file keys last-seen and behind-count by\n\
+         # the name, so a rename shows as `unseen` and re-verifies from scratch.\n\
          remotes = [\n\
          \x20 # {{ name = \"drive\", path = \"{home}/Library/CloudStorage/…/Backups\" }},\n\
          \x20 # {{ name = \"t7\", path = \"/Volumes/T7/tycho\", optional = true }},\n\

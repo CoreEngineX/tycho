@@ -290,6 +290,15 @@ impl LogLevel {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Remote {
+    /// A label, not a location - `path` is what finds the drive, and this never
+    /// touches the filesystem. It names the remote in `status`, in `doctor`'s rows,
+    /// and in the state file.
+    ///
+    /// **Renaming one starts its history over.** The state file keys a remote's
+    /// last-seen time, head and behind-count by this name, so a rename reads as a
+    /// remote that has never been seen: `unseen` on the next run, then a full
+    /// re-verify. Harmless before there is history worth keeping, which is the
+    /// argument for settling on the name early rather than tidying it later.
     pub name: RemoteName,
     pub path: AbsPath,
     pub optional: bool,
