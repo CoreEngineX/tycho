@@ -68,30 +68,7 @@ pub fn count(value: usize) -> String {
     out
 }
 
-/// `1.19 GB`, `340 MB`, `0 B`. Three significant figures, decimal units, matching
-/// the examples in `cli.md`.
-#[must_use]
-#[allow(clippy::cast_precision_loss)]
-pub fn size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1000.0 && unit < UNITS.len() - 1 {
-        value /= 1000.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        return format!("{bytes} B");
-    }
-    let places = if value < 10.0 {
-        2
-    } else if value < 100.0 {
-        1
-    } else {
-        0
-    };
-    format!("{value:.places$} {}", UNITS[unit])
-}
+pub use crate::primitives::bytes::size;
 
 fn rule(out: &mut String) {
     let _ = writeln!(out, "{}", "-".repeat(WIDTH));

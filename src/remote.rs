@@ -13,7 +13,6 @@ pub mod trust;
 use crate::config::Remote;
 use crate::git::refs::{PushOutcome, Refspec};
 use crate::primitives::path::AbsPath;
-use crate::spine::spine;
 use crate::store::{Store, StoreError};
 use crate::sys::process::{Git, Timeout};
 use state::{FailureReason, Observation};
@@ -410,21 +409,14 @@ pub fn publish(store: &Store, remote: &Remote, profile: &str) -> Observation {
     Observation::Verified { head }
 }
 
-/// The order a remote is dealt with in. `Ensured` before `Pushed` is the one that
-/// matters: a push into an unconfigured remote runs `git gc` on arrival.
-#[derive(Debug)]
-pub struct Unclassified;
-#[derive(Debug)]
-pub struct Classified;
-#[derive(Debug)]
-pub struct Ensured;
-#[derive(Debug)]
-pub struct Pushed;
-#[derive(Debug)]
-pub struct Verified;
-#[derive(Debug)]
-pub struct Recorded;
-
-spine! {
-    Unclassified -> Classified -> Ensured -> Pushed -> Verified -> Recorded
-}
+// `publish` runs classify -> initialise -> push -> verify in that order, and
+// `Ensured` before `Pushed` is the one that matters: a push into an unconfigured
+// remote runs `git gc` on arrival.
+//
+// There is deliberately no `spine!` here. One stood in this file declaring those six
+// states, and not one of them was ever constructed - `publish` is a plain sequence of
+// early returns with no connection to them. It read exactly like the enforced spines
+// in `store::pipeline` and `restore`, which is worse than having none: it advertised
+// a compile-time guarantee against the very reordering its own comment warned about,
+// while providing nothing. Ordering here is enforced by `publish` being one short
+// function with a single path through it, and that is what a reader should check.

@@ -9,8 +9,8 @@
 //! clone on a replacement machine**, which is the disaster path and the one case
 //! where the state file is already gone.
 
-use crate::cli::render::size;
 use crate::git::read::{Change, ChangeStatus};
+use crate::primitives::bytes::size;
 use std::fmt::Write as _;
 
 /// What one run did.

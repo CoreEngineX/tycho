@@ -296,6 +296,22 @@ fn overlay(source: &Path, repo: &RepoRoot, rules: &RuleTree, nested: &[AbsPath])
         return contribution;
     };
 
+    // `Git::run` hands back the output whatever the exit status, so the guard above
+    // only catches a process that could not start. A `git status` that ran and failed
+    // - a half-synced cloud folder, a transient read error on the removable drives
+    // this is aimed at - would otherwise fall through to parsing empty stdout and
+    // return an empty overlay with no warning at all. The overlay is the whole reason
+    // this project exists, so a silent one is the failure it is built to prevent.
+    if !out.status.success() {
+        contribution.warnings.push(format!(
+            "{}: git status failed, so no uncommitted or gitignored file was captured \
+             from it: {}",
+            repo.key,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+        return contribution;
+    }
+
     let mut fields = out
         .stdout
         .split(|&byte| byte == 0)
