@@ -521,17 +521,21 @@ fn validate_profile(
     Some(profile)
 }
 
-/// `~`, `$` and a leading separator on every platform; a drive letter as well on
-/// Windows, where `C:/backups` is the ordinary way to write an absolute path.
+/// `~`, `$`, a leading separator, and a drive letter - on every platform, whichever
+/// one is running.
 ///
-/// Without the drive case such an entry falls through to the glob arm, where it
-/// matches nothing and fires never - an ignore rule that silently does not apply,
-/// which is the failure mode this whole classification exists to avoid.
+/// Without the drive case a `C:/backups` entry falls through to the glob arm, where it
+/// matches nothing and fires never: an ignore rule that silently does not apply, which
+/// is the failure mode this whole classification exists to avoid.
+///
+/// **Not gated on the host**, though it reads like it should be. A config is written
+/// to be portable - `~` and `$HOME` are stored unexpanded for exactly that reason - so
+/// a host-dependent classification makes one file mean two different things, and the
+/// Windows-authored entry silently becomes a dead glob when the same config is read
+/// here. Classifying it as a path on both leaves `AbsPath::parse` to reject what this
+/// host cannot hold, which is a diagnostic rather than a silence.
 fn looks_like_path(entry: &str) -> bool {
-    if entry.starts_with(['~', '$', '/']) {
-        return true;
-    }
-    cfg!(windows) && (entry.starts_with('\\') || has_drive_letter(entry))
+    entry.starts_with(['~', '$', '/', '\\']) || has_drive_letter(entry)
 }
 
 fn has_drive_letter(entry: &str) -> bool {

@@ -144,14 +144,6 @@ pub fn classify(path: &Path) -> Result<RemoteKind, RemoteError> {
     }
 }
 
-/// Expands the single `*` a configured remote path may carry, for the account
-/// directory whose exact name you cannot predict.
-///
-/// **More than one match is an error, not a choice.** Directory order is not stable,
-/// and on this machine `OneDrive-Personal` and `OneDrive-Work` invert
-/// between readdir order and sorted order - so a first-match-wins rule would put
-/// company backups in a university account that must never be written to.
-///
 /// Splitting on `/` alone finds no parent in `C:\Users\me\GoogleDrive-*\Backups`, so
 /// the search reads the current directory instead and every glob remote resolves to
 /// nothing. `std::path::is_separator` is what knows which characters count here.
@@ -165,6 +157,14 @@ fn split_separator(text: &str) -> Option<(&str, &str)> {
         .map(|at| (&text[..at], &text[at + 1..]))
 }
 
+/// Expands the single `*` a configured remote path may carry, for the account
+/// directory whose exact name you cannot predict.
+///
+/// **More than one match is an error, not a choice.** Directory order is not stable,
+/// and on this machine `OneDrive-Personal` and `OneDrive-Work` invert
+/// between readdir order and sorted order - so a first-match-wins rule would put
+/// company backups in a university account that must never be written to.
+///
 /// # Errors
 ///
 /// If the glob matches more than one directory, or none at all.
@@ -279,13 +279,6 @@ pub fn verify(store: &Store, repo: &Path) -> Result<Option<String>, RemoteError>
     Ok(Some(missing.join("; ")))
 }
 
-/// Everything one remote needs from a run, in the order it has to happen.
-///
-/// # Errors
-///
-/// Only if something outside the remote's own health fails. A remote that is
-/// unreachable, refuses, or fails verification is an [`Observation`], not an error -
-/// one bad destination must not stop the others.
 /// Names the cause when git's own answer does not.
 ///
 /// Git refuses a repository on a filesystem that records no ownership - exFAT and
@@ -314,6 +307,11 @@ fn explain(repo: &Path, failure: &str) -> String {
     )
 }
 
+/// Everything one remote needs from a run, in the order it has to happen.
+///
+/// A remote that is unreachable, refuses, or fails verification is an [`Observation`]
+/// rather than an error - one bad destination must not stop the others - so this
+/// never fails outright.
 pub fn publish(store: &Store, remote: &Remote, profile: &str) -> Observation {
     let folder = match resolve(&remote.path) {
         Ok(folder) => folder,

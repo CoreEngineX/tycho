@@ -31,6 +31,8 @@ pub enum RepoError {
         "the store at {path} {detail}; it holds gitignored content and must not be readable by others"
     )]
     Exposed { path: String, detail: String },
+    #[error(transparent)]
+    Volume(#[from] crate::sys::volume::VolumeError),
     #[error("hashing stopped with {remaining} paths left and no path to blame: {stderr}")]
     Stalled { remaining: usize, stderr: String },
     #[error("git refused to index a path and did not fail doing it: {detail}")]
@@ -392,163 +394,18 @@ impl Index<'_> {
 }
 
 /// Refuses a store others can read, because it holds gitignored content.
-#[cfg(unix)]
-fn refuse_if_exposed(path: &AbsPath) -> Result<(), RepoError> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mode = fs::metadata(path.as_path())
-        .map_err(|source| RepoError::Io {
-            context: format!("reading {path}"),
-            source,
-        })?
-        .permissions()
-        .mode()
-        & 0o777;
-    if mode & 0o077 != 0 {
-        return Err(RepoError::Exposed {
-            path: path.to_string(),
-            detail: format!("is mode {mode:04o}"),
-        });
-    }
-    Ok(())
-}
-
-/// The NTFS equivalent: refuse a store whose DACL names any trustee other than the
-/// owner, `SYSTEM` and `Administrators`.
 ///
-/// This is a real equivalent rather than a weakened one, and the measurement that
-/// says so is that a directory under the user profile carries exactly `SY`, `BA` and
-/// the owner - the same reach as `0700` - while one under `C:\Users\Public` adds
-/// `IU`, `SU` and `BA`-batch with modify rights, which is what `0700` exists to
-/// refuse. `store.md` section 2 records both.
-///
-/// SDDL rather than `icacls`'s own listing because the listing prints localised
-/// account names - `BUILTIN\Administrators` is `VORDEFINIERT\Administratoren` on a
-/// German install - while SDDL is fixed abbreviations and raw SIDs.
-#[cfg(windows)]
+/// The question is about the filesystem rather than about git, so the answer lives in
+/// `sys::volume` and this only names the store in the refusal.
 fn refuse_if_exposed(path: &AbsPath) -> Result<(), RepoError> {
-    let owner = current_user_sid()?;
-    let dacl = read_dacl(path)?;
-    if let Some(detail) = exposure(&dacl, &owner) {
-        return Err(RepoError::Exposed {
+    match crate::sys::volume::exposure(path.as_path()) {
+        Ok(None) => Ok(()),
+        Ok(Some(detail)) => Err(RepoError::Exposed {
             path: path.to_string(),
             detail,
-        });
+        }),
+        Err(source) => Err(RepoError::Volume(source)),
     }
-    Ok(())
-}
-
-/// Why the store is readable by someone else, or `None` if it is not.
-///
-/// **A volume with no access control is the case that matters most and looks like
-/// the safest.** exFAT and FAT32 carry no ACLs, so Windows reports the whole
-/// descriptor as `D:NO_ACCESS_CONTROL` with owner `WD` - Everyone - and a check that
-/// only walks ACEs finds none to object to and passes. Measured on a removable exFAT
-/// volume, which is exactly where `remotes.md` expects an external drive to be, and
-/// where someone would reasonably point `store_path`.
-///
-/// An absent DACL is treated the same way. This function refuses anything it cannot
-/// positively show is owner-only, because the alternative is proving a secret-bearing
-/// store safe by failing to find evidence against it.
-#[cfg(windows)]
-fn exposure(dacl: &str, owner: &str) -> Option<String> {
-    if dacl.contains("NO_ACCESS_CONTROL") {
-        return Some(
-            "is on a volume that carries no access control at all, such as exFAT or FAT32, \
-             where every file is readable by anyone with the disk"
-                .to_owned(),
-        );
-    }
-    let Some(entries) = dacl.split("D:").nth(1) else {
-        return Some("has no discretionary access control list to check".to_owned());
-    };
-    foreign_trustee(entries, owner).map(|trustee| format!("grants access to {trustee}"))
-}
-
-#[cfg(windows)]
-fn current_user_sid() -> Result<String, RepoError> {
-    let out =
-        crate::sys::process::command("whoami", &["/user", "/fo", "csv", "/nh"], Timeout::QUICK)
-            .map_err(RepoError::Run)?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    text.rsplit(',')
-        .next()
-        .map(|field| field.trim().trim_matches('"').to_owned())
-        .filter(|sid| sid.starts_with("S-1-"))
-        .ok_or_else(|| RepoError::Unparsable(format!("whoami /user printed {}", text.trim())))
-}
-
-/// `icacls /save` is the only way to get SDDL out of a tool that starts fast enough
-/// to run on every command: `Get-Acl` needs a PowerShell process, measured at 1.6s
-/// against 30ms here. It writes to a file rather than stdout, hence the temporary.
-#[cfg(windows)]
-fn read_dacl(path: &AbsPath) -> Result<String, RepoError> {
-    let target = path
-        .as_path()
-        .to_str()
-        .ok_or_else(|| RepoError::Unparsable(format!("{path} is not representable as UTF-8")))?;
-    let scratch = std::env::temp_dir().join(format!("tycho-acl-{}.sddl", std::process::id()));
-    let scratch_arg = scratch.to_str().ok_or_else(|| {
-        RepoError::Unparsable("the temporary directory is not representable as UTF-8".to_owned())
-    })?;
-
-    let out = crate::sys::process::command(
-        "icacls",
-        &[target, "/save", scratch_arg, "/q"],
-        Timeout::QUICK,
-    )
-    .map_err(RepoError::Run)?;
-    let read = fs::read(&scratch);
-    let _ = fs::remove_file(&scratch);
-
-    if !out.status.success() {
-        return Err(RepoError::Unparsable(format!(
-            "icacls /save: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
-    let bytes = read.map_err(|source| RepoError::Io {
-        context: format!("reading the saved ACL for {path}"),
-        source,
-    })?;
-    Ok(decode_utf16le(&bytes))
-}
-
-/// `icacls /save` writes UTF-16LE with a BOM. An odd trailing byte is dropped rather
-/// than refused: the DACL line is what matters and a truncated tail cannot be part of
-/// it.
-#[cfg(windows)]
-fn decode_utf16le(bytes: &[u8]) -> String {
-    let body = bytes.strip_prefix(&[0xff, 0xfe]).unwrap_or(bytes);
-    let units: Vec<u16> = body
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-        .collect();
-    String::from_utf16_lossy(&units)
-}
-
-/// The first trustee in the DACL that is neither the owner, `SYSTEM` nor
-/// `Administrators`.
-///
-/// Only allow ACEs count. A deny ACE removes access rather than granting it, and an
-/// inherit-only ACE - `IO` in the flags - applies to children this object does not
-/// have yet, so neither can expose what is already there.
-#[cfg(windows)]
-fn foreign_trustee(dacl: &str, owner: &str) -> Option<String> {
-    for ace in dacl.split('(').skip(1) {
-        let ace = ace.split(')').next().unwrap_or_default();
-        let fields: Vec<&str> = ace.split(';').collect();
-        let [kind, flags, .., trustee] = fields.as_slice() else {
-            continue;
-        };
-        if !kind.starts_with('A') || flags.contains("IO") {
-            continue;
-        }
-        if !matches!(*trustee, "SY" | "BA") && !trustee.eq_ignore_ascii_case(owner) {
-            return Some((*trustee).to_owned());
-        }
-    }
-    None
 }
 
 fn parse_one(stdout: &[u8], stderr: &[u8], success: bool) -> Result<Oid, RepoError> {
@@ -558,56 +415,4 @@ fn parse_one(stdout: &[u8], stderr: &[u8], success: bool) -> Result<Oid, RepoErr
         ));
     }
     Oid::parse(String::from_utf8_lossy(stdout).trim()).map_err(RepoError::Oid)
-}
-
-#[cfg(all(test, windows))]
-mod windows_tests {
-    use super::exposure;
-
-    const OWNER: &str = "S-1-5-21-1111111111-2222222222-3333333333-1001";
-
-    /// The shape a directory under the user profile has: SYSTEM, Administrators and
-    /// the owner, which is the same reach `0700` grants.
-    #[test]
-    fn a_profile_directorys_dacl_is_not_an_exposure() {
-        let dacl = format!("name\nD:(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)(A;OICIID;FA;;;{OWNER})");
-        assert_eq!(exposure(&dacl, OWNER), None, "{dacl}");
-    }
-
-    /// `C:\Users\Public` adds Interactive, Service and Batch with modify rights,
-    /// which is precisely what the check exists to refuse.
-    #[test]
-    fn a_publicly_writable_dacl_names_the_trustee() {
-        let dacl = format!(
-            "name\nD:AI(A;OICIID;FA;;;BA)(A;ID;FA;;;{OWNER})(A;OICIID;FA;;;SY)\
-             (A;OICIID;0x1301ff;;;IU)(A;OICIID;0x1301ff;;;SU)"
-        );
-        let detail = exposure(&dacl, OWNER).expect("an exposure");
-        assert!(detail.contains("IU"), "{detail}");
-    }
-
-    /// The one that looks safest and is the least safe. exFAT and FAT32 have no ACLs,
-    /// so there are no entries to object to - and a check that only walks entries
-    /// passes a store every user of the machine can read. Measured on a real removable
-    /// exFAT volume, which is where an external-drive store would live.
-    #[test]
-    fn a_volume_with_no_access_control_is_an_exposure_rather_than_a_clean_bill() {
-        let detail = exposure("acl-probe\nD:NO_ACCESS_CONTROL", OWNER)
-            .expect("a volume with no ACLs must be refused");
-        assert!(detail.contains("exFAT"), "{detail}");
-    }
-
-    /// A descriptor with no DACL at all is unprovable, not proven safe.
-    #[test]
-    fn an_absent_dacl_is_refused_rather_than_assumed_owner_only() {
-        assert!(exposure("acl-probe\n", OWNER).is_some());
-    }
-
-    /// A deny entry restricts rather than grants, and an inherit-only one applies to
-    /// children this object does not have.
-    #[test]
-    fn deny_and_inherit_only_entries_do_not_count_as_grants() {
-        let dacl = format!("name\nD:(D;;FA;;;WD)(A;OICIIOID;FA;;;CO)(A;OICIID;FA;;;{OWNER})");
-        assert_eq!(exposure(&dacl, OWNER), None, "{dacl}");
-    }
 }

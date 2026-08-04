@@ -64,7 +64,7 @@ pub fn dispatch(args: &DoctorArgs) -> Exit {
     }
 
     if args.deep
-        && let Some(access) = probe_through_launchd(&config)
+        && let Some(access) = probe_through_scheduler(&config)
         && let Some(environment) = report.sections.first_mut()
     {
         for check in &mut environment.checks {
@@ -95,7 +95,7 @@ pub fn dispatch(args: &DoctorArgs) -> Exit {
 /// the agent's, so reading a watched root here proves nothing about what the agent can
 /// do. The only mechanism that measures the real thing is to run the probe through
 /// launchd - the same lifecycle `service install` already implements.
-fn probe_through_launchd(config: &crate::config::Config) -> Option<doctor::Check> {
+fn probe_through_scheduler(config: &crate::config::Config) -> Option<doctor::Check> {
     let roots: Vec<String> = config
         .profiles
         .iter()
@@ -135,11 +135,14 @@ fn probe_through_launchd(config: &crate::config::Config) -> Option<doctor::Check
     let found = wait_for(&out);
     let _ = scheduler::deregister(&agent);
     let _ = std::fs::remove_file(&out);
-    // The plist goes too, not just the loaded job. Booting out leaves the file, and a
-    // health check that litters ~/Library/LaunchAgents with a job nobody installed is
-    // one people learn to distrust.
-    if let Ok(plist) = agent.plist_path() {
-        let _ = std::fs::remove_file(plist);
+    // The definition goes too, not just the loaded job. Deregistering leaves the file,
+    // and a health check that litters the agent directory with a job nobody installed
+    // is one people learn to distrust. Asked of `scheduler` rather than of `Agent`,
+    // whose `plist_path` is launchd's answer on every platform - `write_and_load` wrote
+    // to `scheduler::definition_path`, so on Windows this removed a file that was never
+    // there and orphaned the one that was.
+    if let Ok(definition) = crate::platform::scheduler::definition_path(&agent) {
+        let _ = std::fs::remove_file(definition);
     }
 
     Some(match found {

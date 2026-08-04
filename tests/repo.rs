@@ -156,6 +156,106 @@ fn open_refuses_a_store_others_can_read() {
     );
 }
 
+/// An exFAT volume, attached for the length of one test and detached whatever happens.
+///
+/// A disk image rather than a real drive because the property under test belongs to
+/// the filesystem, not to the hardware, and a test that needs a drive plugged in is a
+/// test nobody runs.
+#[cfg(target_os = "macos")]
+struct Attached {
+    volume: PathBuf,
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for Attached {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("hdiutil")
+            .args(["detach", "-quiet", "-force"])
+            .arg(&self.volume)
+            .output();
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn attach_exfat(dir: &Path, name: &str) -> Attached {
+    // An exFAT label is capped at 11 characters and `hdiutil` answers a longer one
+    // with `Operation not permitted`, which reads like a privilege problem and is not.
+    assert!(name.len() <= 11, "an exFAT volume label is 11 characters");
+    let image = dir.join(format!("{name}.dmg"));
+    let made = std::process::Command::new("hdiutil")
+        .args(["create", "-size", "40m", "-fs", "ExFAT", "-volname", name])
+        .arg(&image)
+        .output()
+        .expect("hdiutil runs");
+    assert!(
+        made.status.success(),
+        "hdiutil create: {}{}",
+        String::from_utf8_lossy(&made.stdout),
+        String::from_utf8_lossy(&made.stderr)
+    );
+    let attached = std::process::Command::new("hdiutil")
+        .args(["attach", "-quiet"])
+        .arg(&image)
+        .output()
+        .expect("hdiutil runs");
+    assert!(
+        attached.status.success(),
+        "hdiutil attach: {}",
+        String::from_utf8_lossy(&attached.stderr)
+    );
+    Attached {
+        volume: PathBuf::from(format!("/Volumes/{name}")),
+    }
+}
+
+/// **A volume that records no ownership must be refused, and it is the case that looks
+/// safest.**
+///
+/// `chmod` on exFAT succeeds and changes nothing: the mode reads back as `0700`
+/// whatever you set, because the kernel synthesises owner and mode from the mount. So
+/// the check that asks only for `mode & 0o077` sees the ideal answer and passes a
+/// store that every account on the machine can read - while it holds exactly the
+/// gitignored content the store exists to keep.
+///
+/// The Windows arm refuses this as `NO_ACCESS_CONTROL`. This is the same hole on the
+/// same kind of drive, which `remotes.md` expects an external backup to live on.
+#[cfg(target_os = "macos")]
+#[test]
+fn open_refuses_a_store_on_a_volume_that_records_no_ownership() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let attached = attach_exfat(dir.path(), "TychoNoOwn");
+
+    let store = attached.volume.join("store.git");
+    fs::create_dir_all(&store).expect("mkdir on the volume");
+    let _ = std::process::Command::new("chmod")
+        .arg("700")
+        .arg(&store)
+        .output();
+
+    // The premise, asserted rather than assumed: the mode this volume reports is the
+    // one the old check would have accepted.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&store).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "this test means nothing unless exFAT reports an owner-only mode: {mode:04o}"
+        );
+    }
+
+    let error = Repo::open(&abs(&store)).expect_err("a store on a noowners volume is refused");
+    let message = error.to_string();
+    assert!(
+        message.contains("noowners"),
+        "the refusal should name the cause: {message}"
+    );
+    assert!(
+        message.contains("gitignored"),
+        "and why it matters: {message}"
+    );
+}
+
 #[test]
 fn a_batch_names_the_file_it_could_not_read_and_keeps_going() {
     let dir = tempfile::tempdir().expect("temp dir");

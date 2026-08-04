@@ -392,10 +392,6 @@ const REMOTE_WORD: usize = 15;
 const REMOTE_DETAIL: usize = 24;
 const REMOTE_NOTE: usize = WIDTH - 2 - REMOTE_NAME - REMOTE_WORD - REMOTE_DETAIL;
 
-/// `cli.md` section 3. Profile name and next run sit at opposite edges, so a glance
-/// down the left lists your profiles and a glance down the right says when each
-/// fires.
-#[must_use]
 /// A remote's verdict, padded to its column and then coloured.
 ///
 /// Padded before painting for the reason `doctor` records: an escape sequence has
@@ -410,6 +406,10 @@ fn verdict_word(remote: &RemoteRow) -> String {
     }
 }
 
+/// `cli.md` section 3. Profile name and next run sit at opposite edges, so a glance
+/// down the left lists your profiles and a glance down the right says when each
+/// fires.
+#[must_use]
 pub fn status(profiles: &[ProfileStatus], banner: Option<&str>) -> String {
     let mut out = String::new();
     if let Some(banner) = banner {

@@ -89,7 +89,7 @@ fn walk(from: &Path, to: &Path, applied: &mut Applied) -> std::io::Result<()> {
         let destination = to.join(name);
         let kind = classify_path(&source)?;
 
-        if let Some(reason) = refuses(&source, &destination, &kind) {
+        if let Some(reason) = refuses(&destination, &kind) {
             applied.conflicts.push(Conflict {
                 path: destination,
                 reason,
@@ -135,16 +135,19 @@ fn walk(from: &Path, to: &Path, applied: &mut Applied) -> std::io::Result<()> {
     Ok(())
 }
 
-/// A directory symlink is removed by `remove_dir` on Windows and `remove_file`
-/// everywhere else, and neither call touches what the link points at.
+/// Removes what is at the destination without touching what a link points at.
+#[cfg(unix)]
 fn remove_existing(destination: &Path) -> std::io::Result<()> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::FileTypeExt;
+    fs::remove_file(destination)
+}
 
-        if destination.symlink_metadata()?.file_type().is_symlink_dir() {
-            return fs::remove_dir(destination);
-        }
+/// A directory symlink needs `remove_dir` here; `remove_file` refuses it.
+#[cfg(windows)]
+fn remove_existing(destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::fs::FileTypeExt;
+
+    if destination.symlink_metadata()?.file_type().is_symlink_dir() {
+        return fs::remove_dir(destination);
     }
     fs::remove_file(destination)
 }
@@ -168,8 +171,9 @@ fn symlink(source: &Path, target: &Path, destination: &Path) -> std::io::Result<
     }
 }
 
+/// Nothing here needs a privilege, so no error is that error.
 #[cfg(unix)]
-const fn refused_for_privilege(_error: &std::io::Error) -> bool {
+fn refused_for_privilege(_error: &std::io::Error) -> bool {
     false
 }
 
@@ -182,7 +186,7 @@ fn refused_for_privilege(error: &std::io::Error) -> bool {
 
 /// What is already at the destination decides, and `symlink_metadata` is what asks
 /// without following.
-fn refuses(source: &Path, destination: &Path, incoming: &FileKind) -> Option<Reason> {
+fn refuses(destination: &Path, incoming: &FileKind) -> Option<Reason> {
     let Ok(existing) = destination.symlink_metadata() else {
         return None;
     };
@@ -197,7 +201,6 @@ fn refuses(source: &Path, destination: &Path, incoming: &FileKind) -> Option<Rea
     }
     // Two regular files, or two directories, or two symlinks: the overlay wins,
     // because it is what was on disk at backup time.
-    let _ = source;
     None
 }
 

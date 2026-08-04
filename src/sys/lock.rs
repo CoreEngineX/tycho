@@ -4,7 +4,7 @@
 //! silent backups, which is the failure this project exists to correct.
 
 use std::fs::{File, OpenOptions, TryLockError};
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -83,17 +83,19 @@ pub fn try_lock(path: &Path) -> Result<LockGuard, LockError> {
         Err(TryLockError::Error(source)) => return Err(io_error(source)),
     }
 
-    // Written only once the lock is held, so a contender never reads a stamp that
-    // was truncated before its new contents landed.
+    // Written once the lock is held, and written by rename. `File::create` truncates
+    // first, so a contender arriving between the truncate and the write read an empty
+    // stamp and got a contention message with no pid and no time - the very thing the
+    // stamp exists to carry.
     let since = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or_default();
-    let mut record = File::create(&stamp).map_err(io_error)?;
-    record
-        .write_all(format!("{since} {}\n", std::process::id()).as_bytes())
-        .map_err(io_error)?;
-    record.flush().map_err(io_error)?;
+    crate::sys::fs::write_atomic(
+        &stamp,
+        format!("{since} {}\n", std::process::id()).as_bytes(),
+    )
+    .map_err(io_error)?;
 
     Ok(LockGuard { _file: file, stamp })
 }

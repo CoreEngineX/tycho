@@ -104,7 +104,33 @@ pub fn run(config: &Config, state: &State, scope: &Scope) -> Report {
 
 /// Nothing to ask on a platform with no path-length limit to switch off.
 #[cfg(not(windows))]
-const fn long_paths() -> Option<Check> {
+fn long_paths() -> Option<Check> {
+    None
+}
+
+/// The agent's Full Disk Access grant, which plain `doctor` cannot measure.
+///
+/// An interactive `doctor` runs with the terminal's TCC grant, a different grant from
+/// the agent's, so reading a watched root here proves nothing about what the agent can
+/// do. Only a probe through the scheduler measures the real thing, which is what
+/// `--deep` does.
+#[cfg(target_os = "macos")]
+fn full_disk_access() -> Option<Check> {
+    Some(Check::new(
+        "full disk access",
+        Verdict::Warn,
+        "not measurable from a terminal, use --deep",
+    ))
+}
+
+/// TCC is Apple's, and there is no equivalent to report.
+///
+/// Windows has no per-application grant over the user's own files, so the row would
+/// warn on every machine forever and say nothing - and a health check whose rows are
+/// always yellow teaches people to skim it. What *can* deny a scheduled run there is
+/// an ACL, and that fails the run loudly.
+#[cfg(not(target_os = "macos"))]
+fn full_disk_access() -> Option<Check> {
     None
 }
 
@@ -238,20 +264,9 @@ fn environment(config: &Config, scope: &Scope) -> Section {
         )
     });
 
-    // An interactive doctor runs with the terminal's TCC grant, which is a different
-    // grant from the agent's - so reading a watched root here proves nothing about
-    // what the agent can do. Only a probe through launchd measures the real thing.
-    //
-    // macOS only, because TCC is. Windows has no per-application grant over the user's
-    // own files, so the row would warn on every machine forever and say nothing - and
-    // a health check whose rows are always yellow teaches people to skim it. What
-    // *can* deny a scheduled run there is an ACL, and that fails the run loudly.
-    #[cfg(target_os = "macos")]
-    checks.push(Check::new(
-        "full disk access",
-        Verdict::Warn,
-        "not measurable from a terminal, use --deep",
-    ));
+    if let Some(check) = full_disk_access() {
+        checks.push(check);
+    }
 
     Section {
         title: "environment".to_owned(),

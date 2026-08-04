@@ -309,12 +309,18 @@ pub fn execute(
     Ok(run.state.done)
 }
 
-/// The whole tree, through `git archive` and `tar`.
+/// Nothing to add, and adding it would do harm.
 ///
-/// `--output` to a file rather than a pipe: in a pipeline the shell reports only the
-/// last command's status, so a store with a missing object prints an error, extracts
-/// zero files, and still exits 0.
-/// Nothing to say on a platform with one `tar`.
+/// **Not because macOS has a different `tar`** - it ships the same bsdtar, which was
+/// the obvious reason to think this arm was wrong. Measured instead: `Café — supplier
+/// agrément.md` extracts byte-identical under `en_CA.UTF-8`, under `LC_ALL=C`, and
+/// under `env -i`, which is the empty environment a launchd agent actually gets. So
+/// there is no case here for the option to fix.
+///
+/// And passing it anyway **changes the name**: with `hdrcharset=UTF-8` the same
+/// archive extracts `agre\u{301}ment` - `e` plus a combining acute - where the tree
+/// holds `é`. Forcing the conversion path turns NFC into NFD, which is precisely the
+/// silent mutation this whole design exists to refuse.
 #[cfg(not(windows))]
 fn charset_options() -> Vec<&'static str> {
     Vec::new()
@@ -343,6 +349,11 @@ fn charset_options() -> Vec<&'static str> {
     Vec::new()
 }
 
+/// The whole tree, through `git archive` and `tar`.
+///
+/// `--output` to a file rather than a pipe: in a pipeline the shell reports only the
+/// last command's status, so a store with a missing object prints an error, extracts
+/// zero files, and still exits 0.
 fn extract_all(
     store: &Store,
     into: &Path,
