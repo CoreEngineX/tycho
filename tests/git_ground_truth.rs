@@ -360,9 +360,16 @@ fn a_reserved_name_is_dropped_at_exit_zero() {
 /// Pinned because the check is the *only* thing that notices. If a future git starts
 /// refusing, this fails and the check can be reconsidered; until then it must not be
 /// weakened into trusting git to complain.
+///
+/// **It did start refusing.** A later git aborts the fetch outright, naming the
+/// `files` backend and offering `git refs migrate --ref-format=reftable`. That is the
+/// loud outcome, and it is the safe one - nothing is captured at all rather than half
+/// the pair being captured quietly. So this now pins whichever ground truth the host's
+/// git actually presents, and refuses the one thing neither git does: exit 0, say
+/// nothing, and keep both.
 #[cfg(windows)]
 #[test]
-fn colliding_refs_are_fetched_silently_and_oscillate() {
+fn colliding_refs_are_either_refused_loudly_or_fetched_silently_and_oscillate() {
     let work = tempfile::tempdir().expect("temp dir");
     let src = work.path().join("src");
     std::fs::create_dir_all(&src).expect("mkdir");
@@ -415,6 +422,7 @@ fn colliding_refs_are_fetched_silently_and_oscillate() {
     let store = bare_repo();
     let source = src.display().to_string();
     let mut seen = Vec::new();
+    let mut complained = false;
     for round in 0..4 {
         let out = git(
             store.path(),
@@ -426,15 +434,15 @@ fn colliding_refs_are_fetched_silently_and_oscillate() {
                 "+refs/*:refs/tycho/demo/*",
             ],
         );
-        assert!(
-            out.status.success(),
-            "round {round}: git is expected to say nothing at all: {out:?}"
-        );
-        assert!(
-            out.stderr.is_empty(),
-            "round {round}: git complained, which it never did when measured: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        let complaint = String::from_utf8_lossy(&out.stderr).into_owned();
+        if !out.status.success() || !complaint.is_empty() {
+            assert!(
+                complaint.contains("case-insensitive"),
+                "round {round}: git failed for a reason other than the collision: {out:?}"
+            );
+            complained = true;
+        }
+
         let listed = git(
             store.path(),
             &[
@@ -444,16 +452,26 @@ fn colliding_refs_are_fetched_silently_and_oscillate() {
             ],
         );
         let names = String::from_utf8_lossy(&listed.stdout);
-        let held: Vec<&str> = names
+        let held: Vec<String> = names
             .lines()
             .filter(|line| line.to_lowercase().ends_with("feature"))
+            .map(str::to_owned)
             .collect();
-        assert_eq!(held.len(), 1, "exactly one of the pair survives: {names}");
-        seen.push(held[0].to_owned());
+        // The damage, which is the same on every git: the store can never come out
+        // holding both, whatever it said on the way.
+        assert!(
+            held.len() <= 1,
+            "round {round}: both of the pair cannot be stored: {names}"
+        );
+        seen.extend(held);
     }
 
+    // The one outcome that would make the pre-fetch check unnecessary, and that
+    // neither measured git produces: silent, stable, and therefore trustworthy.
+    let stable = seen.windows(2).all(|pair| pair[0] == pair[1]);
     assert!(
-        seen.iter().any(|name| name != &seen[0]),
-        "the captured branch is expected to swap between fetches, got {seen:?}"
+        complained || !stable,
+        "a silent and stable capture would mean git can be trusted to notice, which \
+         is what `refs::colliding` exists because it cannot: {seen:?}"
     );
 }
