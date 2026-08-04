@@ -1,10 +1,13 @@
 //! Layer 5. The clap surface, the exit-code contract, and rendering.
 
 pub mod doctor;
+pub mod profile;
+pub mod remote;
 pub mod render;
 pub mod report;
 pub mod rules;
 pub mod run;
+pub mod schedule;
 pub mod service;
 
 use clap::{Args, Parser, Subcommand};
@@ -297,6 +300,132 @@ pub enum RuleAction {
     List,
 }
 
+#[derive(Clone, Debug, Args)]
+pub struct ProfileArgs {
+    #[command(subcommand)]
+    pub action: ProfileAction,
+    /// Read this config file instead of the default location
+    #[arg(long, value_name = "PATH", global = true)]
+    pub config: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Subcommand)]
+pub enum ProfileAction {
+    /// Print every profile
+    List,
+    /// Add a profile
+    Add(ProfileAddArgs),
+    /// Remove a profile
+    Rm(ProfileRmArgs),
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct ProfileAddArgs {
+    pub name: String,
+    /// A root to watch, stored exactly as written. Repeatable
+    #[arg(long = "watch", value_name = "PATH")]
+    pub watch: Vec<String>,
+    /// A destination as NAME=PATH. Repeatable
+    #[arg(long = "remote", value_name = "NAME=PATH")]
+    pub remote: Vec<String>,
+    /// Mark a --remote above optional, by the name before its '='. Repeatable
+    #[arg(long = "optional", value_name = "NAME")]
+    pub optional: Vec<String>,
+    /// Mark a --remote above trusted despite recording no ownership, by the name
+    /// before its '='. Repeatable
+    #[arg(long = "trust-ownership", value_name = "NAME")]
+    pub trust_ownership: Vec<String>,
+    /// When it runs by itself: `daily:HH:MM`, `weekly:<weekday>:HH:MM`, `every:<N>h`
+    /// or `every:<N>m`
+    #[arg(long, value_name = "SPEC")]
+    pub schedule: Option<String>,
+    /// This profile's backups never leave this machine
+    #[arg(long)]
+    pub local_only: bool,
+    /// Print the TOML block that would be appended, and write nothing
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct ProfileRmArgs {
+    pub name: String,
+    /// Leave the local store on disk
+    #[arg(long, conflicts_with = "delete_store")]
+    pub keep_store: bool,
+    /// Delete the local store
+    #[arg(long, conflicts_with = "keep_store")]
+    pub delete_store: bool,
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct RemoteArgs {
+    #[command(subcommand)]
+    pub action: RemoteAction,
+    /// Which profile
+    #[arg(short = 'p', long, global = true, value_name = "PROFILE")]
+    pub profile: Option<String>,
+    /// Read this config file instead of the default location
+    #[arg(long, value_name = "PATH", global = true)]
+    pub config: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Subcommand)]
+pub enum RemoteAction {
+    /// Print every remote on a profile
+    List,
+    /// Add a destination
+    Add(RemoteAddArgs),
+    /// Remove a destination
+    Rm(RemoteRmArgs),
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct RemoteAddArgs {
+    pub name: String,
+    /// Stored exactly as written
+    pub path: String,
+    /// Being unplugged is a warning rather than a failure
+    #[arg(long)]
+    pub optional: bool,
+    /// Trust this remote's volume despite it recording no ownership
+    #[arg(long)]
+    pub trust_ownership: bool,
+    /// How many runs behind before this remote is reported red. Defaults to 4
+    #[arg(long, value_name = "N")]
+    pub behind_tolerance: Option<u32>,
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct RemoteRmArgs {
+    pub name: String,
+    /// Allow removing the last remote, marking this profile local-only
+    #[arg(long)]
+    pub local_only: bool,
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct ScheduleArgs {
+    #[command(subcommand)]
+    pub action: ScheduleAction,
+    /// Which profile
+    #[arg(short = 'p', long, global = true, value_name = "PROFILE")]
+    pub profile: Option<String>,
+    /// Read this config file instead of the default location
+    #[arg(long, value_name = "PATH", global = true)]
+    pub config: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Subcommand)]
+pub enum ScheduleAction {
+    /// Print the current schedule
+    Show,
+    /// Replace the schedule
+    Set { spec: String },
+    /// Clear the schedule, so the profile only runs by hand
+    Off,
+}
+
 #[derive(Clone, Debug, Subcommand)]
 pub enum Command {
     /// Capture, commit and push
@@ -315,6 +444,12 @@ pub enum Command {
     Ignore(RuleArgs),
     /// Manage re-include rules
     Reinclude(RuleArgs),
+    /// Manage profiles
+    Profile(ProfileArgs),
+    /// Manage a profile's remotes
+    Remote(RemoteArgs),
+    /// Manage a profile's schedule
+    Schedule(ScheduleArgs),
     /// Validate, locate or create the config file
     Config(ConfigArgs),
     /// Scheduler lifecycle for the backup agents
@@ -334,7 +469,7 @@ pub enum Command {
 impl Command {
     /// Every subcommand as it is typed, which must stay identical to clap's own
     /// kebab-case rename of the variants.
-    pub const NAMES: [&'static str; 13] = [
+    pub const NAMES: [&'static str; 16] = [
         "run",
         "push",
         "status",
@@ -343,6 +478,9 @@ impl Command {
         "watch",
         "ignore",
         "reinclude",
+        "profile",
+        "remote",
+        "schedule",
         "config",
         "service",
         "doctor",
@@ -364,6 +502,9 @@ impl Command {
             Self::Watch(_) => "watch",
             Self::Ignore(_) => "ignore",
             Self::Reinclude(_) => "reinclude",
+            Self::Profile(_) => "profile",
+            Self::Remote(_) => "remote",
+            Self::Schedule(_) => "schedule",
             Self::Config(_) => "config",
             Self::Service(_) => "service",
             Self::Doctor(_) => "doctor",
@@ -423,6 +564,9 @@ pub fn dispatch(command: Command) -> Exit {
         Command::Watch(args) => rules::dispatch(crate::config_edit::List::Watch, &args),
         Command::Ignore(args) => rules::dispatch(crate::config_edit::List::Ignore, &args),
         Command::Reinclude(args) => rules::dispatch(crate::config_edit::List::Reinclude, &args),
+        Command::Profile(args) => profile::dispatch(&args),
+        Command::Remote(args) => remote::dispatch(&args),
+        Command::Schedule(args) => schedule::dispatch(&args),
     }
 }
 

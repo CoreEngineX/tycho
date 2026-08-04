@@ -11,7 +11,8 @@
 //! convenience, not the interface.
 
 use std::path::{Path, PathBuf};
-use toml_edit::{Array, DocumentMut, Item, Value};
+use std::time::Duration;
+use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, Value};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EditError {
@@ -206,15 +207,7 @@ impl Editing {
     }
 
     fn array(&mut self, profile: usize, list: List) -> Result<&mut Array, EditError> {
-        let tables = self
-            .document
-            .get_mut("profile")
-            .and_then(Item::as_array_of_tables_mut)
-            .ok_or(EditError::NoProfiles)?;
-        let table = tables
-            .get_mut(profile)
-            .ok_or_else(|| EditError::NoProfile(profile.to_string()))?;
-
+        let table = self.profile_table_mut(profile)?;
         let key = list.key();
         if table.get(key).is_none() {
             table[key] = Item::Value(Value::Array(Array::new()));
@@ -225,6 +218,325 @@ impl Editing {
                 value: key.to_owned(),
                 list: "an array".to_owned(),
             })
+    }
+
+    fn profile_table_mut(&mut self, profile: usize) -> Result<&mut Table, EditError> {
+        let tables = self
+            .document
+            .get_mut("profile")
+            .and_then(Item::as_array_of_tables_mut)
+            .ok_or(EditError::NoProfiles)?;
+        tables
+            .get_mut(profile)
+            .ok_or_else(|| EditError::NoProfile(profile.to_string()))
+    }
+
+    /// Appends a new `[[profile]]` table.
+    ///
+    /// # Errors
+    ///
+    /// If the document's `profile` key exists and is not an array of tables - a
+    /// malformed file `open` would already have rejected.
+    pub fn add_profile(&mut self, new: &NewProfile) -> Result<(), EditError> {
+        if self.document.get("profile").is_none() {
+            self.document["profile"] = Item::ArrayOfTables(ArrayOfTables::new());
+        }
+        let tables = self.document["profile"]
+            .as_array_of_tables_mut()
+            .ok_or(EditError::NoProfiles)?;
+        tables.push(build_profile_table(new));
+        Ok(())
+    }
+
+    /// Removes the profile at `index`.
+    ///
+    /// # Errors
+    ///
+    /// If there is no profile at that index.
+    pub fn remove_profile(&mut self, index: usize) -> Result<(), EditError> {
+        let tables = self
+            .document
+            .get_mut("profile")
+            .and_then(Item::as_array_of_tables_mut)
+            .ok_or(EditError::NoProfiles)?;
+        if index >= tables.len() {
+            return Err(EditError::NoProfile(index.to_string()));
+        }
+        tables.remove(index);
+        Ok(())
+    }
+
+    /// Every remote configured on a profile, in file order.
+    #[must_use]
+    pub fn remotes(&self, profile: usize) -> Vec<RemoteEntry> {
+        self.document
+            .get("profile")
+            .and_then(Item::as_array_of_tables)
+            .and_then(|tables| tables.get(profile))
+            .and_then(|table| table.get("remotes"))
+            .and_then(Item::as_array)
+            .map(|array| array.iter().filter_map(remote_entry).collect())
+            .unwrap_or_default()
+    }
+
+    /// Appends a remote to a profile's `remotes` array, creating it if this is the
+    /// first one.
+    ///
+    /// # Errors
+    ///
+    /// If the profile does not exist.
+    pub fn add_remote(&mut self, profile: usize, remote: &NewRemote) -> Result<(), EditError> {
+        let array = self.remotes_array(profile)?;
+        array.push(remote_inline(remote));
+        if let Some(added) = array.iter_mut().last() {
+            added.decor_mut().set_prefix("\n  ");
+        }
+        array.set_trailing_comma(true);
+        Ok(())
+    }
+
+    /// Removes a remote by name.
+    ///
+    /// # Errors
+    ///
+    /// If the profile does not exist, or has no remote by that name.
+    pub fn remove_remote(&mut self, profile: usize, name: &str) -> Result<(), EditError> {
+        let array = self.remotes_array(profile)?;
+        let index = array
+            .iter()
+            .position(|value| value_str(value, "name") == Some(name));
+        let Some(index) = index else {
+            return Err(EditError::NotPresent {
+                value: name.to_owned(),
+                list: "remotes".to_owned(),
+            });
+        };
+        array.remove(index);
+        Ok(())
+    }
+
+    fn remotes_array(&mut self, profile: usize) -> Result<&mut Array, EditError> {
+        let table = self.profile_table_mut(profile)?;
+        if table.get("remotes").is_none() {
+            table["remotes"] = Item::Value(Value::Array(Array::new()));
+        }
+        table["remotes"]
+            .as_array_mut()
+            .ok_or_else(|| EditError::NotPresent {
+                value: "remotes".to_owned(),
+                list: "an array".to_owned(),
+            })
+    }
+
+    /// Sets or clears `local_only` on a profile.
+    ///
+    /// # Errors
+    ///
+    /// If the profile does not exist.
+    pub fn set_local_only(&mut self, profile: usize, value: bool) -> Result<(), EditError> {
+        let table = self.profile_table_mut(profile)?;
+        if value {
+            table["local_only"] = Item::Value(Value::from(value));
+        } else {
+            table.remove("local_only");
+        }
+        Ok(())
+    }
+
+    /// Replaces a profile's schedule.
+    ///
+    /// # Errors
+    ///
+    /// If the profile does not exist.
+    pub fn set_schedule(
+        &mut self,
+        profile: usize,
+        schedule: crate::config::Schedule,
+    ) -> Result<(), EditError> {
+        let table = self.profile_table_mut(profile)?;
+        table["schedule"] = Item::Value(Value::InlineTable(schedule_inline(schedule)));
+        Ok(())
+    }
+
+    /// Clears a profile's schedule, so it only runs when invoked by hand.
+    ///
+    /// # Errors
+    ///
+    /// If the profile does not exist.
+    pub fn clear_schedule(&mut self, profile: usize) -> Result<(), EditError> {
+        let table = self.profile_table_mut(profile)?;
+        table.remove("schedule");
+        Ok(())
+    }
+
+    /// Whether a profile carries a `schedule` key at all, without validating it -
+    /// that is `config check`'s job.
+    #[must_use]
+    pub fn has_schedule(&self, profile: usize) -> bool {
+        self.document
+            .get("profile")
+            .and_then(Item::as_array_of_tables)
+            .and_then(|tables| tables.get(profile))
+            .is_some_and(|table| table.get("schedule").is_some())
+    }
+}
+
+/// A remote as read back from the file, unvalidated.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteEntry {
+    pub name: String,
+    pub path: String,
+    pub optional: bool,
+    pub trust_ownership: bool,
+    pub behind_tolerance: Option<u32>,
+}
+
+/// A remote to append. Every field here becomes a key in the same inline table
+/// `config.md` documents, and a default-valued one is omitted rather than written
+/// out, so an added remote reads the way a hand-written one would.
+#[derive(Clone, Debug)]
+pub struct NewRemote {
+    pub name: String,
+    pub path: String,
+    pub optional: bool,
+    pub trust_ownership: bool,
+    pub behind_tolerance: Option<u32>,
+}
+
+/// A profile to append.
+#[derive(Clone, Debug)]
+pub struct NewProfile {
+    pub name: String,
+    pub watch: Vec<String>,
+    pub remotes: Vec<NewRemote>,
+    pub schedule: Option<crate::config::Schedule>,
+    pub local_only: bool,
+}
+
+/// The TOML block `profile add --dry-run` would append, without touching a file.
+#[must_use]
+pub fn preview_profile(new: &NewProfile) -> String {
+    let mut tables = ArrayOfTables::new();
+    tables.push(build_profile_table(new));
+    let mut document = DocumentMut::new();
+    document["profile"] = Item::ArrayOfTables(tables);
+    document.to_string()
+}
+
+fn build_profile_table(new: &NewProfile) -> Table {
+    let mut table = Table::new();
+    table.insert("name", Item::Value(Value::from(new.name.clone())));
+    if !new.watch.is_empty() {
+        let mut array = Array::new();
+        for path in &new.watch {
+            array.push(path.clone());
+        }
+        table.insert("watch", Item::Value(Value::Array(multiline(array))));
+    }
+    if !new.remotes.is_empty() {
+        let mut array = Array::new();
+        for remote in &new.remotes {
+            array.push(remote_inline(remote));
+        }
+        table.insert("remotes", Item::Value(Value::Array(multiline(array))));
+    }
+    if let Some(schedule) = new.schedule {
+        table.insert(
+            "schedule",
+            Item::Value(Value::InlineTable(schedule_inline(schedule))),
+        );
+    }
+    if new.local_only {
+        table.insert("local_only", Item::Value(Value::from(true)));
+    }
+    table
+}
+
+/// One entry per line, the same layout `starter` writes by hand - a wrapped single
+/// line is unreadable past a handful of entries.
+fn multiline(mut array: Array) -> Array {
+    for item in array.iter_mut() {
+        item.decor_mut().set_prefix("\n  ");
+    }
+    array.set_trailing_comma(true);
+    array.set_trailing("\n");
+    array
+}
+
+fn remote_inline(remote: &NewRemote) -> InlineTable {
+    let mut table = InlineTable::new();
+    table.insert("name", Value::from(remote.name.clone()));
+    table.insert("path", Value::from(remote.path.clone()));
+    if remote.optional {
+        table.insert("optional", Value::from(true));
+    }
+    if remote.trust_ownership {
+        table.insert("trust_ownership", Value::from(true));
+    }
+    if let Some(tolerance) = remote.behind_tolerance {
+        table.insert("behind_tolerance", Value::from(i64::from(tolerance)));
+    }
+    table
+}
+
+fn remote_entry(value: &Value) -> Option<RemoteEntry> {
+    let table = value.as_inline_table()?;
+    Some(RemoteEntry {
+        name: table.get("name")?.as_str()?.to_owned(),
+        path: table.get("path")?.as_str()?.to_owned(),
+        optional: table
+            .get("optional")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        trust_ownership: table
+            .get("trust_ownership")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        behind_tolerance: table
+            .get("behind_tolerance")
+            .and_then(Value::as_integer)
+            .and_then(|n| u32::try_from(n).ok()),
+    })
+}
+
+fn value_str<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+    value.as_inline_table()?.get(key)?.as_str()
+}
+
+/// `{ daily = { at = "..." } }`, `{ weekly = { day = "...", at = "..." } }` or
+/// `{ every = "..." }` - the same three shapes `config::raw::RawSchedule` reads.
+fn schedule_inline(schedule: crate::config::Schedule) -> InlineTable {
+    let mut table = InlineTable::new();
+    match schedule {
+        crate::config::Schedule::Daily { at } => {
+            let mut inner = InlineTable::new();
+            inner.insert("at", Value::from(at.to_string()));
+            table.insert("daily", Value::InlineTable(inner));
+        }
+        crate::config::Schedule::Weekly { day, at } => {
+            let mut inner = InlineTable::new();
+            inner.insert("day", Value::from(format!("{day:?}").to_lowercase()));
+            inner.insert("at", Value::from(at.to_string()));
+            table.insert("weekly", Value::InlineTable(inner));
+        }
+        crate::config::Schedule::Every(every) => {
+            table.insert("every", Value::from(every_spec(every)));
+        }
+    }
+    table
+}
+
+/// The compact `<N>h`/`<N>m` form the `every:` SPEC grammar accepts - the only shape
+/// `schedule set` ever produces here, so round-tripping it back through the same two
+/// units is exact.
+fn every_spec(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    if seconds > 0 && seconds.is_multiple_of(3600) {
+        let hours = seconds / 3600;
+        format!("{hours}h")
+    } else {
+        let minutes = (seconds / 60).max(1);
+        format!("{minutes}m")
     }
 }
 
@@ -280,6 +592,7 @@ pub fn starter(home: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{Editing, List, starter};
+    use std::time::Duration;
 
     /// A drive letter is what makes a path absolute on Windows, and forward slashes
     /// keep it inside a TOML basic string without escaping.
@@ -435,5 +748,169 @@ watch = [
             .filter(|item| item.kind != crate::config::DiagnosticKind::NoRemotes)
             .collect();
         assert!(unexpected.is_empty(), "{unexpected:#?}");
+    }
+
+    fn new_remote(name: &str, path: &str) -> super::NewRemote {
+        super::NewRemote {
+            name: name.to_owned(),
+            path: path.to_owned(),
+            optional: false,
+            trust_ownership: false,
+            behind_tolerance: None,
+        }
+    }
+
+    #[test]
+    fn a_new_profile_appends_a_table_that_still_parses() {
+        let (_dir, mut editing) = open(&with_comments());
+        editing
+            .add_profile(&super::NewProfile {
+                name: "work".to_owned(),
+                watch: vec![home("/Work")],
+                remotes: vec![new_remote("drive", "/Volumes/Drive/Backups")],
+                schedule: Some(crate::config::Schedule::Daily {
+                    at: crate::config::TimeOfDay {
+                        hour: 12,
+                        minute: 0,
+                    },
+                }),
+                local_only: false,
+            })
+            .expect("add profile");
+
+        assert_eq!(editing.profiles(), ["demo", "work"]);
+        let parsed =
+            crate::config::parse_with(&editing.text(), Some(std::path::Path::new(HOME)), |_| None)
+                .expect("still valid TOML");
+        let work = parsed
+            .config
+            .profiles
+            .iter()
+            .find(|profile| profile.name.as_str() == "work")
+            .expect("the new profile survived");
+        assert_eq!(work.watch.len(), 1);
+        assert_eq!(work.remotes.len(), 1);
+        assert_eq!(work.remotes[0].name.as_str(), "drive");
+    }
+
+    #[test]
+    fn removing_a_profile_leaves_the_others_untouched() {
+        let two = format!(
+            "{}\n[[profile]]\nname = \"work\"\nwatch = []\n",
+            with_comments()
+        );
+        let (_dir, mut editing) = open(&two);
+        editing.remove_profile(0).expect("remove");
+        assert_eq!(editing.profiles(), ["work"]);
+    }
+
+    #[test]
+    fn a_remote_round_trips_through_add_and_list() {
+        let (_dir, mut editing) = open(&with_comments());
+        editing
+            .add_remote(
+                0,
+                &super::NewRemote {
+                    name: "drive".to_owned(),
+                    path: "/Volumes/Drive/Backups".to_owned(),
+                    optional: true,
+                    trust_ownership: true,
+                    behind_tolerance: Some(2),
+                },
+            )
+            .expect("add remote");
+
+        let remotes = editing.remotes(0);
+        assert_eq!(remotes.len(), 1);
+        assert_eq!(remotes[0].name, "drive");
+        assert_eq!(remotes[0].path, "/Volumes/Drive/Backups");
+        assert!(remotes[0].optional);
+        assert!(remotes[0].trust_ownership);
+        assert_eq!(remotes[0].behind_tolerance, Some(2));
+
+        editing.remove_remote(0, "drive").expect("remove remote");
+        assert!(editing.remotes(0).is_empty());
+    }
+
+    #[test]
+    fn removing_an_absent_remote_says_so() {
+        let (_dir, mut editing) = open(&with_comments());
+        let error = editing
+            .remove_remote(0, "ghost")
+            .expect_err("not configured");
+        assert!(error.to_string().contains("ghost"), "{error}");
+    }
+
+    #[test]
+    fn a_schedule_can_be_set_and_cleared() {
+        let (_dir, mut editing) = open(&with_comments());
+        assert!(!editing.has_schedule(0));
+
+        editing
+            .set_schedule(
+                0,
+                crate::config::Schedule::Every(Duration::from_secs(21_600)),
+            )
+            .expect("set schedule");
+        assert!(editing.has_schedule(0));
+        assert!(
+            editing.text().contains("every = \"6h\""),
+            "{}",
+            editing.text()
+        );
+
+        editing.clear_schedule(0).expect("clear schedule");
+        assert!(!editing.has_schedule(0));
+    }
+
+    #[test]
+    fn a_weekly_schedule_writes_the_lowercase_day() {
+        let (_dir, mut editing) = open(&with_comments());
+        editing
+            .set_schedule(
+                0,
+                crate::config::Schedule::Weekly {
+                    day: crate::config::Weekday::Sunday,
+                    at: crate::config::TimeOfDay {
+                        hour: 12,
+                        minute: 0,
+                    },
+                },
+            )
+            .expect("set schedule");
+        assert!(
+            editing.text().contains(r#"day = "sunday""#),
+            "{}",
+            editing.text()
+        );
+    }
+
+    #[test]
+    fn local_only_is_written_and_removed_rather_than_ever_written_false() {
+        let (_dir, mut editing) = open(&with_comments());
+        editing.set_local_only(0, true).expect("set");
+        assert!(
+            editing.text().contains("local_only = true"),
+            "{}",
+            editing.text()
+        );
+
+        editing.set_local_only(0, false).expect("clear");
+        assert!(!editing.text().contains("local_only"), "{}", editing.text());
+    }
+
+    #[test]
+    fn a_dry_run_preview_matches_what_add_profile_would_write() {
+        let new = super::NewProfile {
+            name: "work".to_owned(),
+            watch: vec![home("/Work")],
+            remotes: vec![],
+            schedule: None,
+            local_only: true,
+        };
+        let preview = super::preview_profile(&new);
+        assert!(preview.contains("[[profile]]"), "{preview}");
+        assert!(preview.contains("name = \"work\""), "{preview}");
+        assert!(preview.contains("local_only = true"), "{preview}");
     }
 }
