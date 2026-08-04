@@ -603,6 +603,14 @@ mod tests {
     #[cfg(windows)]
     const HOME: &str = "C:/home/me";
 
+    /// A remote path the host can actually hold. `AbsPath` drops what it cannot
+    /// parse, so a POSIX-only literal here leaves a profile with zero remotes on
+    /// Windows and the assertion blames the edit rather than the fixture.
+    #[cfg(unix)]
+    const REMOTE: &str = "/Volumes/Drive/Backups";
+    #[cfg(windows)]
+    const REMOTE: &str = "D:/Backups";
+
     fn home(rest: &str) -> String {
         format!("{HOME}{rest}")
     }
@@ -769,7 +777,7 @@ watch = [
             .add_profile(&super::NewProfile {
                 name: "work".to_owned(),
                 watch: vec![home("/Work")],
-                remotes: vec![new_remote("drive", "/Volumes/Drive/Backups")],
+                remotes: vec![new_remote("drive", REMOTE)],
                 schedule: Some(crate::config::Schedule::Daily {
                     at: crate::config::TimeOfDay {
                         hour: 12,
@@ -814,7 +822,7 @@ watch = [
                 0,
                 &super::NewRemote {
                     name: "drive".to_owned(),
-                    path: "/Volumes/Drive/Backups".to_owned(),
+                    path: REMOTE.to_owned(),
                     optional: true,
                     trust_ownership: true,
                     behind_tolerance: Some(2),
@@ -825,7 +833,7 @@ watch = [
         let remotes = editing.remotes(0);
         assert_eq!(remotes.len(), 1);
         assert_eq!(remotes[0].name, "drive");
-        assert_eq!(remotes[0].path, "/Volumes/Drive/Backups");
+        assert_eq!(remotes[0].path, REMOTE);
         assert!(remotes[0].optional);
         assert!(remotes[0].trust_ownership);
         assert_eq!(remotes[0].behind_tolerance, Some(2));

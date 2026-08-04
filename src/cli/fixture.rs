@@ -61,28 +61,56 @@ pub(crate) fn literal(path: &Path) -> String {
 mod tests {
     /// The regression itself, pinned rather than remembered.
     ///
-    /// A `watch` root written as a POSIX absolute path passes on the machine that
-    /// wrote it and fails every Windows run. Twice this reached CI, so it is a test
-    /// and not a note.
+    /// A config path written as a POSIX absolute literal passes on the machine that
+    /// wrote it and fails every Windows run, because `AbsPath` drops what the host
+    /// cannot hold and the assertion then blames the code rather than the fixture.
+    /// Three separate CI failures were this, in three different files, so the check
+    /// is over the whole tree rather than the files that had already gone wrong.
+    ///
+    /// A path inside a **string being displayed** is fine - only one that gets parsed
+    /// matters - so this looks for the two keys that are read back as paths.
     #[test]
-    fn no_command_test_hardcodes_a_posix_path_as_a_watched_root() {
+    fn no_fixture_hardcodes_a_posix_path_where_one_is_parsed() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut offenders = Vec::new();
-        for file in ["profile.rs", "remote.rs", "schedule.rs", "fixture.rs"] {
-            let path = format!("{}/src/cli/{file}", env!("CARGO_MANIFEST_DIR"));
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
+        walk(&root, &mut |file: &std::path::Path, text: &str| {
             for (number, line) in text.lines().enumerate() {
                 let trimmed = line.trim_start();
-                if trimmed.starts_with("watch = [\"/") || trimmed.starts_with("watch = ['/") {
-                    offenders.push(format!("{file}:{}: {trimmed}", number + 1));
+                let parsed_key = trimmed.starts_with("watch = [\"/")
+                    || trimmed.starts_with("watch = ['/")
+                    || trimmed.starts_with("path = \"/")
+                    || trimmed.starts_with("path: \"/")
+                    || (trimmed.contains("new_remote(") && trimmed.contains(", \"/"));
+                if parsed_key {
+                    offenders.push(format!(
+                        "{}:{}: {trimmed}",
+                        file.strip_prefix(&root).unwrap_or(file).display(),
+                        number + 1
+                    ));
                 }
             }
-        }
+        });
         assert!(
             offenders.is_empty(),
-            "a watched root must come from Fixture::dir, not a literal path:\n  {}",
+            "a parsed path must come from Fixture::dir or a #[cfg]-selected constant, \
+             never a POSIX literal:\n  {}",
             offenders.join("\n  ")
         );
+    }
+
+    fn walk(dir: &std::path::Path, visit: &mut impl FnMut(&std::path::Path, &str)) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, visit);
+            } else if path.extension().is_some_and(|ext| ext == "rs")
+                && let Ok(text) = std::fs::read_to_string(&path)
+            {
+                visit(&path, &text);
+            }
+        }
     }
 }
