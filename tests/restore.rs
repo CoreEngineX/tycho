@@ -122,6 +122,10 @@ impl Fixture {
     fn restore(&self, into: &Path, wanted: &Wanted) -> restore::Done {
         restore::execute(&self.store, into, None, wanted, false).expect("the restore")
     }
+
+    fn store_path(&self) -> PathBuf {
+        self.dir.path().join("demo.git")
+    }
 }
 
 fn fixture() -> Fixture {
@@ -402,7 +406,7 @@ fn an_overlay_type_conflict_is_reported_and_the_material_is_still_there() {
 /// came from the backup's tree, so every one of those restores reported success.
 #[cfg(windows)]
 #[test]
-fn a_restore_short_of_its_backup_names_what_is_missing() {
+fn a_link_windows_cannot_write_is_named_rather_than_counted() {
     let mut fixture = fixture();
     write(&fixture.root().join("ordinary.txt"), b"plain\n");
     write(&fixture.root().join("elsewhere").join("inside.txt"), b"x\n");
@@ -440,6 +444,101 @@ fn a_restore_short_of_its_backup_names_what_is_missing() {
     assert_eq!(
         fs::read(into.join("A").join("ordinary.txt")).expect("read"),
         b"plain\n"
+    );
+}
+
+/// A directory `tar` cannot write into, which is how a restore comes up short on a
+/// platform where every link can be created.
+///
+/// `bsdtar` applies a mode only to a directory it creates itself, so one already at
+/// `0500` in the destination stays that way and every entry underneath it fails -
+/// while the rest of the archive lands. That is the same shape as the Windows case
+/// above and needs no privilege to arrange.
+#[cfg(unix)]
+fn block_a_directory(into: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let blocked = into.join("A").join("sub");
+    fs::create_dir_all(&blocked).expect("mkdir");
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o500)).expect("chmod");
+    blocked
+}
+
+/// The count must come from the filesystem, not from the backup's own tree.
+///
+/// Before this, `files` was `backup.tree().len()` whatever happened, so a restore
+/// that wrote nothing still reported every file in the backup and exited 0.
+#[cfg(unix)]
+#[test]
+fn a_restore_short_of_its_backup_names_what_is_missing() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut fixture = fixture();
+    write(&fixture.root().join("ordinary.txt"), b"plain\n");
+    write(&fixture.root().join("sub").join("inside.md"), b"blocked\n");
+    fixture.run();
+
+    let into = fixture.dest("recovered");
+    let blocked = block_a_directory(&into);
+    let done = restore::execute(&fixture.store, &into, None, &Wanted::default(), true)
+        .expect("a short restore still reports rather than aborting");
+
+    assert!(
+        done.missing.iter().any(|path| path.ends_with("inside.md")),
+        "the entry tar could not write must be named: {:?}",
+        done.missing
+    );
+    assert!(
+        into.join("A").join("ordinary.txt").exists(),
+        "one blocked directory must not cost the rest of the restore"
+    );
+    assert!(
+        done.files > 0 && done.missing.len() == 1,
+        "the rest landed and is counted separately from what did not: {done:?}"
+    );
+
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700)).expect("chmod back");
+}
+
+/// **A restore short of its backup exits 1.**
+///
+/// The reconciliation above was computed, printed, and then discarded: `restore`
+/// returned 0 whenever the extraction merely failed to write something, and reserved
+/// its non-zero exits for a refused overlay file - the *less* serious condition, where
+/// the material is still in the staging tree. A scripted `tycho restore && rm -rf
+/// original` read that as success.
+#[cfg(unix)]
+#[test]
+fn a_restore_that_could_not_write_everything_exits_non_zero() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut fixture = fixture();
+    write(&fixture.root().join("ordinary.txt"), b"plain\n");
+    write(&fixture.root().join("sub").join("inside.md"), b"blocked\n");
+    fixture.run();
+
+    let into = fixture.dest("recovered");
+    let blocked = block_a_directory(&into);
+    let out = Command::new(env!("CARGO_BIN_EXE_tycho"))
+        .args(["restore", "--store"])
+        .arg(fixture.store_path())
+        .arg("--into")
+        .arg(&into)
+        .arg("--force")
+        .output()
+        .expect("tycho runs");
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700)).expect("chmod back");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a restore that did not write everything is a failed restore\n{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("missing") && stdout.contains("inside.md"),
+        "and it says which path: {stdout}"
     );
 }
 

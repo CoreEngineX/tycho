@@ -386,13 +386,6 @@ pub fn tolerance(remote: &crate::config::Remote) -> u32 {
 /// verification is an observation about that remote; letting it abort the loop would
 /// mean one unplugged drive stopped the cloud copies from being written.
 fn mirror(profile: &Profile, store: &Store, state: &mut State) -> Vec<RemoteResult> {
-    // Installed before the first git call touches a remote, and only when a remote
-    // asked for it. A failure to write it is not a reason to skip the push: the push
-    // then fails on its own with git's ownership message, which now names the cause.
-    if let Ok(dir) = crate::platform::data_dir() {
-        let _ =
-            crate::remote::trust::install(&profile.remotes, profile.name.as_str(), dir.as_path());
-    }
     let now = Timestamp::now().to_string();
     let mut results = Vec::new();
     let mut folders: Vec<std::path::PathBuf> = Vec::new();

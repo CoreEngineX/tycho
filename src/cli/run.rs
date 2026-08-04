@@ -583,9 +583,16 @@ pub fn restore(args: &crate::cli::RestoreArgs) -> Exit {
     match restore::execute(&store, &args.into, at.as_ref(), &wanted, args.force) {
         Ok(done) => {
             print!("{}", render::restored(&args.into, &done));
-            // A refused overlay file is not a failed restore - everything else landed,
-            // and the file it declined to write is still in the staging tree.
-            if done.conflicts() > 0 {
+            if !done.missing.is_empty() {
+                // A path the backup holds and the disk does not is a restore that did
+                // not happen, whatever the extraction's own exit status said. Exit 1
+                // rather than 3: `cli.md` reserves 3 for a refused overlay file, which
+                // is still in the staging tree, and this is not.
+                Exit::Failure
+            } else if done.conflicts() > 0 {
+                // A refused overlay file is not a failed restore - everything else
+                // landed, and the file it declined to write is still in the staging
+                // tree.
                 Exit::Warning
             } else {
                 Exit::Ok
@@ -756,7 +763,18 @@ pub(crate) fn load(override_path: Option<PathBuf>) -> Option<(Parsed, String)> {
         }
     };
     match crate::config::parse(&text) {
-        Ok(parsed) => Some((parsed, text)),
+        Ok(parsed) => {
+            // The composition root for `safe.directory`, and the only place that can
+            // be: it is process-wide and takes one file, so it has to see every
+            // profile at once. Here rather than on the push path because `status`,
+            // `doctor` and `verify` all reach a remote too, and installing it only
+            // where the push happens meant a trusted remote worked under `run` and
+            // read as broken under every command that reports on it.
+            if let Ok(dir) = platform::data_dir() {
+                let _ = crate::remote::trust::install(&parsed.config, dir.as_path());
+            }
+            Some((parsed, text))
+        }
         Err(error) => {
             eprintln!("tycho: {error}");
             None
