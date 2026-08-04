@@ -35,6 +35,7 @@ use std::path::Path;
 pub const MANIFEST: &str = ".tycho/metadata.tsv";
 
 /// The system's own attributes, which belong to the machine rather than to the file.
+#[cfg(unix)]
 const SYSTEM_XATTRS: [&str; 2] = ["com.apple.provenance", "com.apple.quarantine"];
 
 /// What one path carried that the tree entry could not.

@@ -123,6 +123,7 @@ impl Fixture {
         restore::execute(&self.store, into, None, wanted, false).expect("the restore")
     }
 
+    #[cfg(unix)]
     fn store_path(&self) -> PathBuf {
         self.dir.path().join("demo.git")
     }

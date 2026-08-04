@@ -311,13 +311,14 @@ mod tests {
         );
     }
 
-    /// Without `SeCreateSymbolicLinkPrivilege` the link cannot be recreated. What
-    /// must not happen is a silent skip, or a regular file holding the target path
-    /// where a link belonged - so this asserts the conflict is reported and that
-    /// nothing was written at the name.
+    /// Whether an account may create a symlink is a property of the machine -
+    /// `SeCreateSymbolicLinkPrivilege`, or Developer Mode, which CI runners have and
+    /// stock workstations do not. So both outcomes are legitimate here and this pins
+    /// the pair that is not: a silent skip, or a regular file holding the target path
+    /// where a link belonged.
     #[cfg(windows)]
     #[test]
-    fn a_link_windows_will_not_recreate_is_reported_rather_than_skipped() {
+    fn a_link_is_either_recreated_as_a_link_or_reported_never_silently_skipped() {
         let dir = tempfile::tempdir().expect("temp dir");
         let (from, to) = (dir.path().join("overlay"), dir.path().join("checkout"));
         let target = dir.path().join("real");
@@ -326,21 +327,39 @@ mod tests {
         link_to_dir(&from.join("link"), &target);
 
         let applied = apply(&from, &to).expect("apply");
-        assert_eq!(
-            applied.conflicts.len(),
-            1,
-            "a refused link must be reported: {applied:?}"
-        );
-        assert_eq!(
-            applied.conflicts[0].reason,
-            Reason::SymlinkNotPermitted,
-            "{applied:?}"
-        );
-        assert_eq!(applied.files, 0);
-        assert!(
-            to.join("link").symlink_metadata().is_err(),
-            "nothing may be written where the link belonged"
-        );
+        match to.join("link").symlink_metadata() {
+            Ok(written) => {
+                assert!(
+                    written.file_type().is_symlink(),
+                    "a link may not land as a regular file: {applied:?}"
+                );
+                assert!(applied.conflicts.is_empty(), "{applied:?}");
+            }
+            Err(_) => {
+                assert_eq!(
+                    applied.conflicts.len(),
+                    1,
+                    "a refused link must be reported: {applied:?}"
+                );
+                assert_eq!(
+                    applied.conflicts[0].reason,
+                    Reason::SymlinkNotPermitted,
+                    "{applied:?}"
+                );
+                assert_eq!(applied.files, 0);
+            }
+        }
+    }
+
+    /// The predicate the refusal path turns on. The test above cannot reach it on a
+    /// machine that may create symlinks, and that machine is the one running CI.
+    #[cfg(windows)]
+    #[test]
+    fn only_the_privilege_error_counts_as_a_refusal() {
+        use std::io::Error;
+        assert!(refused_for_privilege(&Error::from_raw_os_error(1314)));
+        assert!(!refused_for_privilege(&Error::from_raw_os_error(5)));
+        assert!(!refused_for_privilege(&Error::other("unrelated")));
     }
 
     /// A symlink to a directory must not be walked into, or the copy fabricates the
