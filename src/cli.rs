@@ -5,6 +5,7 @@ pub mod fixture;
 
 pub mod doctor;
 pub mod profile;
+pub mod progress;
 pub mod remote;
 pub mod render;
 pub mod report;

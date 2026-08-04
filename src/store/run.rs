@@ -69,6 +69,40 @@ pub struct Completed {
     pub remotes: Vec<RemoteResult>,
 }
 
+/// What a run is doing, reported as it happens.
+///
+/// `store` is layer 4 and may not print for itself - `lib.rs`'s layer table - so a
+/// run hands one of these to an [`Observer`] instead, and `cli` (layer 5) is the only
+/// thing that turns it into text. Every variant is a phase slow enough on a real tree
+/// to be mistaken for a hang; the instant ones (indexing, writing the tree,
+/// reconciling, the commit itself, saving state) are one git call each and are not
+/// here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// Walking every watched root and applying the sanity gate. Nothing is counted
+    /// yet - the count is this phase's own output.
+    Planning,
+    Hashing {
+        files: usize,
+    },
+    Capturing {
+        repo: String,
+        done: usize,
+        total: usize,
+    },
+    /// Writing the commit, then compacting the store (`git gc --auto`), which is the
+    /// one that can run long on a store with a lot of loose objects.
+    Publishing,
+    Pushing {
+        remote: String,
+    },
+}
+
+/// A run's callback for [`Step`]. `&mut dyn FnMut` rather than a generic parameter,
+/// so threading it through `advance` does not make `execute` generic over the
+/// caller's closure type.
+pub type Observer<'a> = &'a mut dyn FnMut(Step);
+
 /// Takes the profile lock, walks the spine, and records the result.
 ///
 /// The lock is a try-lock: a blocking one converts a single hung run into
@@ -83,6 +117,7 @@ pub fn execute(
     paths: &Paths<'_>,
     state: &mut State,
     allow_shrink: bool,
+    observe: Observer<'_>,
 ) -> Result<Completed, RunError> {
     let guard = match try_lock(paths.lock) {
         Ok(guard) => guard,
@@ -92,7 +127,16 @@ pub fn execute(
     let previous = state.last_entries(profile.name.as_str());
     let started = Instant::now();
     let run = Run::start(profile, store);
-    finish(run, guard, started, &previous, paths, state, allow_shrink)
+    finish(
+        run,
+        guard,
+        started,
+        &previous,
+        paths,
+        state,
+        allow_shrink,
+        observe,
+    )
 }
 
 /// Where a run's two files live.
@@ -114,6 +158,7 @@ fn finish(
     paths: &Paths<'_>,
     state: &mut State,
     allow_shrink: bool,
+    observe: Observer<'_>,
 ) -> Result<Completed, RunError> {
     let config_text = paths.config_text;
     let state_path = paths.state;
@@ -125,12 +170,16 @@ fn finish(
     // bytes its own commit costs.
     let before = store.size()?;
 
+    observe(Step::Planning);
     let run = run.advance(|Locked| {
         Ok::<_, RunError>(Planned {
             plan: plan::build(profile, &rules, previous, allow_shrink)?,
         })
     })?;
 
+    observe(Step::Hashing {
+        files: run.state.plan.files(),
+    });
     let run = run.advance(|Planned { plan }| {
         let (entries, unreadable) = store.hash(&plan)?;
         Ok::<_, RunError>(Hashed {
@@ -149,6 +198,7 @@ fn finish(
             let nested = capture::nested_roots(&plan);
             let mut contribution = capture::Contribution::default();
             let mut repos_captured = 0;
+            let total = plan.repo_count();
 
             for root in &plan.roots {
                 for repo in root.repos() {
@@ -157,6 +207,11 @@ fn finish(
                     contribution.generated.extend(part.generated);
                     contribution.warnings.extend(part.warnings);
                     repos_captured += 1;
+                    observe(Step::Capturing {
+                        repo: repo.key.clone(),
+                        done: repos_captured,
+                        total,
+                    });
                 }
             }
 
@@ -294,6 +349,7 @@ fn finish(
         },
     )?;
 
+    observe(Step::Publishing);
     let run = run.advance(
         |Committed {
              plan,
@@ -333,7 +389,7 @@ fn finish(
              summary,
              mut record,
          }| {
-            let remotes = mirror(profile, store, state);
+            let remotes = mirror(profile, store, state, observe);
             record.outcome = outcome_of(&remotes);
             Ok::<_, RunError>(Mirrored {
                 commit,
@@ -408,7 +464,12 @@ pub fn tolerance(remote: &crate::config::Remote) -> u32 {
 /// Never returns an error. A destination that is unreachable, refuses, or fails
 /// verification is an observation about that remote; letting it abort the loop would
 /// mean one unplugged drive stopped the cloud copies from being written.
-fn mirror(profile: &Profile, store: &Store, state: &mut State) -> Vec<RemoteResult> {
+fn mirror(
+    profile: &Profile,
+    store: &Store,
+    state: &mut State,
+    observe: Observer<'_>,
+) -> Vec<RemoteResult> {
     let now = Timestamp::now().to_string();
     let mut results = Vec::new();
     let mut folders: Vec<std::path::PathBuf> = Vec::new();
@@ -416,6 +477,9 @@ fn mirror(profile: &Profile, store: &Store, state: &mut State) -> Vec<RemoteResu
     for configured in &profile.remotes {
         let name = configured.name.as_str();
         let allowed = tolerance(configured);
+        observe(Step::Pushing {
+            remote: name.to_owned(),
+        });
         let seen = remote::publish(store, configured, profile.name.as_str());
         if matches!(seen, remote::state::Observation::Verified { .. })
             && let Ok(folder) = remote::resolve(&configured.path)
@@ -484,13 +548,14 @@ pub fn catch_up(
     store: &Store,
     paths: &Paths<'_>,
     state: &mut State,
+    observe: Observer<'_>,
 ) -> Result<Option<Vec<RemoteResult>>, RunError> {
     let guard = match try_lock(paths.lock) {
         Ok(guard) => guard,
         Err(LockError::Held(_)) => return Ok(None),
         Err(other) => return Err(RunError::Lock(other)),
     };
-    let results = mirror(profile, store, state);
+    let results = mirror(profile, store, state, observe);
     state.save(paths.state)?;
     drop(guard);
     Ok(Some(results))

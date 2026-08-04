@@ -1,6 +1,7 @@
 //! What `run` and `config` actually do.
 
 use crate::capture::{Inspection, inspect};
+use crate::cli::progress::Progress;
 use crate::cli::report::{at_file, at_profile, at_remote, at_store, report};
 use crate::cli::{ConfigAction, ConfigArgs, Exit, RunArgs, render};
 use crate::config::{Config, Parsed, Profile, Schedule};
@@ -75,10 +76,24 @@ fn one_run(args: &RunArgs, profile: &Profile, config_text: &str) -> Exit {
         state: paths.state.as_path(),
         config_text: Some(config_text),
     };
-    let done = match store::run::execute(profile, &store, &run_paths, &mut state, args.allow_shrink)
-    {
-        Ok(done) => done,
-        Err(error) => return run_error(&error, profile),
+    let mut progress = Progress::new();
+    let name = profile.name.as_str();
+    let done = match store::run::execute(
+        profile,
+        &store,
+        &run_paths,
+        &mut state,
+        args.allow_shrink,
+        &mut |step| progress.report(name, &step),
+    ) {
+        Ok(done) => {
+            progress.clear();
+            done
+        }
+        Err(error) => {
+            progress.clear();
+            return run_error(&error, profile);
+        }
     };
 
     print!("{}", render::run_result(profile.name.as_str(), &done));
@@ -329,7 +344,13 @@ fn one_push(profile: &Profile, config_text: &str) -> Exit {
         config_text: Some(config_text),
     };
 
-    match store::run::catch_up(profile, &store, &run_paths, &mut state) {
+    let mut progress = Progress::new();
+    let name = profile.name.as_str();
+    let outcome = store::run::catch_up(profile, &store, &run_paths, &mut state, &mut |step| {
+        progress.report(name, &step)
+    });
+    progress.clear();
+    match outcome {
         // A run in progress is about to push anyway, so this is a success, not a
         // contention error to retry.
         Ok(None) => Exit::Ok,

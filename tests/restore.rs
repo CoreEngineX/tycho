@@ -108,7 +108,15 @@ impl Fixture {
             state: &state_path,
             config_text: None,
         };
-        run::execute(&self.profile, &self.store, &paths, &mut self.state, false).expect("the run");
+        run::execute(
+            &self.profile,
+            &self.store,
+            &paths,
+            &mut self.state,
+            false,
+            &mut |_| {},
+        )
+        .expect("the run");
     }
 
     fn root(&self) -> PathBuf {

@@ -21,21 +21,34 @@ pub const WIDTH: usize = 74;
 /// on top of text that already says it.
 static COLOUR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Whether stdout is a terminal, asked once and reused everywhere the answer matters -
+/// `cli::progress` needs this same fact to decide whether a run is worth narrating at
+/// all, and a second, independent call to `IsTerminal` would risk the two disagreeing.
+#[must_use]
+pub fn stdout_is_terminal() -> bool {
+    std::io::IsTerminal::is_terminal(&std::io::stdout())
+}
+
 /// Decides once, from the three things that all mean no.
 ///
 /// `NO_COLOR` is the cross-tool convention; `--no-color` is the explicit ask; and a
 /// stdout that is not a terminal is a pipe or a log file, where escape codes are
 /// noise. Under launchd stdout is a file, so an agent's log never contains them.
 pub fn decide_colour(disabled_by_flag: bool) {
-    let on = !disabled_by_flag
-        && std::env::var_os("NO_COLOR").is_none()
-        && std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let on = !disabled_by_flag && std::env::var_os("NO_COLOR").is_none() && stdout_is_terminal();
     COLOUR.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
 #[must_use]
 pub fn colour_is_on() -> bool {
     COLOUR.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Pins colour for a test, independent of the real terminal or `NO_COLOR` - the only
+/// way another module's tests can exercise both branches of [`paint`] deterministically.
+#[cfg(test)]
+pub(crate) fn set_colour_for_test(on: bool) {
+    COLOUR.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Wraps text in an SGR colour, or returns it untouched.

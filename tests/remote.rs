@@ -132,7 +132,15 @@ impl Fixture {
             state: &state_path,
             config_text: None,
         };
-        run::execute(&self.profile, &self.store, &paths, &mut self.state, false).expect("the run")
+        run::execute(
+            &self.profile,
+            &self.store,
+            &paths,
+            &mut self.state,
+            false,
+            &mut |_| {},
+        )
+        .expect("the run")
     }
 
     fn push(&mut self) -> Option<Vec<run::RemoteResult>> {
@@ -142,7 +150,14 @@ impl Fixture {
             state: &state_path,
             config_text: None,
         };
-        run::catch_up(&self.profile, &self.store, &paths, &mut self.state).expect("the push")
+        run::catch_up(
+            &self.profile,
+            &self.store,
+            &paths,
+            &mut self.state,
+            &mut |_| {},
+        )
+        .expect("the push")
     }
 
     fn folder(&self, name: &str) -> PathBuf {
@@ -532,8 +547,14 @@ fn a_catch_up_push_yields_to_a_run_in_progress() {
         state: &state_path,
         config_text: None,
     };
-    let result = run::catch_up(&fixture.profile, &fixture.store, &paths, &mut fixture.state)
-        .expect("a held lock is not an error");
+    let result = run::catch_up(
+        &fixture.profile,
+        &fixture.store,
+        &paths,
+        &mut fixture.state,
+        &mut |_| {},
+    )
+    .expect("a held lock is not an error");
     assert!(result.is_none());
     drop(held);
 }

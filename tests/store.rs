@@ -74,7 +74,14 @@ impl Fixture {
             state: &state_path,
             config_text: None,
         };
-        run::execute(&self.profile, &self.store, &paths, &mut self.state, false)
+        run::execute(
+            &self.profile,
+            &self.store,
+            &paths,
+            &mut self.state,
+            false,
+            &mut |_| {},
+        )
     }
 
     fn git(&self, args: &[&str]) -> String {
