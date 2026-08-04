@@ -18,6 +18,7 @@
 
 use crate::cli::Cli;
 use crate::cli::render::{CYAN, DIM, GREEN, paint};
+use crate::cli::report::{at_file, report};
 use clap::{Args, CommandFactory};
 use clap_complete::{Shell as CompShell, generate};
 use serde::Deserialize;
@@ -43,7 +44,9 @@ pub struct BootstrapArgs {
 
 /// # Errors
 ///
-/// If no checkout can be found, or cargo, the completion write or the rc patch fails.
+/// If no checkout can be found, or cargo, the completion write or the rc patch fails -
+/// each already prints its own diagnostic, so the message itself is not meant to be
+/// shown again.
 pub fn run(args: &BootstrapArgs) -> Result<(), String> {
     println!("{}", paint("tycho __bootstrap", "1"));
     println!();
@@ -132,26 +135,29 @@ fn resolve_source_with(
         if is_tycho_checkout(&path) {
             return Ok(path);
         }
-        eprintln!(
-            "  {} ${SRC_ENV} = '{}' is not a tycho checkout - ignoring",
-            paint("note:", DIM),
-            path.display()
-        );
+        let shown = path.display();
+        let _ = report! {
+            warning: "${SRC_ENV} = '{shown}' is not a tycho checkout",
+            at: at_file(&path),
+        };
     }
     if let Some(path) = config {
         if is_tycho_checkout(&path) {
             return Ok(path);
         }
-        eprintln!(
-            "  {} the config's source = '{}' is not a tycho checkout - ignoring",
-            paint("note:", DIM),
-            path.display()
-        );
+        let shown = path.display();
+        let _ = report! {
+            warning: "the config's source = '{shown}' is not a tycho checkout",
+            at: at_file(&path),
+        };
     }
     if let Some(found) = scan() {
         return Ok(found);
     }
-    let cwd = std::env::current_dir().map_err(|error| format!("cannot read cwd: {error}"))?;
+    let cwd = std::env::current_dir().map_err(|error| {
+        let _ = report! { error: "cannot read the current directory: {error}" };
+        String::new()
+    })?;
     if is_tycho_checkout(&cwd) {
         return Ok(cwd);
     }
@@ -160,9 +166,13 @@ fn resolve_source_with(
         Shell::Pwsh => format!("$env:{SRC_ENV} = \"$HOME\\Developer\\tycho\""),
         _ => format!("export {SRC_ENV}=~/Developer/tycho"),
     };
-    Err(format!(
-        "no tycho checkout found.\n  Set {SRC_ENV} to the repo path, e.g.\n    {example}"
-    ))
+    let _ = report! {
+        error: "no tycho checkout found",
+        note: "${SRC_ENV}, the config's `source` key and a scan of the usual checkout \
+               roots all came up empty",
+        recovery: { "{example}" => "point it at the repo" },
+    };
+    Err(String::new())
 }
 
 /// The config file's own `source` key alone: top-level, a sibling of `version`, and
@@ -263,14 +273,18 @@ fn install_binary(source: &Path, debug: bool) -> Result<(), String> {
     // Through `sys::process::interactive`, not `command`: the build takes a minute,
     // prints progress worth watching, and any deadline short enough to protect a
     // backup would kill it.
-    let status = crate::sys::process::interactive("cargo", &args)
-        .map_err(|error| format!("failed to spawn cargo: {error}"))?;
+    let status = crate::sys::process::interactive("cargo", &args).map_err(|error| {
+        let _ = report! { error: "failed to spawn cargo: {error}" };
+        String::new()
+    })?;
     if !status.success() {
-        return Err(format!(
-            "cargo install failed (exit {:?}); run `cargo install --path {}` by hand to see why",
-            status.code(),
-            source.display()
-        ));
+        let code = status.code();
+        let shown = source.display();
+        let _ = report! {
+            error: "cargo install failed (exit {code:?})",
+            recovery: { "cargo install --path {shown}" => "run it by hand to see why" },
+        };
+        return Err(String::new());
     }
     row("binary", "installed", GREEN);
     Ok(())
@@ -309,7 +323,10 @@ impl Shell {
 }
 
 fn write_completions() -> Result<(), String> {
-    let home = home()?;
+    let home = home().map_err(|error| {
+        let _ = report! { error: "{error}" };
+        String::new()
+    })?;
     let mut cmd = Cli::command();
 
     match Shell::detect() {
@@ -410,11 +427,27 @@ fn write_completion_file(
     shell: CompShell,
     cmd: &mut clap::Command,
 ) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|error| format!("mkdir {}: {error}", dir.display()))?;
+    std::fs::create_dir_all(dir).map_err(|error| {
+        let shown = dir.display();
+        let _ = report! {
+            error: "cannot create {shown}",
+            at: at_file(dir),
+            note: "{error}",
+        };
+        String::new()
+    })?;
     let path = dir.join(file);
     let mut buf = Vec::new();
     generate(shell, cmd, "tycho", &mut buf);
-    std::fs::write(&path, &buf).map_err(|error| format!("write {}: {error}", path.display()))?;
+    std::fs::write(&path, &buf).map_err(|error| {
+        let shown = path.display();
+        let _ = report! {
+            error: "cannot write {shown}",
+            at: at_file(&path),
+            note: "{error}",
+        };
+        String::new()
+    })?;
     row("completions", &path.display().to_string(), CYAN);
     Ok(())
 }
@@ -472,16 +505,38 @@ fn persist_source_env(source: &Path) {
 fn append(path: &Path, text: &str) -> Result<(), String> {
     // A PowerShell profile often has no directory yet on a fresh install.
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("mkdir {}: {error}", parent.display()))?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            let shown = parent.display();
+            let _ = report! {
+                error: "cannot create {shown}",
+                at: at_file(parent),
+                note: "{error}",
+            };
+            String::new()
+        })?;
     }
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
-        .map_err(|error| format!("open {}: {error}", path.display()))?;
-    file.write_all(text.as_bytes())
-        .map_err(|error| format!("write {}: {error}", path.display()))
+        .map_err(|error| {
+            let shown = path.display();
+            let _ = report! {
+                error: "cannot open {shown}",
+                at: at_file(path),
+                note: "{error}",
+            };
+            String::new()
+        })?;
+    file.write_all(text.as_bytes()).map_err(|error| {
+        let shown = path.display();
+        let _ = report! {
+            error: "cannot write {shown}",
+            at: at_file(path),
+            note: "{error}",
+        };
+        String::new()
+    })
 }
 
 fn home() -> Result<PathBuf, String> {

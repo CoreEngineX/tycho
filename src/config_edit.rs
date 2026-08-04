@@ -550,6 +550,8 @@ pub fn starter(home: &str) -> String {
         "# Tycho captures what you list here into a git store and pushes that store to\n\
          # folders that survive this machine. `tycho config check` validates this file.\n\
          version = 1\n\
+         # This checkout's path, so `tycho __bootstrap` does not have to guess it.\n\
+         # source = \"{home}/Developer/tycho\"\n\
          \n\
          [[profile]]\n\
          name = \"personal\"\n\
