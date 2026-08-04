@@ -43,6 +43,27 @@ fn allow(path: &Path) {
     icacls(&[&path.display().to_string(), "/remove:d", "*S-1-1-0"]);
 }
 
+/// Applies the deny and reports whether it actually took.
+///
+/// Whether an account can be locked out of its own directory is a property of the
+/// account, not of the code: a CI runner holds backup and restore privilege and reads
+/// straight through a DENY ACE. A test that assumed otherwise asserted a behaviour the
+/// machine could not exhibit, and blamed the planner for it.
+#[must_use]
+fn deny_took(path: &Path) -> bool {
+    deny(path);
+    if fs::read_dir(path).is_ok() {
+        allow(path);
+        eprintln!(
+            "skipping: this account reads through a deny on {}, so an unreadable \
+             directory cannot be produced here",
+            path.display()
+        );
+        return false;
+    }
+    true
+}
+
 #[cfg(windows)]
 fn icacls(args: &[&str]) {
     let out = std::process::Command::new("icacls")
@@ -367,10 +388,13 @@ fn ntfs_refuses_a_control_character_in_a_name() {
 fn a_root_that_cannot_be_read_fails_the_run() {
     let dir = tempfile::tempdir().expect("temp dir");
     write(&dir.path().join("A/x.md"), "x");
-    deny(&dir.path().join("A"));
+    let root = dir.path().join("A");
+    if !deny_took(&root) {
+        return;
+    }
 
     let error = run(&dir, "").expect_err("a denied root must fail the run");
-    allow(&dir.path().join("A"));
+    allow(&root);
     assert!(
         matches!(error, PlanError::RootUnreadable { .. }),
         "expected RootUnreadable, got {error}"
@@ -396,10 +420,13 @@ fn a_directory_that_cannot_be_read_is_a_warning_and_the_rest_still_plans() {
     let dir = tempfile::tempdir().expect("temp dir");
     write(&dir.path().join("A/keep.md"), "k");
     write(&dir.path().join("A/denied/x.md"), "x");
-    deny(&dir.path().join("A/denied"));
+    let denied = dir.path().join("A").join("denied");
+    if !deny_took(&denied) {
+        return;
+    }
 
     let plan = run(&dir, "").expect("a leaf failure is not fatal");
-    allow(&dir.path().join("A/denied"));
+    allow(&denied);
 
     assert_eq!(stored(&plan), vec!["A/keep.md"]);
     assert!(
