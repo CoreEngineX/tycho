@@ -205,7 +205,7 @@ A bad redirect empties a file inside the `org` repository:
 ```text
 $ > ~/Developer/CoreEngineX/org/notes.md
 $ wc -c ~/Developer/CoreEngineX/org/notes.md
-       0 /Users/you/Developer/CoreEngineX/org/notes.md
+       0 ~/Developer/Acme/org/notes.md
 ```
 
 **This file lives inside a captured repository**, which is the normal case here and

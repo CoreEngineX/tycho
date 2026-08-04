@@ -1,3 +1,6 @@
 .claude/
 .DS_Store
 target/
+
+# Audit working set: reports full of absolute paths, never published.
+.audit/

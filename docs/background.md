@@ -6,7 +6,7 @@ replaces. Read alongside `docs/architecture/overview.md`.
 
 ## 1. Who and what this is for
 
-- User: CoreEngineX, GitHub `CoreEngineX`, Toronto, Nova Scotia.
+- One maintainer, backing up their own machine first.
 - Tycho is entity-agnostic. Nothing in its design depends on which CoreEngineX
   legal entity owns it; see the company records for that, which are not this
   document's to assert.

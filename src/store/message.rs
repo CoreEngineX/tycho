@@ -258,9 +258,7 @@ mod tests {
         // but the counts, which is what history renders, must not move.
         assert_eq!(got.changed, 3);
         assert!(
-            got.sample
-                .iter()
-                .any(|(_, path)| path.contains("handbook")),
+            got.sample.iter().any(|(_, path)| path.contains("handbook")),
             "{:?}",
             got.sample
         );

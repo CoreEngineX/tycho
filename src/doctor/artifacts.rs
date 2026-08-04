@@ -179,9 +179,7 @@ mod tests {
     fn a_conflicted_copy_is_recognised_in_every_shape_the_clients_produce() {
         assert!(looks_conflicted("main (1)"));
         assert!(looks_conflicted("notes (2).md"));
-        assert!(looks_conflicted(
-            "HEAD (you's conflicted copy)"
-        ));
+        assert!(looks_conflicted("HEAD (alex's conflicted copy)"));
         assert!(looks_conflicted("packed-refs copy"));
         assert!(!looks_conflicted("packed-refs"));
         assert!(!looks_conflicted("main"));
