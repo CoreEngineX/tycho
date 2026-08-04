@@ -390,10 +390,15 @@ mod tests {
         fixture
     }
 
+    /// `--keep-store`, so the guard that asks about a local store is already answered.
+    ///
+    /// Without it the store lookup is machine-wide - `<data>/store/<name>.git` - so
+    /// whether these pass depends on which profiles the developer happens to have run
+    /// on this machine. A stray `demo.git` from an unrelated experiment failed this.
     fn rm(name: &str) -> ProfileRmArgs {
         ProfileRmArgs {
             name: name.to_owned(),
-            keep_store: false,
+            keep_store: true,
             delete_store: false,
         }
     }

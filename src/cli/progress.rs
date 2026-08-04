@@ -132,9 +132,26 @@ fn line(profile: &str, step: &Step) -> (usize, String) {
             row("capturing", Some(value))
         }
         Step::Publishing => row("publishing", None),
-        Step::Pushing { remote } => {
-            let shown = render::fit(remote, 40);
-            row("pushing", Some((shown.clone(), paint(&shown, CYAN))))
+        // The size is the store's, not this push's, so it says `store` rather than
+        // anything that would read as a transfer estimate. It is here because a push
+        // with no detail at all is the phase that reads as a hang, and knowing the
+        // order of magnitude is most of the cure.
+        Step::Pushing {
+            remote,
+            store_bytes,
+        } => {
+            let size = format!("store {}", render::size(*store_bytes));
+            let room = render::WIDTH
+                .saturating_sub(INDENT + LABEL + 2 + size.chars().count() + 2)
+                .max(8);
+            let shown = render::fit(remote, room);
+            row(
+                "pushing",
+                Some((
+                    format!("{shown}  {size}"),
+                    format!("{}  {}", paint(&shown, CYAN), paint(&size, DIM)),
+                )),
+            )
         }
     }
 }
@@ -202,16 +219,22 @@ mod tests {
         );
     }
 
+    /// The size says `store` and not anything resembling "to send". Git transfers
+    /// only the objects the remote lacks, so on every run after the first the store's
+    /// size and this push's traffic are nothing alike, and a number presented as the
+    /// latter would be wrong on almost every run.
     #[test]
-    fn pushing_names_the_remote() {
+    fn pushing_names_the_remote_and_the_store_size() {
         set_colour_for_test(false);
         let text = rendered(
             "cex",
             &Step::Pushing {
                 remote: "ghost-r".to_owned(),
+                store_bytes: 292_000_000,
             },
         );
-        assert_eq!(text, format!("  {:<14}  ghost-r", "pushing"));
+        assert_eq!(text, format!("  {:<14}  ghost-r  store 292 MB", "pushing"));
+        assert!(!text.contains("send"), "{text}");
     }
 
     /// The width returned alongside the text is the plain one, so colour can never
@@ -239,6 +262,7 @@ mod tests {
             Step::Publishing,
             Step::Pushing {
                 remote: worst.to_owned(),
+                store_bytes: 292_000_000,
             },
         ] {
             let (width, text) = line("a-rather-long-profile-name", &step);
@@ -257,6 +281,7 @@ mod tests {
             "cex",
             &Step::Pushing {
                 remote: "ghost-r".to_owned(),
+                store_bytes: 292_000_000,
             },
         );
         set_colour_for_test(true);
@@ -264,6 +289,7 @@ mod tests {
             "cex",
             &Step::Pushing {
                 remote: "ghost-r".to_owned(),
+                store_bytes: 292_000_000,
             },
         );
         set_colour_for_test(false);

@@ -93,8 +93,15 @@ pub enum Step {
     /// Writing the commit, then compacting the store (`git gc --auto`), which is the
     /// one that can run long on a store with a lot of loose objects.
     Publishing,
+    /// Mirroring the store to one remote.
+    ///
+    /// `store_bytes` is the store's whole size, not what this push transfers - git
+    /// sends only the objects the remote lacks, so on every run after the first the
+    /// two are nothing alike. It is here to give the wait a scale, and it is named
+    /// for what it actually measures.
     Pushing {
         remote: String,
+        store_bytes: u64,
     },
 }
 
@@ -474,11 +481,16 @@ fn mirror(
     let mut results = Vec::new();
     let mut folders: Vec<std::path::PathBuf> = Vec::new();
 
+    // Once, not per remote: it is the same store for all of them, and `size` walks
+    // the directory.
+    let store_bytes = store.size().unwrap_or_default();
+
     for configured in &profile.remotes {
         let name = configured.name.as_str();
         let allowed = tolerance(configured);
         observe(Step::Pushing {
             remote: name.to_owned(),
+            store_bytes,
         });
         let seen = remote::publish(store, configured, profile.name.as_str());
         if matches!(seen, remote::state::Observation::Verified { .. })
