@@ -177,28 +177,46 @@ fn long_paths() -> Option<Check> {
 /// 0.indexBigDates` and declared the volume unrepairable, and the volume has not
 /// mounted since, read-only or otherwise.
 ///
-/// exFAT folds case and Spotlight writes names that collide when it does, so the index
-/// corrupts the filesystem holding it. `.metadata_never_index` at the volume root is
-/// what stops it, and only the root works - Spotlight has no per-directory opt-out.
+/// exFAT keeps no journal, so an interrupted directory write is permanent rather than
+/// replayed at mount. Spotlight rewrites its index constantly and invisibly, which
+/// keeps that window open on a drive people unplug.
 ///
-/// A `Warn` rather than a `Fail`, and advisory rather than automatic: excluding a whole
-/// disk from search is the user's call to make about their disk, not a side effect of
-/// pointing a backup at it.
+/// **Asked of `mdutil`, not inferred from `.Spotlight-V100` existing.** An earlier
+/// version of this check tested for the directory, which is wrong twice over: macOS
+/// recreates it on mount whatever the indexing state, and `.metadata_never_index` -
+/// which this check used to recommend - does not stop indexing on a volume that is
+/// already mounted. Measured: with that file in place and the directory freshly
+/// deleted, `mdutil -s` still reported `Indexing enabled` and 91 index files were back
+/// within minutes. Testing the symptom rather than the cause is how the check came to
+/// report success for the wrong reason.
+///
+/// `mdutil -s` reads state and needs no privilege; turning indexing off does, which is
+/// why the remedy is printed rather than performed.
 #[cfg(target_os = "macos")]
 fn spotlight(folder: &std::path::Path, name: &str) -> Option<Check> {
     let volume = crate::sys::volume::mount_point(folder).ok()??;
-    if volume == std::path::Path::new("/") || volume.join(".metadata_never_index").exists() {
+    if volume == std::path::Path::new("/") {
         return None;
     }
-    if !volume.join(".Spotlight-V100").exists() {
+    let out = command(
+        "mdutil",
+        &["-s", &volume.display().to_string()],
+        Timeout::QUICK,
+    )
+    .ok()?;
+    // Only a positive answer counts. A volume mdutil cannot speak for is not evidence
+    // of anything, and a row that fires on "I could not tell" is a row people skim.
+    if !String::from_utf8_lossy(&out.stdout).contains("Indexing enabled") {
         return None;
     }
     Some(Check::new(
         &format!("{name} spotlight"),
         Verdict::Warn,
         format!(
-            "Spotlight is indexing {}; on exFAT its index writes case-colliding names \
-             that fsck cannot repair. touch {}/.metadata_never_index",
+            "Spotlight is indexing {}; exFAT keeps no journal, so its constant index \
+             writes are what corrupts a drive past repair. \
+             sudo mdutil -i off {} && sudo mdutil -E {}",
+            volume.display(),
             volume.display(),
             volume.display()
         ),

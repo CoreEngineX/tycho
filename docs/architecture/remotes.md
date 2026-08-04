@@ -105,11 +105,25 @@ exFAT folds case, Spotlight writes index names that collide once it does, and
 filesystem holding it, on exactly the removable drive this document recommends as the
 offline copy.
 
-`.metadata_never_index` at the volume root is the fix, and only the root works -
-Spotlight has no per-directory opt-out, which is why Tycho does not create the file
-itself: excluding a whole disk from search is a decision about that disk rather than a
-side effect of pointing a backup at it. `doctor` warns when the volume holding a remote
-is being indexed and has no such file, and prints the `touch` that stops it.
+The fix is `mdutil`, and it needs a password:
+
+```text
+sudo mdutil -i off /Volumes/<drive>
+sudo mdutil -E /Volumes/<drive>
+```
+
+`.metadata_never_index` at the volume root is the commonly-cited remedy and **it does
+not work on a volume that is already mounted**. Measured: with that file written and
+`.Spotlight-V100` freshly deleted, `mdutil -s` still answered `Indexing enabled` and 91
+index files were back within minutes. `doctor` asks `mdutil` rather than testing for
+the directory, because macOS recreates that directory on mount whatever the indexing
+state - so the presence of it proves nothing and its absence proves less. An earlier
+version of this check tested exactly that, and reported a drive as fixed while
+Spotlight was still writing to it.
+
+Tycho prints the remedy rather than running it: turning indexing off needs privilege,
+and excluding a whole disk from search is a decision about that disk rather than a side
+effect of pointing a backup at it.
 
 ## 1. Why a bare repo in the folder, rather than files
 
