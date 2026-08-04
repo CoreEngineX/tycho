@@ -11,6 +11,12 @@
 # `#[cfg(test)]` code was ever linted. Six red runs were pushed against a green local
 # gate before the difference was measured. `TYCHO_CI_TABLE=1` still opts into that
 # tool's rendering, but it is not the gate.
+#
+# This gate runs the host's own target only, so it cannot see the other platform.
+# `TYCHO_CROSS=1` adds a lint-only pass over the other one, which catches everything
+# except behaviour: a `#[cfg]`-gated arm that does not compile, and a lint that fires
+# there and not here. It cannot catch a test that fails only on that host - the
+# `#[cfg(windows)]` symlink and DACL tests each cost a CI round for exactly that.
 
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -55,6 +61,19 @@ if command -v cargo-audit >/dev/null 2>&1; then
     run audit cargo audit
 else
     printf '  skip  audit (cargo install cargo-audit)\n'
+fi
+
+if [ "${TYCHO_CROSS:-}" = "1" ]; then
+    case "$(uname -s 2>/dev/null || echo Windows)" in
+        Darwin|Linux) other=x86_64-pc-windows-msvc ;;
+        *) other=aarch64-apple-darwin ;;
+    esac
+    if rustup target list --installed 2>/dev/null | grep -qx "$other"; then
+        run "cross ($other)" cargo clippy --target "$other" --workspace --all-targets \
+            --all-features -- -D warnings
+    else
+        printf '  skip  cross (rustup target add %s)\n' "$other"
+    fi
 fi
 
 if [ "$fail" -ne 0 ]; then

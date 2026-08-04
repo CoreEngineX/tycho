@@ -327,27 +327,24 @@ mod tests {
         link_to_dir(&from.join("link"), &target);
 
         let applied = apply(&from, &to).expect("apply");
-        match to.join("link").symlink_metadata() {
-            Ok(written) => {
-                assert!(
-                    written.file_type().is_symlink(),
-                    "a link may not land as a regular file: {applied:?}"
-                );
-                assert!(applied.conflicts.is_empty(), "{applied:?}");
-            }
-            Err(_) => {
-                assert_eq!(
-                    applied.conflicts.len(),
-                    1,
-                    "a refused link must be reported: {applied:?}"
-                );
-                assert_eq!(
-                    applied.conflicts[0].reason,
-                    Reason::SymlinkNotPermitted,
-                    "{applied:?}"
-                );
-                assert_eq!(applied.files, 0);
-            }
+        if let Ok(written) = to.join("link").symlink_metadata() {
+            assert!(
+                written.file_type().is_symlink(),
+                "a link may not land as a regular file: {applied:?}"
+            );
+            assert!(applied.conflicts.is_empty(), "{applied:?}");
+        } else {
+            assert_eq!(
+                applied.conflicts.len(),
+                1,
+                "a refused link must be reported: {applied:?}"
+            );
+            assert_eq!(
+                applied.conflicts[0].reason,
+                Reason::SymlinkNotPermitted,
+                "{applied:?}"
+            );
+            assert_eq!(applied.files, 0);
         }
     }
 
