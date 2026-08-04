@@ -356,6 +356,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn only_the_privilege_error_counts_as_a_refusal() {
+        use super::refused_for_privilege;
         use std::io::Error;
         assert!(refused_for_privilege(&Error::from_raw_os_error(1314)));
         assert!(!refused_for_privilege(&Error::from_raw_os_error(5)));
