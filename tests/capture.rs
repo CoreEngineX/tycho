@@ -396,3 +396,71 @@ fn two_repositories_tagging_the_same_version_stay_separate() {
         "a tag leaked into the store's own namespace: {refs:?}"
     );
 }
+
+/// `REPO.txt` records nothing that changes on its own.
+///
+/// It stamped the capture time, so every one of them rewrote on any run that crossed
+/// a minute boundary: a no-op backup reported one changed file per repository and
+/// committed a diff, which is the churn `metadata.rs` refuses an mtime to avoid. It
+/// was never read back either - `parse_repo_txt` matches known fields and ignores the
+/// rest - and the commit's own timestamp already says when a capture happened.
+///
+/// Asserted on the field names rather than by running twice, because the stamp was
+/// minute-granular: two runs inside one minute produce identical text, so a
+/// behavioural test passes with the bug present and fails only sometimes. This fails
+/// the moment any field is added whose value the repository did not supply.
+#[test]
+fn repo_txt_records_only_facts_about_the_repository() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let repo = dir.path().join("A/docs");
+    init_repo(&repo);
+    write(&repo.join("README.md"), "tracked\n");
+    commit(&repo, "one");
+
+    let mut fixture = fixture(dir);
+    fixture.run().expect("run");
+
+    let path = fixture
+        .tree()
+        .into_iter()
+        .find(|entry| entry.ends_with("REPO.txt"))
+        .expect("a captured repository writes one");
+    let text = git(
+        fixture.store.path_for_test(),
+        &["show", &format!("HEAD:{path}")],
+    );
+
+    let fields: Vec<String> = text
+        .lines()
+        .filter_map(|line| line.split_whitespace().next().map(str::to_owned))
+        .collect();
+    assert_eq!(
+        fields,
+        [
+            "origin", "path", "head", "state", "branches", "tags", "stash"
+        ],
+        "{text}"
+    );
+}
+
+/// A second run over an unchanged repository writes nothing. Weaker than the check
+/// above - it only fails when the runs straddle whatever granularity a reintroduced
+/// stamp used - but it is the property that actually matters.
+#[test]
+fn a_second_run_over_an_unchanged_repository_captures_nothing() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let repo = dir.path().join("A/docs");
+    init_repo(&repo);
+    write(&repo.join("README.md"), "tracked\n");
+    commit(&repo, "one");
+
+    let mut fixture = fixture(dir);
+    fixture.run().expect("first run");
+    let second = fixture.run().expect("second run");
+
+    assert!(
+        second.summary.is_empty(),
+        "nothing changed, so nothing may be written: {:?}",
+        second.summary
+    );
+}

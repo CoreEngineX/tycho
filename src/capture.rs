@@ -474,16 +474,19 @@ fn repo_txt(git: &Git<'_>, inspection: &Inspection, source: &Path) -> String {
         .filter(|line| !line.is_empty())
         .count();
 
+    // **No capture time.** It stamped `seen <now>`, so every one of these rewrote on
+    // every run whose minute differed, and a backup that found nothing changed still
+    // committed a diff per repository - the exact reason `metadata.rs` refuses to
+    // record an mtime. Nothing read it back either: `parse_repo_txt` never looked at
+    // the field. When a repository was captured is the commit's own timestamp, which
+    // is authoritative and costs nothing.
     format!(
-        "origin    {}\npath      {}\nhead      {head}\nstate     {}\nbranches  {}\ntags      {}\nstash     {stashes} entries\nseen      {}\n",
+        "origin    {}\npath      {}\nhead      {head}\nstate     {}\nbranches  {}\ntags      {}\nstash     {stashes} entries\n",
         if origin.is_empty() { "none" } else { &origin },
         source.display(),
         inspection.state(),
         list(&["for-each-ref", "--format=%(refname:short)", "refs/heads"]),
         list(&["for-each-ref", "--format=%(refname:short)", "refs/tags"]),
-        jiff::Timestamp::now()
-            .to_zoned(jiff::tz::TimeZone::UTC)
-            .strftime("%F %H:%M UTC"),
     )
 }
 
