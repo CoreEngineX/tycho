@@ -174,6 +174,11 @@ fn abbreviate(path: &str) -> String {
 /// column.
 const HEAD_LABEL: usize = 10;
 
+/// The whole head cell. Four wider than the label plus a sha, so the state beside it
+/// is not pressed against the last hex digit - the columns lined up at eighteen and
+/// still read as one field.
+const HEAD_CELL: usize = HEAD_LABEL + 7 + 5;
+
 /// `main      aef686f`: the label padded, then the sha, so the shas line up down the
 /// column however long the branch names beside them are.
 fn short(head: &RepoHead) -> String {
@@ -233,7 +238,10 @@ pub fn dry_run(plan: &Plan, repos: &[(String, Inspection)], quick: bool) -> Stri
         let _ = writeln!(
             out,
             "{}",
-            chrome(&format!("{:<42}{:<18}state", "repositories", "head"))
+            chrome(&format!(
+                "{:<42}{:<HEAD_CELL$}state",
+                "repositories", "head"
+            ))
         );
         rule(&mut out);
         for (key, inspection) in repos.iter().take(REPO_TABLE_ROWS) {
@@ -247,7 +255,7 @@ pub fn dry_run(plan: &Plan, repos: &[(String, Inspection)], quick: bool) -> Stri
             };
             let _ = writeln!(
                 out,
-                "  {}{:<18}{painted}",
+                "  {}{:<HEAD_CELL$}{painted}",
                 name(&format!("{:<40}", fit(key, 39))),
                 short(&inspection.head)
             );
@@ -256,7 +264,7 @@ pub fn dry_run(plan: &Plan, repos: &[(String, Inspection)], quick: bool) -> Stri
         if repos.len() > REPO_TABLE_ROWS {
             let _ = writeln!(
                 out,
-                "  {:<40}{:<18}{}",
+                "  {:<40}{:<HEAD_CELL$}{}",
                 "",
                 "",
                 chrome(&format!("and {} more", repos.len() - REPO_TABLE_ROWS))
