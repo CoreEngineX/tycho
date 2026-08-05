@@ -60,6 +60,14 @@ pub fn install(config: &Config, dir: &Path) -> std::io::Result<Option<PathBuf>> 
     }
     text.push_str("[safe]\n");
     for repo in &directories {
+        // A newline is legal in a Unix filename and has no escape inside a git config
+        // quoted string, so it would end the line and let the rest of the name become
+        // a key of its own - in a file every later git call loads as its global
+        // config. Dropped rather than mangled: the entry that would name it is the
+        // only thing lost, and the push reports the untrusted path itself.
+        if control_bytes(repo) {
+            continue;
+        }
         let _ = writeln!(text, "\tdirectory = {}", value(repo));
         // Git reports the path with backslashes on Windows and a forward-slash entry
         // does not match it - measured there, where the forward-slash form alone let
@@ -78,6 +86,11 @@ pub fn install(config: &Config, dir: &Path) -> std::io::Result<Option<PathBuf>> 
     crate::sys::fs::write_atomic(&path, text.as_bytes())?;
     crate::sys::process::trust_config(path.clone());
     Ok(Some(path))
+}
+
+/// Whether a path carries a byte a git config line cannot survive.
+fn control_bytes(path: &Path) -> bool {
+    path.display().to_string().chars().any(char::is_control)
 }
 
 /// A path as a git config value: always quoted.

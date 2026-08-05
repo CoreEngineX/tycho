@@ -247,13 +247,14 @@ fn finish(
                 })
                 .chain(contribution.files.iter().cloned())
                 .collect();
-            let manifest = crate::metadata::capture(&sources);
+            let (manifest, unrecorded) = crate::metadata::capture(&sources);
             if !manifest.is_empty() {
                 contribution.generated.push((
                     tycho_path(crate::metadata::MANIFEST)?,
                     crate::metadata::render(&manifest).into_bytes(),
                 ));
             }
+            unreadable.extend(unrecorded);
 
             let (overlay, missed) = store.hash_files(&contribution.files)?;
             entries.extend(overlay);

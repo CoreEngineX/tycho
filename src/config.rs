@@ -297,7 +297,13 @@ pub fn parse_interval(text: &str) -> Result<Duration, String> {
     if count == 0 {
         return Err(format!("'{text}' is not an interval"));
     }
-    Ok(Duration::from_secs(count * seconds))
+    // Release builds wrap rather than panic, and the product is written straight into
+    // the plist as `StartInterval`, so an unchecked multiply turns a nonsense schedule
+    // into a real one that fires every few seconds.
+    let Some(total) = count.checked_mul(seconds) else {
+        return Err(format!("'{text}' is longer than any schedule can be"));
+    };
+    Ok(Duration::from_secs(total))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

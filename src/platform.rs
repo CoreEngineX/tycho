@@ -110,7 +110,16 @@ pub fn store_path(profile: &str, override_dir: Option<&AbsPath>) -> Result<AbsPa
         Some(dir) => dir.clone(),
         None => AbsPath::parse(&format!("{DATA_DIR}/store"))?,
     };
-    AbsPath::from_absolute(&dir.as_path().join(format!("{profile}.git")))
+    // `join` with an absolute component discards the directory entirely, so a config
+    // naming a profile `/etc/cron.d/x` would resolve the store to that path - and
+    // `profile rm --delete-store` removes whatever this returns. `profile add`
+    // refuses such a name; a hand-edited file is what reaches here.
+    let leaf = format!("{profile}.git");
+    let mut parts = std::path::Path::new(&leaf).components();
+    if !matches!(parts.next(), Some(std::path::Component::Normal(_))) || parts.next().is_some() {
+        return Err(PathError::NotALeaf(profile.to_owned()));
+    }
+    AbsPath::from_absolute(&dir.as_path().join(leaf))
 }
 
 /// # Errors
@@ -125,4 +134,32 @@ pub fn state_path() -> Result<AbsPath, PathError> {
 /// If there is no home directory.
 pub fn log_dir() -> Result<AbsPath, PathError> {
     AbsPath::parse(LOG_DIR)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::primitives::path::AbsPath;
+
+    /// `Path::join` drops the directory when what it joins is itself absolute, and
+    /// `profile rm --delete-store` removes whatever `store_path` returns. `profile
+    /// add` refuses a name like this; a hand-edited config is what reaches here.
+    #[test]
+    fn a_profile_name_cannot_point_the_store_out_of_its_directory() {
+        let root = if cfg!(windows) {
+            "C:\\stores"
+        } else {
+            "/stores"
+        };
+        let dir = AbsPath::from_absolute(std::path::Path::new(root)).expect("absolute");
+
+        let ok = super::store_path("personal", Some(&dir)).expect("a plain name resolves");
+        assert!(ok.to_string().ends_with("personal.git"));
+
+        for hostile in ["/etc/cron.d/evil", "../../etc/evil", "a/b"] {
+            assert!(
+                super::store_path(hostile, Some(&dir)).is_err(),
+                "{hostile} must not resolve to a store path"
+            );
+        }
+    }
 }

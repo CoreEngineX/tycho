@@ -29,6 +29,8 @@ pub enum PathError {
     VariableUnset(String),
     #[error("'{0}' has a '${{' that is never closed")]
     UnterminatedBrace(String),
+    #[error("'{0}' is not a single name, so it would point outside the directory holding it")]
+    NotALeaf(String),
 }
 
 const ALLOWED: &str = "$HOME and $USER";

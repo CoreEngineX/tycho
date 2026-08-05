@@ -451,6 +451,21 @@ fn intervals_take_a_whole_number_and_one_unit() {
     }
 }
 
+/// A release build wraps rather than panics, and the product lands in the plist as
+/// `StartInterval`, so an unchecked multiply turns "never" into "every 17 hours".
+#[test]
+fn an_interval_too_large_to_represent_is_refused_rather_than_wrapped() {
+    let huge = format!("{}d", u64::MAX / 86_400 + 1);
+    assert!(
+        parse_interval(&huge).is_err(),
+        "{huge} overflows and must be refused"
+    );
+    // The largest count that still fits is an interval, however absurd: the guard is
+    // against wrapping, not against a big number.
+    assert!(parse_interval(&format!("{}d", u64::MAX / 86_400)).is_ok());
+    assert!(parse_interval(&format!("{}s", u64::MAX)).is_ok());
+}
+
 #[test]
 fn warnings_are_warnings_and_do_not_make_the_config_invalid() {
     // No schedule, and an ignore that can never fire.

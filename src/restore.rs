@@ -465,8 +465,15 @@ fn rebuild(
     let _ = fetch_from(&at, store_path, &[stash_refspec(key)]);
 
     let recorded = read_recorded(store, backup, key)?;
+    // `--end-of-options`, not `--`: `git update-ref refs/heads/-x` creates a branch
+    // `git branch` itself refuses and `check-ref-format` accepts, and without the
+    // separator `checkout` reads the name as a switch, fails, and the repository
+    // reports itself as having no commits while its full history sits in `.git`.
+    // Measured: `--` would mean pathspec here and breaks checking out any branch.
     let head = recorded.head.as_ref().and_then(|head| {
-        let out = git.run(&["checkout", "-q", head], Timeout::WORK).ok()?;
+        let out = git
+            .run(&["checkout", "-q", "--end-of-options", head], Timeout::WORK)
+            .ok()?;
         out.status.success().then(|| head.clone())
     });
 

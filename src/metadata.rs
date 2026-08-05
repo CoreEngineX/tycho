@@ -158,22 +158,37 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
 /// one representative path per distinct uid/gid pair, which is one call for a whole
 /// backup in practice rather than one per file. The mode itself is free - it is
 /// already in the `stat` every walk performed.
+///
+/// The second half of the pair is every path whose mode could not be read. A path
+/// missing from the manifest restores at git's `0644`, so a `0600` file silently
+/// widening to world-readable is the failure this reports rather than swallows.
 #[cfg(unix)]
 #[must_use]
-pub fn capture(items: &[(AbsPath, TreePath)]) -> Manifest {
+pub fn capture(items: &[(AbsPath, TreePath)]) -> (Manifest, Vec<String>) {
     use std::{
         os::unix::fs::{MetadataExt, PermissionsExt},
         path::PathBuf,
     };
 
     let mut manifest = Manifest::new();
+    let mut missed: Vec<String> = Vec::new();
     // One representative source path per distinct owner, so the name lookup is one
     // `stat` for a whole backup rather than one per file.
     let mut ids: BTreeMap<(u32, u32), (PathBuf, Vec<String>)> = BTreeMap::new();
 
-    let mut record = |source: &Path, key: String, ids: &mut BTreeMap<_, (_, Vec<String>)>| {
-        let Ok(meta) = std::fs::symlink_metadata(source) else {
-            return;
+    let mut record = |source: &Path,
+                      key: String,
+                      ids: &mut BTreeMap<_, (_, Vec<String>)>,
+                      missed: &mut Vec<String>| {
+        let meta = match std::fs::symlink_metadata(source) {
+            Ok(meta) => meta,
+            Err(error) => {
+                missed.push(format!(
+                    "{}: permissions could not be read, so it restores 0644: {error}",
+                    source.display()
+                ));
+                return;
+            }
         };
         // A symlink's own mode is not meaningful and cannot be set without `lchmod`,
         // which macOS has and Linux does not; the target's mode is the target's
@@ -195,7 +210,7 @@ pub fn capture(items: &[(AbsPath, TreePath)]) -> Manifest {
     };
 
     for (source, stored) in items {
-        record(source.as_path(), stored.to_string(), &mut ids);
+        record(source.as_path(), stored.to_string(), &mut ids, &mut missed);
     }
 
     // Directories, walked up from each stored path alongside its source. The plan
@@ -215,7 +230,7 @@ pub fn capture(items: &[(AbsPath, TreePath)]) -> Manifest {
         }
     }
     for (stored, source) in &dirs {
-        record(source, stored.clone(), &mut ids);
+        record(source, stored.clone(), &mut ids, &mut missed);
     }
 
     for (&(uid, gid), (source, paths)) in &ids {
@@ -229,7 +244,7 @@ pub fn capture(items: &[(AbsPath, TreePath)]) -> Manifest {
     }
 
     read_xattrs(items, &mut manifest);
-    manifest
+    (manifest, missed)
 }
 
 /// Nothing here is representable, so the manifest is empty rather than wrong.
@@ -238,8 +253,8 @@ pub fn capture(items: &[(AbsPath, TreePath)]) -> Manifest {
 /// invented values would restore them onto a machine that could act on them.
 #[cfg(not(unix))]
 #[must_use]
-pub fn capture(_items: &[(AbsPath, TreePath)]) -> Manifest {
-    Manifest::new()
+pub fn capture(_items: &[(AbsPath, TreePath)]) -> (Manifest, Vec<String>) {
+    (Manifest::new(), Vec::new())
 }
 
 /// The owner and group names for one id pair, asked of `stat` rather than resolved
@@ -405,6 +420,31 @@ mod tests {
             group: "staff".to_owned(),
             xattrs: Vec::new(),
         }
+    }
+
+    /// A path with no manifest record restores at git's `0644`. Dropping the record
+    /// silently is how a `0600` file comes back world-readable under a run that
+    /// reported success, so the miss has to reach the caller.
+    #[cfg(unix)]
+    #[test]
+    fn a_path_whose_mode_cannot_be_read_is_reported_rather_than_dropped() {
+        use crate::primitives::path::{AbsPath, TreePath};
+        use std::path::Path;
+
+        let dir = std::env::temp_dir().join(format!("tycho-md-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let gone = dir.join("never-existed");
+        let items = vec![(
+            AbsPath::from_absolute(&gone).expect("absolute"),
+            TreePath::parse(Path::new("A/never-existed")).expect("stored"),
+        )];
+
+        let (manifest, missed) = super::capture(&items);
+
+        assert!(!manifest.contains_key("A/never-existed"));
+        assert_eq!(missed.len(), 1, "{missed:?}");
+        assert!(missed[0].contains("never-existed"), "{missed:?}");
+        let _ = std::fs::remove_dir(&dir);
     }
 
     #[test]

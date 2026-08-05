@@ -164,16 +164,22 @@ impl Store {
         &self,
         files: &[(AbsPath, crate::primitives::path::TreePath)],
     ) -> Result<(Vec<IndexEntry>, Vec<String>), StoreError> {
-        let items: Vec<Item> = files
-            .iter()
-            .filter_map(|(source, stored)| {
-                let mode = crate::sys::fs::classify_path(source.as_path())
-                    .ok()
-                    .and_then(crate::sys::fs::FileKind::mode)?;
-                Some((source.clone(), stored.clone(), mode))
-            })
-            .collect();
-        self.hash_paths(&items)
+        let mut items: Vec<Item> = Vec::with_capacity(files.len());
+        let mut dropped = Vec::new();
+        for (source, stored) in files {
+            match crate::sys::fs::classify_path(source.as_path()) {
+                Ok(kind) => match kind.mode() {
+                    Some(mode) => items.push((source.clone(), stored.clone(), mode)),
+                    None => dropped.push(format!(
+                        "{source} is not a regular file, so it was skipped: {kind:?}"
+                    )),
+                },
+                Err(error) => dropped.push(format!("{source}: {error}")),
+            }
+        }
+        let (entries, mut unreadable) = self.hash_paths(&items)?;
+        unreadable.extend(dropped);
+        Ok((entries, unreadable))
     }
 
     /// The one hashing path.

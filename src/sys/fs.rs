@@ -138,7 +138,13 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 fn write_and_sync(temp: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut file = File::create(temp)?;
+    // `create_new`, because a remote folder is a directory other people can write to:
+    // `File::create` follows a symlink planted at the predictable temporary name and
+    // writes this content through it. The unlink first clears what a killed run left
+    // behind - and unlinking a symlink removes the link, never its target - so the
+    // exclusive create can still only lose the race by failing, not by redirecting.
+    let _ = fs::remove_file(temp);
+    let mut file = File::options().write(true).create_new(true).open(temp)?;
     file.write_all(bytes)?;
     file.sync_all()
 }

@@ -446,3 +446,35 @@ fn a_junction_stores_its_target_rather_than_the_target_s_content() {
         "the walk descended through the junction: {listed}"
     );
 }
+
+/// The overlay is the gitignored content - `.env` files and keys - which is the
+/// reason the store keeps more than git tracks. A file that cannot be classified
+/// when it is hashed used to be filtered out of the batch with no entry anywhere:
+/// not in the tree, not in `unreadable`, not in the commit message. Neither safety
+/// net catches it, because both count what survived this filter.
+#[test]
+fn an_overlay_file_that_cannot_be_read_is_reported_rather_than_dropped() {
+    let dir = TempDir::new().expect("temp");
+    let store = Store::open_or_init(&abs(&dir.path().join("demo.git"))).expect("init");
+
+    let present = dir.path().join("A/keep.txt");
+    write(&present, "kept\n");
+    let missing = dir.path().join("A/vanished.env");
+
+    let files = vec![
+        (
+            abs(&present),
+            tycho::primitives::path::TreePath::parse(Path::new("A/keep.txt")).expect("stored"),
+        ),
+        (
+            abs(&missing),
+            tycho::primitives::path::TreePath::parse(Path::new("A/vanished.env")).expect("stored"),
+        ),
+    ];
+
+    let (entries, unreadable) = store.hash_files(&files).expect("hash");
+
+    assert_eq!(entries.len(), 1, "only the readable file becomes an entry");
+    assert_eq!(unreadable.len(), 1, "{unreadable:?}");
+    assert!(unreadable[0].contains("vanished.env"), "{unreadable:?}");
+}
