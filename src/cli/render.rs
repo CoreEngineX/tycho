@@ -168,11 +168,24 @@ fn abbreviate(path: &str) -> String {
         .unwrap_or_else(|| path.to_owned())
 }
 
+/// The ref label's column inside the head cell, wide enough for `detached` and for
+/// the branch names anyone actually has. Fixed rather than fitted to the longest,
+/// because the table truncates at ten rows and the eleventh must not shift the
+/// column.
+const HEAD_LABEL: usize = 10;
+
+/// `main      aef686f`: the label padded, then the sha, so the shas line up down the
+/// column however long the branch names beside them are.
 fn short(head: &RepoHead) -> String {
-    match head {
-        RepoHead::Branch { name, sha } => format!("{name} {}", sha.short()),
-        RepoHead::Detached { sha } => format!("detached {}", sha.short()),
-        RepoHead::Unborn => "unborn".to_owned(),
+    let (label, sha) = match head {
+        RepoHead::Branch { name, sha } => (name.to_string(), Some(sha.short())),
+        RepoHead::Detached { sha } => ("detached".to_owned(), Some(sha.short())),
+        // No commit to name, so nothing to line the column up against.
+        RepoHead::Unborn => ("unborn".to_owned(), None),
+    };
+    match sha {
+        Some(sha) => format!("{:<HEAD_LABEL$}{sha}", clip(&label, HEAD_LABEL - 1)),
+        None => label,
     }
 }
 
@@ -981,6 +994,37 @@ mod tests {
         assert_eq!(count(8_412), "8,412");
         assert_eq!(count(8_538), "8,538");
         assert_eq!(count(1_234_567), "1,234,567");
+    }
+
+    /// The shas start at the same column whatever the ref beside them is called, so
+    /// the head column reads down rather than ragged. `detached` is the longest label
+    /// the enum can produce and sets the width.
+    #[test]
+    fn every_head_puts_its_sha_in_the_same_column() {
+        use super::short;
+        use crate::plan::RepoHead;
+        use crate::primitives::names::BranchName;
+
+        let sha = crate::primitives::oid::Oid::parse(&"a".repeat(40)).expect("an oid");
+        let heads = [
+            RepoHead::Branch {
+                name: BranchName::parse("dev").expect("a branch"),
+                sha,
+            },
+            RepoHead::Branch {
+                name: BranchName::parse("main").expect("a branch"),
+                sha,
+            },
+            RepoHead::Detached { sha },
+        ];
+        let columns: Vec<_> = heads
+            .iter()
+            .map(|head| short(head).find(&"a".repeat(7)).expect("the sha"))
+            .collect();
+        assert!(
+            columns.windows(2).all(|pair| pair[0] == pair[1]),
+            "shas start at {columns:?}"
+        );
     }
 
     #[test]
