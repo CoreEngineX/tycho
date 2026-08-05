@@ -135,13 +135,30 @@ pub fn plural(value: usize, word: &str) -> String {
 /// Keeps a value inside its column. A path's tail is the informative half, so an
 /// over-long one loses its head rather than its name.
 pub(crate) fn fit(text: &str, width: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= width {
+    if text.chars().count() <= width {
         return text.to_owned();
     }
-    let kept: String = chars[chars.len() - (width - 1)..].iter().collect();
-    format!("~{kept}")
+    // Whole components, never a partial one. Cutting by character turned
+    // `CoreEngineX/products/spass-converter` into `~EngineX/products/spass-converter`,
+    // and `EngineX` reads as a directory rather than as the remains of one.
+    for (at, _) in text.match_indices('/') {
+        let tail = &text[at + 1..];
+        if tail.chars().count() + ELLIPSIS.len() <= width {
+            return format!("{ELLIPSIS}{tail}");
+        }
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let keep = width.saturating_sub(ELLIPSIS.len());
+    let kept: String = chars[chars.len() - keep..].iter().collect();
+    format!("{ELLIPSIS}{kept}")
 }
+
+/// What marks a value as shortened.
+///
+/// Not `~`: [`abbreviate`] already spends that on the home directory, and one
+/// character cannot mean both "your home" and "there was more here" in tables printed
+/// side by side.
+const ELLIPSIS: &str = "...";
 
 /// Keeps prose inside its column, losing the **end** rather than the start.
 ///
@@ -1033,6 +1050,39 @@ mod tests {
             columns.windows(2).all(|pair| pair[0] == pair[1]),
             "shas start at {columns:?}"
         );
+    }
+
+    /// The bug this replaced: cutting by character turned
+    /// `CoreEngineX/products/spass-converter` into `~EngineX/...`, and `EngineX` reads
+    /// as a directory rather than as what is left of one.
+    #[test]
+    fn a_shortened_path_never_begins_mid_component() {
+        use super::fit;
+
+        let long = "CoreEngineX/products/spass-converter";
+        let short = fit(long, 33);
+        assert_eq!(short, "...products/spass-converter");
+
+        for width in 8..long.chars().count() {
+            let cut = fit(long, width);
+            let body = cut.strip_prefix("...").unwrap_or(&cut);
+            assert!(
+                long.split('/').any(|part| body.starts_with(part)) || !body.contains('/'),
+                "width {width} began mid-component: {cut}"
+            );
+        }
+    }
+
+    /// `abbreviate` spends `~` on the home directory, and both render in the same
+    /// tables - so a shortened path marked the same way is a path the reader cannot
+    /// tell from one that starts at their home.
+    #[test]
+    fn shortening_is_not_marked_the_way_home_is() {
+        use super::fit;
+
+        let cut = fit("CoreEngineX/products/spass-converter", 20);
+        assert!(!cut.starts_with('~'), "{cut}");
+        assert!(cut.starts_with("..."), "{cut}");
     }
 
     #[test]
