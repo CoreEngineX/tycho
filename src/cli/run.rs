@@ -444,7 +444,7 @@ pub fn status(args: &crate::cli::StatusArgs) -> Exit {
         return report! {
             error: "no profile named '{name}'",
             at: at_profile(name),
-            recovery: { "tycho profile list" => "names every profile in this file" },
+            recovery: { "tycho profile list" => "names every profile this config defines" },
         };
     }
 
@@ -847,7 +847,7 @@ fn select<'a>(config: &'a Config, wanted: Option<&str>) -> Option<&'a Profile> {
                 let _ = report! {
                     error: "no profile named '{name}'",
                     at: at_profile(name),
-                    recovery: { "tycho profile list" => "names every profile in this file" },
+                    recovery: { "tycho profile list" => "names every profile this config defines" },
                 };
             }
             found

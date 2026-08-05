@@ -281,7 +281,7 @@ fn open(config: Option<PathBuf>, profile: Option<&str>) -> Result<(Editing, usiz
         Ok(index) => Ok((editing, index)),
         Err(error) => Err(report! {
             error: "{error}",
-            recovery: { "tycho profile list" => "names every profile in this file" },
+            recovery: { "tycho profile list" => "names every profile this config defines" },
         }),
     }
 }

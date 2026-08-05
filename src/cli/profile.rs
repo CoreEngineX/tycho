@@ -169,7 +169,7 @@ fn add_profile(config: Option<PathBuf>, args: &ProfileAddArgs) -> Exit {
         return report! {
             error: "'{raw_name}' already exists",
             at: at_profile(raw_name),
-            recovery: { "tycho profile list" => "names every profile in this file" },
+            recovery: { "tycho profile list" => "names every profile this config defines" },
         };
     }
 
@@ -222,14 +222,14 @@ fn remove_profile(config: Option<PathBuf>, rm: &ProfileRmArgs) -> Exit {
         Err(error) => {
             return report! {
                 error: "{error}",
-                recovery: { "tycho profile list" => "names every profile in this file" },
+                recovery: { "tycho profile list" => "names every profile this config defines" },
             };
         }
     };
 
     if editing.profiles().len() <= 1 {
         return report! {
-            error: "'{raw_name}' is the only profile in this file",
+            error: "'{raw_name}' is the only profile this config defines",
             at: at_profile(raw_name),
             note: "a config with no profiles fails `config check`, and this tool refuses to \
                    leave one behind",

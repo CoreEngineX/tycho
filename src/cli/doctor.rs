@@ -22,7 +22,7 @@ pub fn dispatch(args: &DoctorArgs) -> Exit {
             return report! {
                 error: "no profile named '{wanted}'",
                 at: at_profile(wanted),
-                recovery: { "tycho profile list" => "names every profile in this file" },
+                recovery: { "tycho profile list" => "names every profile this config defines" },
             };
         }
     }

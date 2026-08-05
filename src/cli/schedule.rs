@@ -126,7 +126,7 @@ fn open(config: Option<PathBuf>, profile: Option<&str>) -> Result<(Editing, usiz
         Ok(index) => Ok((editing, index)),
         Err(error) => Err(report! {
             error: "{error}",
-            recovery: { "tycho profile list" => "names every profile in this file" },
+            recovery: { "tycho profile list" => "names every profile this config defines" },
         }),
     }
 }
@@ -140,7 +140,7 @@ fn find<'a>(config: &'a Config, wanted: Option<&str>) -> Result<&'a Profile, Exi
             .ok_or_else(|| {
                 report! {
                     error: "no profile named '{name}'",
-                    recovery: { "tycho profile list" => "names every profile in this file" },
+                    recovery: { "tycho profile list" => "names every profile this config defines" },
                 }
             }),
         None => match config.profiles.as_slice() {

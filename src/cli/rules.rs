@@ -35,7 +35,7 @@ pub fn dispatch(list: List, args: &RuleArgs) -> Exit {
         Err(error) => {
             return report! {
                 error: "{error}",
-                recovery: { "tycho profile list" => "names every profile in this file" },
+                recovery: { "tycho profile list" => "names every profile this config defines" },
             };
         }
     };

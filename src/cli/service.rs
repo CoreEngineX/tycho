@@ -30,7 +30,7 @@ pub fn dispatch(args: &ServiceArgs) -> Exit {
             return report! {
                 error: "no profile named '{name}'",
                 at: at_profile(name),
-                recovery: { "tycho profile list" => "names every profile in this file" },
+                recovery: { "tycho profile list" => "names every profile this config defines" },
             };
         };
         vec![profile]
