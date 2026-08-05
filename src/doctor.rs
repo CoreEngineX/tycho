@@ -287,13 +287,19 @@ fn environment(config: &Config, scope: &Scope) -> Section {
                     Check::new(
                         "log directory",
                         Verdict::Ok,
-                        format!("{}, writable", path.display()),
+                        format!(
+                            "{}, writable",
+                            crate::cli::render::abbreviate(&path.display().to_string())
+                        ),
                     )
                 } else {
                     Check::new(
                         "log directory",
                         Verdict::Fail,
-                        format!("{} is not writable", path.display()),
+                        format!(
+                            "{} is not writable",
+                            crate::cli::render::abbreviate(&path.display().to_string())
+                        ),
                     )
                 }
             } else {
@@ -301,8 +307,8 @@ fn environment(config: &Config, scope: &Scope) -> Section {
                     "log directory",
                     Verdict::Warn,
                     format!(
-                        "{} does not exist; service install creates it",
-                        path.display()
+                        "{}, on service install",
+                        crate::cli::render::abbreviate(&path.display().to_string())
                     ),
                 )
             }

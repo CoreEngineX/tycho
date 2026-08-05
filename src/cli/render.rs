@@ -176,7 +176,11 @@ pub(crate) fn clip(text: &str, width: usize) -> String {
 
 /// Paths render with `~` rather than the home directory spelled out, which is what
 /// keeps a column model possible and what `cli.md`'s examples show.
-fn abbreviate(path: &str) -> String {
+///
+/// Reachable from `doctor`, whose rows are the other place a path competes with prose
+/// for a narrow column - and where spelling the home directory out both wasted the
+/// room and put the reader's name in the report.
+pub(crate) fn abbreviate(path: &str) -> String {
     std::env::home_dir()
         .and_then(|home| {
             path.strip_prefix(home.to_string_lossy().as_ref())
