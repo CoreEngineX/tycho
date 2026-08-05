@@ -2,3 +2,13 @@
 # A wedged pipe or a lock that is never released would otherwise hang the gate
 # rather than fail it, which is the wrong failure mode for this project above all.
 slow-timeout = { period = "30s", terminate-after = 4 }
+
+# The one test whose cost is the point: it writes 5,001 files, hands every path to
+# `hash-object`, and takes 5,001 loose objects back. On a Windows runner, with a
+# virus scanner in the path of all ten thousand of those file operations, that has
+# measured within a few seconds of the default ceiling and tipped over it. The
+# guarantee is unchanged - a genuine wedge still fails the gate rather than hanging
+# it - and the budget is the only thing that moves.
+[[profile.default.overrides]]
+filter = 'test(a_batch_past_the_pipe_buffer_does_not_deadlock)'
+slow-timeout = { period = "60s", terminate-after = 6 }
