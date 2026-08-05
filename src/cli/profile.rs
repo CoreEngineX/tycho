@@ -331,7 +331,7 @@ mod tests {
     use super::{add_profile, remove_profile};
     use crate::cli::fixture::Fixture;
     use crate::cli::{Exit, ProfileAddArgs, ProfileRmArgs};
-use crate::config_edit::Editing;
+    use crate::config_edit::Editing;
 
     fn add_args(name: &str) -> ProfileAddArgs {
         ProfileAddArgs {
