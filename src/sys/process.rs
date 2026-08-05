@@ -71,6 +71,12 @@ impl Timeout {
     pub const WORK: Self = Self(Duration::from_secs(600));
     /// A push into a synced cloud folder, which can be very slow.
     pub const REMOTE: Self = Self(Duration::from_secs(1800));
+    /// Starting an interpreter, which is not a git call and does not cost what one
+    /// costs. PowerShell loads WinRT before it runs a line, and on a loaded machine
+    /// that alone passed 30 seconds twice - so `QUICK`, sized for `rev-parse`, failed
+    /// notifications that were about to work. Nothing waits on the result: the caller
+    /// discards it, because a banner is a convenience and a backup is not.
+    pub const INTERPRETER: Self = Self(Duration::from_secs(120));
 
     #[must_use]
     pub const fn from_millis(millis: u64) -> Self {

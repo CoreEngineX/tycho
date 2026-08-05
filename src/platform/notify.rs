@@ -69,7 +69,7 @@ pub fn notify(urgency: Urgency, body: &str) -> Result<(), NotifyError> {
         applescript_literal(urgency.title())
     );
 
-    let out = command("osascript", &["-e", &script], Timeout::QUICK)?;
+    let out = command("osascript", &["-e", &script], Timeout::INTERPRETER)?;
     if out.status.success() {
         return Ok(());
     }
@@ -118,7 +118,7 @@ pub fn notify(urgency: Urgency, body: &str) -> Result<(), NotifyError> {
             "-Command",
             &toast_script(urgency.title(), body),
         ],
-        Timeout::QUICK,
+        Timeout::INTERPRETER,
     )?;
     if out.status.success() {
         return Ok(());
@@ -202,7 +202,8 @@ pub fn notify(_urgency: Urgency, _body: &str) -> Result<(), NotifyError> {
 #[cfg(target_os = "macos")]
 #[must_use]
 pub fn available() -> bool {
-    command("osascript", &["-e", "return 1"], Timeout::QUICK).is_ok_and(|out| out.status.success())
+    command("osascript", &["-e", "return 1"], Timeout::INTERPRETER)
+        .is_ok_and(|out| out.status.success())
 }
 
 /// As the macOS arm. Asks only that PowerShell runs - whether a toast is *shown*
@@ -214,7 +215,7 @@ pub fn available() -> bool {
     command(
         "powershell",
         &["-NoProfile", "-NonInteractive", "-Command", "exit 0"],
-        Timeout::QUICK,
+        Timeout::INTERPRETER,
     )
     .is_ok_and(|out| out.status.success())
 }
@@ -285,7 +286,7 @@ mod windows_tests {
         let out = crate::sys::process::command(
             "powershell",
             &["-NoProfile", "-NonInteractive", "-Command", broken],
-            crate::sys::process::Timeout::QUICK,
+            crate::sys::process::Timeout::INTERPRETER,
         )
         .expect("powershell runs");
         assert!(
