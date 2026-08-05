@@ -1,0 +1,9 @@
+## v0.1.0
+
+Tycho is a backup tool built on git rather than around it. Point it at a directory tree and it captures every repository's full history straight into its own object store, while everything git alone can't preserve — gitignored files, uncommitted changes, stashes, file permissions and ownership — is captured alongside as an overlay, so a restore reconstructs the working tree exactly as it stood, not just what was committed.
+
+At this release the full lifecycle is in place: `watch`, `ignore` and `reinclude` shape what gets backed up; `profile`, `remote` and `schedule` commands configure where backups go and when they run; and `run`, `push`, `status`, `doctor` and `log` cover doing the backup and checking on it. Scheduling runs through launchd on macOS and Task Scheduler on Windows, with a separate catch-up path so a backup destined for an unplugged drive or a signed-out cloud account still lands as soon as it's reachable, instead of waiting for the next scheduled run.
+
+Restoration is a first-class path, not an afterthought: `restore` can pull a single file, a whole profile, or bring back a store from nothing but a mirror clone on a replacement machine, resolving each path through the overlay or through a repository's own history as appropriate. `doctor` checks for the failure modes that tend to corrupt backups silently — volumes that record no file ownership, Spotlight indexing a removable drive, macOS sidecar files poisoning a git object store, paths too long for Windows to round-trip — and reports them as diagnosable warnings rather than letting a backup succeed while quietly holding less than it should.
+
+The project targets macOS and Windows today, with every cross-platform claim in its documentation backed by a runnable test rather than a description of intended behavior — the project's own history is largely a record of assumptions that held on one platform and didn't on the other, subsequently pinned down and corrected.
