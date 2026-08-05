@@ -720,9 +720,7 @@ fn init(path: &Path, force: bool) -> Exit {
         return report! { error: "{error}", at: at_file(parent) };
     }
 
-    let home =
-        std::env::home_dir().map_or_else(|| "~".to_owned(), |home| home.display().to_string());
-    let text = crate::config_edit::starter(&home);
+    let text = crate::config_edit::starter();
     if let Err(error) = crate::sys::fs::write_atomic(path, text.as_bytes()) {
         return report! { error: "{error}", at: at_file(path) };
     }

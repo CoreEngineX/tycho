@@ -562,13 +562,12 @@ fn every_spec(duration: Duration) -> String {
 /// Every line somebody would want to change is present and explained, because a
 /// config whose options you have to look up is a config people leave at its defaults.
 #[must_use]
-pub fn starter(home: &str) -> String {
-    format!(
-        "# Tycho captures what you list here into a git store and pushes that store to\n\
+pub fn starter() -> String {
+    "# Tycho captures what you list here into a git store and pushes that store to\n\
          # folders that survive this machine. `tycho config check` validates this file.\n\
          version = 1\n\
          # This checkout's path, so `tycho __bootstrap` does not have to guess it.\n\
-         # source = \"{home}/Developer/tycho\"\n\
+         # source = \"~/Developer/tycho\"\n\
          \n\
          # Nothing is watched until a profile exists. `tycho profile add` writes one, and\n\
          # `tycho config check` prints the exact command - everything below is what it\n\
@@ -581,7 +580,7 @@ pub fn starter(home: &str) -> String {
          # with its full history, plus what git alone could never bring back:\n\
          # uncommitted edits, untracked files, and anything gitignored.\n\
          # watch = [\n\
-         #   \"{home}/Documents\",\n\
+         #   \"~/Documents\",\n\
          # ]\n\
          #\n\
          # Paths and globs to leave out. `tycho run --dry-run` reports every rule that\n\
@@ -603,13 +602,13 @@ pub fn starter(home: &str) -> String {
          # history over: the state file keys last-seen and behind-count by the name, so\n\
          # a rename shows as `unseen` and re-verifies from scratch.\n\
          # remotes = [\n\
-         #   {{ name = \"drive\", path = \"{home}/Library/CloudStorage/Drive/Backups\" }},\n\
-         #   {{ name = \"t7\", path = \"/Volumes/T7/tycho\", optional = true, trust_ownership = true }},\n\
+         #   { name = \"drive\", path = \"~/Library/CloudStorage/GoogleDrive-you/Backups\" },\n\
+         #   { name = \"t7\", path = \"/Volumes/T7/tycho\", optional = true, trust_ownership = true },\n\
          # ]\n\
          #\n\
          # When it runs by itself, once `tycho service install` has been run.\n\
-         # schedule = {{ weekly = {{ day = \"sunday\", at = \"12:00\" }} }}\n"
-    )
+         # schedule = { weekly = { day = \"sunday\", at = \"12:00\" } }\n"
+        .to_owned()
 }
 
 #[cfg(test)]
@@ -763,6 +762,25 @@ watch = [
         assert!(editing.which(None).is_err(), "ambiguous must not guess");
     }
 
+    /// The starter names no particular machine.
+    ///
+    /// `rules.rs` refuses to expand `~` on the way in, because "resolving them on the
+    /// way in would bake this machine's home directory into it" - and the starter used
+    /// to interpolate the real home into three commented examples, doing exactly that.
+    /// It also travels: the config is captured into the backup tree, so those lines
+    /// went onto every drive the store was pushed to.
+    #[test]
+    fn the_starter_bakes_in_no_home_directory() {
+        let text = starter();
+        assert!(!text.contains("/Users/"), "{text}");
+        assert!(!text.contains("/home/"), "{text}");
+        assert!(!text.contains("C:\\"), "{text}");
+        assert!(
+            text.contains("~/Documents"),
+            "the examples still show a path"
+        );
+    }
+
     /// The starter defines nothing and says exactly that.
     ///
     /// It used to ship an active profile with its remotes commented out, so a new
@@ -771,7 +789,7 @@ watch = [
     /// finding is the one whose hint is the command that sets a profile up.
     #[test]
     fn the_starter_file_parses_and_reports_only_that_it_has_no_profiles() {
-        let text = starter(HOME);
+        let text = starter();
         let parsed = crate::config::parse_with(&text, Some(std::path::Path::new(HOME)), |_| None)
             .expect("valid TOML");
 
@@ -794,7 +812,7 @@ watch = [
     fn a_profile_can_be_added_to_the_starter_file() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("tycho.toml");
-        std::fs::write(&path, starter(HOME)).expect("write");
+        std::fs::write(&path, starter()).expect("write");
 
         let mut editing = Editing::open(&path).expect("open");
         assert!(editing.profiles().is_empty(), "the starter defines none");

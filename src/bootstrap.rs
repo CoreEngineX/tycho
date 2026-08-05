@@ -102,10 +102,7 @@ fn starter_config() {
         );
         return;
     }
-    let Some(home) = std::env::home_dir() else {
-        return;
-    };
-    let starter = crate::config_edit::starter(&home.to_string_lossy());
+    let starter = crate::config_edit::starter();
     if path
         .parent()
         .is_some_and(|dir| std::fs::create_dir_all(dir).is_ok())
