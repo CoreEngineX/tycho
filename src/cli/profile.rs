@@ -7,6 +7,7 @@ use crate::cli::{Exit, ProfileAction, ProfileAddArgs, ProfileArgs, ProfileRmArgs
 use crate::config::Schedule;
 use crate::config_edit::{Editing, NewProfile, NewRemote};
 use crate::primitives::names::{ProfileName, RemoteName};
+use crate::primitives::path::AbsPath;
 use std::path::{Path, PathBuf};
 
 pub fn dispatch(args: &ProfileArgs) -> Exit {
@@ -239,7 +240,13 @@ fn remove_profile(config: Option<PathBuf>, rm: &ProfileRmArgs) -> Exit {
         };
     }
 
-    let store = crate::platform::store_path(raw_name, None);
+    // The profile's own override, not the default directory. Passing `None` here asked
+    // whether a store existed somewhere this profile never kept one, so a profile with
+    // `store_path` set was told it had none - on the command that offers to delete it.
+    let override_dir = editing
+        .store_path(index)
+        .and_then(|raw| AbsPath::parse(&raw).ok());
+    let store = crate::platform::store_path(raw_name, override_dir.as_ref());
     let existing_store = match &store {
         Ok(path) if path.as_path().exists() => Some(path.clone()),
         _ => None,
@@ -324,6 +331,7 @@ mod tests {
     use super::{add_profile, remove_profile};
     use crate::cli::fixture::Fixture;
     use crate::cli::{Exit, ProfileAddArgs, ProfileRmArgs};
+use crate::config_edit::Editing;
 
     fn add_args(name: &str) -> ProfileAddArgs {
         ProfileAddArgs {
@@ -395,12 +403,58 @@ mod tests {
     /// Without it the store lookup is machine-wide - `<data>/store/<name>.git` - so
     /// whether these pass depends on which profiles the developer happens to have run
     /// on this machine. A stray `demo.git` from an unrelated experiment failed this.
+    /// Neither flag, so the store guard is the thing that answers.
+    fn rm_asking(name: &str) -> ProfileRmArgs {
+        ProfileRmArgs {
+            name: name.to_owned(),
+            keep_store: false,
+            delete_store: false,
+        }
+    }
+
     fn rm(name: &str) -> ProfileRmArgs {
         ProfileRmArgs {
             name: name.to_owned(),
             keep_store: true,
             delete_store: false,
         }
+    }
+
+    /// The guard that offers `--delete-store` has to look where the store actually is.
+    ///
+    /// It asked `platform::store_path(name, None)` - the default directory - so a
+    /// profile with `store_path` set was told it had no local store while holding one,
+    /// on the command whose whole job is deciding what happens to it.
+    #[test]
+    fn the_store_guard_looks_where_the_profile_says_its_store_is() {
+        let fixture = Fixture::new();
+        let elsewhere = fixture.dir("elsewhere");
+        let profile = fixture.profile(
+            "custom",
+            &format!(
+                "local_only = true\nstore_path = {}\n",
+                crate::cli::fixture::literal(&elsewhere)
+            ),
+        );
+        fixture.append(&profile);
+        // A second, so the last-profile guard is not what refuses.
+        let other = fixture.profile("other", LOCAL);
+        fixture.append(&other);
+
+        let editing = Editing::open(&fixture.path).expect("open");
+        assert_eq!(
+            editing.store_path(0).map(|raw| raw.replace('\\', "/")),
+            Some(elsewhere.display().to_string().replace('\\', "/")),
+            "the override must be readable at all"
+        );
+
+        // With a store there, removal must stop and ask.
+        std::fs::create_dir_all(elsewhere.join("custom.git")).expect("mkdir");
+        assert_eq!(
+            remove_profile(Some(fixture.path.clone()), &rm_asking("custom")),
+            Exit::Failure,
+            "a store in the profile's own directory must still be noticed"
+        );
     }
 
     /// Having no remotes and having *said* you want none are different states, and
@@ -415,7 +469,7 @@ mod tests {
         let deliberate = fixture.profile("deliberate", LOCAL);
         fixture.append(&deliberate);
 
-        let editing = crate::config_edit::Editing::open(&fixture.path).expect("open");
+        let editing = Editing::open(&fixture.path).expect("open");
         assert!(!editing.is_local_only(0), "no flag was written");
         assert!(editing.is_local_only(1), "{}", fixture.text());
     }

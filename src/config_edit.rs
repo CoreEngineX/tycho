@@ -345,6 +345,22 @@ impl Editing {
             .unwrap_or(false)
     }
 
+    /// A profile's `store_path` override, exactly as written.
+    ///
+    /// Unexpanded, because that is how the file holds it and how it stays portable;
+    /// the caller runs it through `AbsPath::parse`, which is the one place `~` and
+    /// `$HOME` are resolved.
+    #[must_use]
+    pub fn store_path(&self, profile: usize) -> Option<String> {
+        self.document
+            .get("profile")
+            .and_then(Item::as_array_of_tables)
+            .and_then(|tables| tables.get(profile))
+            .and_then(|table| table.get("store_path"))
+            .and_then(Item::as_str)
+            .map(str::to_owned)
+    }
+
     /// Sets or clears `local_only` on a profile.
     ///
     /// # Errors
