@@ -12,7 +12,7 @@ use std::path::Path;
 /// Applied unless `use_default_ignores = false`. Load-bearing rather than cosmetic:
 /// the global cargo target directory on the first machine is 38 GB, and committing
 /// it once puts it in history permanently.
-pub const DEFAULT_JUNK: [&str; 26] = [
+pub const DEFAULT_JUNK: &[&str] = &[
     "node_modules",
     "target",
     "build",
