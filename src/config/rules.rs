@@ -12,7 +12,7 @@ use std::path::Path;
 /// Applied unless `use_default_ignores = false`. Load-bearing rather than cosmetic:
 /// the global cargo target directory on the first machine is 38 GB, and committing
 /// it once puts it in history permanently.
-pub const DEFAULT_JUNK: [&str; 20] = [
+pub const DEFAULT_JUNK: [&str; 26] = [
     "node_modules",
     "target",
     "build",
@@ -23,15 +23,21 @@ pub const DEFAULT_JUNK: [&str; 20] = [
     ".svelte-kit",
     "DerivedData",
     ".gradle",
+    ".kotlin",
     "Pods",
     "__pycache__",
     ".venv",
     "venv",
+    ".ruff_cache",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ipynb_checkpoints",
     "*.o",
     "*.pyc",
     "*.class",
     ".DS_Store",
     "Thumbs.db",
+    "xcuserdata",
     "*.xcuserstate",
 ];
 
@@ -420,6 +426,42 @@ mod tests {
         assert_eq!(decision.rule, "*.o", "the deeper junk glob should win");
         // A file the junk list does not name comes back.
         assert!(captured(&tree, "A/p/target/keep.txt"));
+    }
+
+    /// The junk list is the only list here whose failure mode is a file the user
+    /// wanted and never finds again, so each entry has to be a name a tool owns
+    /// rather than one a person would pick. The second half is the half that
+    /// matters: near-misses on the same words stay captured.
+    #[test]
+    fn the_junk_list_names_tool_caches_and_not_the_words_around_them() {
+        let tree = tree(&RuleSet {
+            watch: paths(&["A"]),
+            junk: DEFAULT_JUNK.iter().map(|s| (*s).to_owned()).collect(),
+            ..RuleSet::default()
+        });
+
+        for junk in [
+            "A/.ruff_cache/0.16.2/1234",
+            "A/.pytest_cache/v/cache/lastfailed",
+            "A/.mypy_cache/3.14/x.json",
+            "A/.ipynb_checkpoints/train-checkpoint.ipynb",
+            "A/p/.kotlin/sessions/x",
+            "A/P.xcodeproj/xcuserdata/me.xcuserdatad/xcschemes/x.plist",
+            "A/lib/.swiftpm/xcode/xcuserdata/me.xcuserdatad/x.plist",
+        ] {
+            assert!(!captured(&tree, junk), "{junk} should be junk");
+        }
+
+        for wanted in [
+            "A/cache/notes.md",
+            "A/ruff_cache_notes.md",
+            "A/.ruff_cache_of_mine.txt",
+            "A/checkpoints/model.pt",
+            "A/xcuserdata.md",
+            "A/kotlin/Main.kt",
+        ] {
+            assert!(captured(&tree, wanted), "{wanted} is the user's own file");
+        }
     }
 
     /// The pruning question. Answering it with the verdict alone would stop the walk

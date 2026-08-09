@@ -356,12 +356,20 @@ Applied unless `use_default_ignores = false`:
 
 ```text
 node_modules  target  build  .build  dist  .next  .nuxt  .svelte-kit
-DerivedData  .gradle  Pods  __pycache__  .venv  venv
-*.o  *.pyc  *.class  .DS_Store  Thumbs.db  *.xcuserstate
+DerivedData  .gradle  .kotlin  Pods  __pycache__  .venv  venv
+.ruff_cache  .pytest_cache  .mypy_cache  .ipynb_checkpoints
+*.o  *.pyc  *.class  .DS_Store  Thumbs.db  xcuserdata  *.xcuserstate
 ```
 
 Load-bearing rather than cosmetic: `~/.build_caches/cargo` on this machine is 38 GB,
 and committing it once puts it in history permanently.
+
+Every entry is a name a tool owns, never one a person would choose for their own
+work. That is the bar for adding one, because this is the only list in the project
+whose failure mode is a file the user wanted and never finds again: `xcuserdata`
+holds Xcode's per-user window and scheme state and covers the copy inside
+`.swiftpm` too, which is why the directory is named rather than `.swiftpm` itself -
+that one can also carry registry and mirror configuration worth keeping.
 
 ### Redundancy detection
 
