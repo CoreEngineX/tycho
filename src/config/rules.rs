@@ -5,43 +5,68 @@
 
 use crate::primitives::path::AbsPath;
 use globset::{Candidate, Glob, GlobSet, GlobSetBuilder};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 use std::path::Path;
+
+/// One default ignore. A `Name` is a whole path component compared for equality, so
+/// `out` cannot reach `output`; a `Glob` is a pattern matched against one component.
+/// Which of the two an entry is belongs in the type, because an entry that was meant
+/// as a name and silently behaved as a pattern would take files nobody named.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Junk {
+    Name(&'static str),
+    Glob(&'static str),
+}
+
+/// Writes the list as its two groups rather than as thirty wrapped constructors.
+macro_rules! junk {
+    (names: $($name:literal),+ ; globs: $($glob:literal),+ $(,)?) => {
+        &[$(Junk::Name($name),)+ $(Junk::Glob($glob),)+]
+    };
+}
 
 /// Applied unless `use_default_ignores = false`. Load-bearing rather than cosmetic:
 /// the global cargo target directory on the first machine is 38 GB, and committing
 /// it once puts it in history permanently.
-pub const DEFAULT_JUNK: &[&str] = &[
-    "node_modules",
-    "target",
-    "build",
-    ".build",
-    "dist",
-    "out",
-    ".next",
-    ".nuxt",
-    ".svelte-kit",
-    "DerivedData",
-    ".gradle",
-    ".kotlin",
-    "Pods",
-    "__pycache__",
-    ".venv",
-    "venv",
-    ".ruff_cache",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".ipynb_checkpoints",
-    "*.o",
-    "*.pyc",
-    "*.class",
-    ".DS_Store",
-    "Thumbs.db",
-    "xcuserdata",
-    "*.xcuserstate",
-    ".cache",
-];
+pub const DEFAULT_JUNK: &[Junk] = junk! {
+    names:
+        "node_modules", "target", "build", ".build", "dist", "out",
+        ".next", ".nuxt", ".svelte-kit", "DerivedData", ".gradle", ".kotlin",
+        "Pods", "__pycache__", ".venv", "venv", ".cache",
+        ".ruff_cache", ".pytest_cache", ".mypy_cache", ".ipynb_checkpoints",
+        ".DS_Store", "Thumbs.db", "xcuserdata";
+    globs:
+        "*.o", "*.pyc", "*.class", "*.xcuserstate",
+};
+
+const _: () = names_are_not_patterns(DEFAULT_JUNK);
+
+/// A name carrying a glob metacharacter would read as strict and match like a
+/// pattern, and one carrying a separator is two components and so matches nothing.
+/// Both are the failure this list cannot afford, so both are compile errors.
+const fn names_are_not_patterns(list: &[Junk]) {
+    let mut entry = 0;
+    while entry < list.len() {
+        if let Junk::Name(name) = list[entry] {
+            assert!(!name.is_empty(), "a junk name cannot be empty");
+            let bytes = name.as_bytes();
+            let mut byte = 0;
+            while byte < bytes.len() {
+                assert!(
+                    !matches!(
+                        bytes[byte],
+                        b'*' | b'?' | b'[' | b']' | b'{' | b'}' | b'/' | b'\\'
+                    ),
+                    "a junk name is one path component compared for equality, \
+                     so it cannot contain a glob metacharacter or a separator"
+                );
+                byte += 1;
+            }
+        }
+        entry += 1;
+    }
+}
 
 /// Tier, strongest last. A tie at equal depth is broken by this and nothing else.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -86,8 +111,9 @@ pub struct RuleTree {
     explicit: BTreeMap<AbsPath, (Verdict, String)>,
     globs: GlobSet,
     glob_patterns: Vec<String>,
-    junk: GlobSet,
-    junk_patterns: Vec<String>,
+    junk_names: BTreeSet<&'static str>,
+    junk_globs: GlobSet,
+    junk_glob_patterns: Vec<&'static str>,
 }
 
 /// The inputs, already expanded and validated by layer 0.
@@ -97,7 +123,7 @@ pub struct RuleSet {
     pub ignore_paths: Vec<AbsPath>,
     pub reinclude: Vec<AbsPath>,
     pub ignore_globs: Vec<String>,
-    pub junk: Vec<String>,
+    pub junk: &'static [Junk],
 }
 
 impl RuleTree {
@@ -118,12 +144,24 @@ impl RuleTree {
             explicit.insert(path.clone(), (Verdict::Skip, path.to_string()));
         }
 
+        let mut junk_names = BTreeSet::new();
+        let mut junk_glob_patterns = Vec::new();
+        for entry in rules.junk {
+            match *entry {
+                Junk::Name(name) => {
+                    junk_names.insert(name);
+                }
+                Junk::Glob(pattern) => junk_glob_patterns.push(pattern),
+            }
+        }
+
         Ok(Self {
             explicit,
             globs: compile(&rules.ignore_globs)?,
             glob_patterns: rules.ignore_globs.clone(),
-            junk: compile(&rules.junk)?,
-            junk_patterns: rules.junk.clone(),
+            junk_names,
+            junk_globs: compile(&junk_glob_patterns)?,
+            junk_glob_patterns,
         })
     }
 
@@ -158,21 +196,40 @@ impl RuleTree {
                     },
                 );
             }
-            for (matcher, patterns, tier) in [
-                (&self.globs, &self.glob_patterns, Tier::Glob),
-                (&self.junk, &self.junk_patterns, Tier::Junk),
-            ] {
-                if let Some(index) = matcher.matches_candidate(&candidate).first() {
-                    consider(
-                        &mut best,
-                        Decision {
-                            verdict: Verdict::Skip,
-                            tier,
-                            depth,
-                            rule: patterns[*index].clone(),
-                        },
-                    );
-                }
+            if let Some(name) = component.as_os_str().to_str()
+                && let Some(hit) = self.junk_names.get(name)
+            {
+                consider(
+                    &mut best,
+                    Decision {
+                        verdict: Verdict::Skip,
+                        tier: Tier::Junk,
+                        depth,
+                        rule: (*hit).to_owned(),
+                    },
+                );
+            }
+            if let Some(rule) = matched(&self.globs, &self.glob_patterns, &candidate) {
+                consider(
+                    &mut best,
+                    Decision {
+                        verdict: Verdict::Skip,
+                        tier: Tier::Glob,
+                        depth,
+                        rule,
+                    },
+                );
+            }
+            if let Some(rule) = matched(&self.junk_globs, &self.junk_glob_patterns, &candidate) {
+                consider(
+                    &mut best,
+                    Decision {
+                        verdict: Verdict::Skip,
+                        tier: Tier::Junk,
+                        depth,
+                        rule,
+                    },
+                );
             }
         }
         best
@@ -211,9 +268,6 @@ impl RuleTree {
             for index in self.globs.matches_candidate(&candidate) {
                 hits.globs.insert(index);
             }
-            for index in self.junk.matches_candidate(&candidate) {
-                hits.junk.insert(index);
-            }
         }
     }
 
@@ -221,18 +275,23 @@ impl RuleTree {
     pub fn glob_patterns(&self) -> &[String] {
         &self.glob_patterns
     }
-
-    #[must_use]
-    pub fn junk_patterns(&self) -> &[String] {
-        &self.junk_patterns
-    }
 }
 
-/// Which non-explicit rules fired during a walk.
+/// Which of the rules a person wrote fired during a walk. The junk list is not
+/// tracked: `unfired` excludes it on purpose, so recording it would be state with
+/// no reader.
 #[derive(Debug, Default)]
 pub struct Hits {
-    pub globs: std::collections::BTreeSet<usize>,
-    pub junk: std::collections::BTreeSet<usize>,
+    pub globs: BTreeSet<usize>,
+}
+
+fn matched<S: AsRef<str>>(
+    matcher: &GlobSet,
+    patterns: &[S],
+    candidate: &Candidate<'_>,
+) -> Option<String> {
+    let index = *matcher.matches_candidate(candidate).first()?;
+    Some(patterns[index].as_ref().to_owned())
 }
 
 fn consider(best: &mut Decision, candidate: Decision) {
@@ -245,29 +304,34 @@ fn consider(best: &mut Decision, candidate: Decision) {
 /// A pattern with no separator matches a basename at any level, so it is anchored
 /// with `**/`. That is what makes `*.log` match `~/A/s/keep/a.log` at the file's own
 /// depth rather than not at all - truth table row 8.
-fn compile(patterns: &[String]) -> Result<GlobSet, RuleError> {
+fn compile<S: AsRef<str>>(patterns: &[S]) -> Result<GlobSet, RuleError> {
     let mut builder = GlobSetBuilder::new();
     for pattern in patterns {
+        let pattern = pattern.as_ref();
         let anchored = if pattern.contains('/') {
-            pattern.clone()
+            pattern.to_owned()
         } else {
             format!("**/{pattern}")
         };
         let glob = Glob::new(&anchored).map_err(|source| RuleError::BadGlob {
-            pattern: pattern.clone(),
+            pattern: pattern.to_owned(),
             source,
         })?;
         builder.add(glob);
     }
     builder.build().map_err(|source| RuleError::BadGlob {
-        pattern: patterns.join(", "),
+        pattern: patterns
+            .iter()
+            .map(AsRef::as_ref)
+            .collect::<Vec<_>>()
+            .join(", "),
         source,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_JUNK, RuleSet, RuleTree, Tier, Verdict};
+    use super::{DEFAULT_JUNK, Junk, RuleSet, RuleTree, Tier, Verdict};
     use crate::primitives::path::AbsPath;
     use std::path::Path;
 
@@ -336,7 +400,7 @@ mod tests {
     fn row_4_junk_matches_at_the_depth_of_the_component_it_names() {
         let tree = tree(&RuleSet {
             watch: paths(&["A"]),
-            junk: vec!["target".to_owned()],
+            junk: &[Junk::Name("target")],
             ..RuleSet::default()
         });
         let decision = tree.resolve(home("A/p/target/x.o").as_path());
@@ -351,7 +415,7 @@ mod tests {
         let tree = tree(&RuleSet {
             watch: paths(&["A"]),
             reinclude: paths(&["A/p/target"]),
-            junk: vec!["target".to_owned()],
+            junk: &[Junk::Name("target")],
             ..RuleSet::default()
         });
         assert!(captured(&tree, "A/p/target/x.o"));
@@ -420,7 +484,7 @@ mod tests {
         let tree = tree(&RuleSet {
             watch: paths(&["A"]),
             reinclude: paths(&["A/p/target"]),
-            junk: DEFAULT_JUNK.iter().map(|s| (*s).to_owned()).collect(),
+            junk: DEFAULT_JUNK,
             ..RuleSet::default()
         });
         let decision = tree.resolve(home("A/p/target/x.o").as_path());
@@ -428,6 +492,24 @@ mod tests {
         assert_eq!(decision.rule, "*.o", "the deeper junk glob should win");
         // A file the junk list does not name comes back.
         assert!(captured(&tree, "A/p/target/keep.txt"));
+    }
+
+    /// One algorithm from a caller's view, but not one rule: a name is compared to a
+    /// whole component, a glob is matched against one. Both report themselves.
+    #[test]
+    fn a_junk_name_is_compared_whole_and_a_junk_glob_is_matched() {
+        let tree = tree(&RuleSet {
+            watch: paths(&["A"]),
+            junk: &[Junk::Name("out"), Junk::Glob("*.o")],
+            ..RuleSet::default()
+        });
+        assert_eq!(tree.resolve(home("A/out/x.js").as_path()).rule, "out");
+        assert_eq!(tree.resolve(home("A/src/x.o").as_path()).rule, "*.o");
+        assert!(captured(&tree, "A/output/x.js"), "a name is not a prefix");
+        assert!(
+            captured(&tree, "A/src/x.object"),
+            "a glob is not a substring"
+        );
     }
 
     /// The junk list is the only list here whose failure mode is a file the user
@@ -438,7 +520,7 @@ mod tests {
     fn the_junk_list_names_tool_caches_and_not_the_words_around_them() {
         let tree = tree(&RuleSet {
             watch: paths(&["A"]),
-            junk: DEFAULT_JUNK.iter().map(|s| (*s).to_owned()).collect(),
+            junk: DEFAULT_JUNK,
             ..RuleSet::default()
         });
 
@@ -498,15 +580,13 @@ mod tests {
         let tree = tree(&RuleSet {
             watch: paths(&["A"]),
             ignore_globs: vec!["*.log".to_owned(), "*.never".to_owned()],
-            junk: vec!["target".to_owned(), "node_modules".to_owned()],
+            junk: &[Junk::Name("target")],
             ..RuleSet::default()
         });
         let mut hits = super::Hits::default();
         tree.record_hits(home("A/p/target/a.log").as_path(), &mut hits);
         assert!(hits.globs.contains(&0), "*.log matched");
         assert!(!hits.globs.contains(&1), "*.never matched nothing");
-        assert!(hits.junk.contains(&0), "target matched");
-        assert!(!hits.junk.contains(&1), "node_modules matched nothing");
     }
 
     #[test]
@@ -522,7 +602,7 @@ mod tests {
     fn a_watch_at_a_shallow_depth_never_rescues_a_deeper_ignore() {
         let tree = tree(&RuleSet {
             watch: paths(&["A"]),
-            junk: vec!["node_modules".to_owned()],
+            junk: &[Junk::Name("node_modules")],
             ..RuleSet::default()
         });
         assert!(!captured(&tree, "A/b/c/d/e/f/node_modules/pkg/index.js"));

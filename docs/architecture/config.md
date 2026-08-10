@@ -354,12 +354,24 @@ re-includes the directory, not the deeper patterns inside it.
 
 Applied unless `use_default_ignores = false`:
 
+An entry is one of two kinds, and which one it is is part of the type. A name is a
+whole path component compared for equality, so it can never reach a longer component
+that starts with it. A glob is a pattern matched against one component, which is what
+an extension needs and the only thing patterns are here for.
+
 ```text
-node_modules  target  build  .build  dist  out  .next  .nuxt  .svelte-kit
-DerivedData  .gradle  .kotlin  Pods  __pycache__  .venv  venv
-.ruff_cache  .pytest_cache  .mypy_cache  .ipynb_checkpoints  .cache
-*.o  *.pyc  *.class  .DS_Store  Thumbs.db  xcuserdata  *.xcuserstate
+names   node_modules  target  build  .build  dist  out
+        .next  .nuxt  .svelte-kit  DerivedData  .gradle  .kotlin
+        Pods  __pycache__  .venv  venv  .cache
+        .ruff_cache  .pytest_cache  .mypy_cache  .ipynb_checkpoints
+        .DS_Store  Thumbs.db  xcuserdata
+
+globs   *.o  *.pyc  *.class  *.xcuserstate
 ```
+
+A name containing a glob metacharacter or a separator is a compile error, not a test
+failure: it would read as strict at the definition site and match like a pattern at
+runtime, which is this list's one unaffordable mistake.
 
 Load-bearing rather than cosmetic: `~/.build_caches/cargo` on this machine is 38 GB,
 and committing it once puts it in history permanently.

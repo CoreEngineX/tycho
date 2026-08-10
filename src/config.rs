@@ -384,11 +384,8 @@ impl Profile {
             ignore_globs: self.ignore_globs.clone(),
             junk: if self.use_default_ignores {
                 rules::DEFAULT_JUNK
-                    .iter()
-                    .map(|pattern| (*pattern).to_owned())
-                    .collect()
             } else {
-                Vec::new()
+                &[]
             },
         }
     }
