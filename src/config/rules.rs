@@ -18,6 +18,7 @@ pub const DEFAULT_JUNK: &[&str] = &[
     "build",
     ".build",
     "dist",
+    "out",
     ".next",
     ".nuxt",
     ".svelte-kit",
@@ -39,6 +40,7 @@ pub const DEFAULT_JUNK: &[&str] = &[
     "Thumbs.db",
     "xcuserdata",
     "*.xcuserstate",
+    ".cache",
 ];
 
 /// Tier, strongest last. A tie at equal depth is broken by this and nothing else.
@@ -448,6 +450,8 @@ mod tests {
             "A/p/.kotlin/sessions/x",
             "A/P.xcodeproj/xcuserdata/me.xcuserdatad/xcschemes/x.plist",
             "A/lib/.swiftpm/xcode/xcuserdata/me.xcuserdatad/x.plist",
+            "A/web/out/_next/static/build/main.js",
+            "A/jvm/out/production/app/Main.class",
         ] {
             assert!(!captured(&tree, junk), "{junk} should be junk");
         }
@@ -459,6 +463,9 @@ mod tests {
             "A/checkpoints/model.pt",
             "A/xcuserdata.md",
             "A/kotlin/Main.kt",
+            "A/output/report.md",
+            "A/checkout/receipt.pdf",
+            "A/notes/out.md",
         ] {
             assert!(captured(&tree, wanted), "{wanted} is the user's own file");
         }

@@ -355,9 +355,9 @@ re-includes the directory, not the deeper patterns inside it.
 Applied unless `use_default_ignores = false`:
 
 ```text
-node_modules  target  build  .build  dist  .next  .nuxt  .svelte-kit
+node_modules  target  build  .build  dist  out  .next  .nuxt  .svelte-kit
 DerivedData  .gradle  .kotlin  Pods  __pycache__  .venv  venv
-.ruff_cache  .pytest_cache  .mypy_cache  .ipynb_checkpoints
+.ruff_cache  .pytest_cache  .mypy_cache  .ipynb_checkpoints  .cache
 *.o  *.pyc  *.class  .DS_Store  Thumbs.db  xcuserdata  *.xcuserstate
 ```
 
@@ -370,6 +370,14 @@ whose failure mode is a file the user wanted and never finds again: `xcuserdata`
 holds Xcode's per-user window and scheme state and covers the copy inside
 `.swiftpm` too, which is why the directory is named rather than `.swiftpm` itself -
 that one can also carry registry and mirror configuration worth keeping.
+
+`out` is the exception to that bar, and the entry to weigh before adding another
+like it. IntelliJ IDEA, a Next.js static export, AOSP and Electron Forge all write
+build output there, but it is also an English word, so it is the entry most likely
+to take something a person meant to keep. What contains the damage is that junk
+matches a whole path component: `output/`, `checkout/` and `out.md` are untouched.
+A directory named `out` that holds work rather than build output needs a
+`reinclude` naming what to keep, and that rule wins by tier at equal depth.
 
 ### Redundancy detection
 
