@@ -78,6 +78,14 @@ descent policy below is not expressible as a filter in any case. What is given u
 its parallel walker; the walk is stat-bound, so that is a real loss, recoverable
 later behind a measurement.
 
+**The walk is also rule discovery.** When it pops a directory whose own verdict
+is Capture, it probes for `.tycho/rules.toml` and folds any local rules into the
+tree before classifying that directory's children - `config.md` section 5 has the
+format and the containment invariant. The tree therefore grows while the plan is
+built; `plan::build` owns it for exactly that window and hands back the completed
+tree, which everything after planning - the overlay above all, whose paths come
+from `git status` and carry no walk context - reads immutably.
+
 **Descent is pruned only where nothing beneath could still be captured.** The obvious
 walk stops descending wherever the rule tree says `Skip`, and that silently breaks
 re-inclusion: `ignore ~/A/s` with `reinclude ~/A/s/keep` is the documented carve-out,

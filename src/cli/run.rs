@@ -685,7 +685,37 @@ pub fn config(args: &ConfigArgs) -> Exit {
     let summaries: Vec<String> = parsed.config.profiles.iter().map(summarise).collect();
     print!("{}", render::config_check(&summaries, &parsed.diagnostics));
 
-    if parsed.has_errors() {
+    // Local rule files are config too, but they live inside the watched trees, so
+    // the check walks for them only once the file itself is clean. What a run
+    // merely warns about - an unknown key - is refused here, because the check is
+    // where people go looking for typos.
+    let mut local_errors = 0;
+    if !parsed.has_errors() {
+        for profile in &parsed.config.profiles {
+            let Ok(tree) = crate::config::rules::RuleTree::build(&profile.rule_set()) else {
+                continue;
+            };
+            match crate::plan::build(profile, tree, &std::collections::BTreeMap::new(), true) {
+                Ok((plan, _)) => {
+                    for warning in plan.warnings() {
+                        if let crate::plan::Warning::LocalRules { path, reason } = warning {
+                            local_errors += 1;
+                            let _ = report! { error: "{reason}", at: at_file(path) };
+                        }
+                    }
+                }
+                Err(crate::plan::PlanError::LocalRuleFile { path, reason }) => {
+                    local_errors += 1;
+                    let _ = report! { error: "{reason}", at: at_file(&path) };
+                }
+                // Whether a root is readable or empty is the run's business; the
+                // check owns only the rule files.
+                Err(_) => {}
+            }
+        }
+    }
+
+    if parsed.has_errors() || local_errors > 0 {
         Exit::Failure
     } else if parsed.diagnostics.is_empty() {
         Exit::Ok

@@ -67,6 +67,8 @@ pub struct Completed {
     pub warnings: Vec<String>,
     pub record: RunRecord,
     pub remotes: Vec<RemoteResult>,
+    /// Every local rule file the walk read, for the run summary.
+    pub rule_files: Vec<(crate::primitives::path::AbsPath, usize)>,
 }
 
 /// What a run is doing, reported as it happens.
@@ -178,11 +180,11 @@ fn finish(
     let before = store.size()?;
 
     observe(Step::Planning);
-    let run = run.advance(|Locked| {
-        Ok::<_, RunError>(Planned {
-            plan: plan::build(profile, &rules, previous, allow_shrink)?,
-        })
-    })?;
+    // The walk owns the tree while local rule files grow it; what comes back is
+    // complete and stays immutable for everything after planning.
+    let (plan, rules) = plan::build(profile, rules, previous, allow_shrink)?;
+    let rule_files = plan.rule_files.clone();
+    let run = run.advance(|Locked| Ok::<_, RunError>(Planned { plan }))?;
 
     observe(Step::Hashing {
         files: run.state.plan.files(),
@@ -445,6 +447,7 @@ fn finish(
         warnings: unreadable,
         record,
         remotes,
+        rule_files,
     })
 }
 
@@ -585,5 +588,6 @@ pub fn dry(
     allow_shrink: bool,
 ) -> Result<Plan, RunError> {
     let tree = RuleTree::build(&profile.rule_set())?;
-    Ok(plan::build(profile, &tree, previous, allow_shrink)?)
+    let (plan, _) = plan::build(profile, tree, previous, allow_shrink)?;
+    Ok(plan)
 }

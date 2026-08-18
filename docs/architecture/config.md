@@ -310,10 +310,16 @@ at. Then:
 
 1. **The deepest match wins.**
 2. **Ties break by tier**: explicit path beats glob, glob beats junk.
-3. **Two explicit path rules at equal depth on the same path is a config error**,
-   caught by `config check` - it is statically decidable and there is no sensible
-   default.
-4. **Two globs at equal depth**, or a glob and a junk rule at equal depth, need no
+3. **Ties at equal depth and tier break by origin**: the global config beats a
+   local rule file, and a deeper local file beats a shallower one. The order is
+   deliberate - a repository's own rules must never be able to defeat the
+   operator's config, or there would be no override short of editing a
+   repository you may not own.
+4. **Two explicit path rules at equal depth on the same path within the global
+   config is a config error**, caught by `config check` - it is statically
+   decidable and there is no sensible default. Across sources it is not an
+   error; origin resolves it.
+5. **Two globs at equal depth**, or a glob and a junk rule at equal depth, need no
    error: every rule at tier 1 or 2 is an ignore, so they agree on the outcome.
 
 A file is captured if and only if the winning rule is a watch or a reinclude.
@@ -338,6 +344,8 @@ These are the test vectors, and `capture.md`'s test matrix implements them.
 | 6 | watch `~/A`, glob `**/*.xcarchive` | `~/A/b/Foo.xcarchive` (glob at d3) | glob, d3 | no |
 | 7 | + reinclude of the file itself (d3) | `~/A/b/Foo.xcarchive` | reinclude d3 beats glob d3 by tier | yes |
 | 8 | watch `~/A`, ignore `~/A/s`, glob `*.log` | `~/A/s/keep/a.log` with reinclude `~/A/s/keep` (d3) | glob matches at d4, deeper than the reinclude | no |
+| 9 | ignore `~/A/p/data` (global); `~/A/p/.tycho` re-includes `data` | `~/A/p/data/m.bin` | same path, depth and tier - global wins by origin | no |
+| 10 | ignore `~/A/box` (global); `~/A/box/.tycho` re-includes `evil.bin` | `~/A/box/evil.bin` | the local file is never read: `box` itself is skipped | no |
 
 Case 8 is the one people get wrong. A glob matching the filename matches at the
 file's own depth, which is deeper than any directory rule above it. To keep
@@ -391,12 +399,59 @@ matches a whole path component: `output/`, `checkout/` and `out.md` are untouche
 A directory named `out` that holds work rather than build output needs a
 `reinclude` naming what to keep, and that rule wins by tier at equal depth.
 
-### Redundancy detection
+### Local rule files (`.tycho/rules.toml`)
 
-`tycho watch add PATH` checks whether an ancestor watch already covers the path with
-no intervening ignore. If so it reports "already covered by `<ancestor>`" and changes
-nothing. If an ignore does intervene, the correct entry is a `reinclude`, and the
-command says so.
+Any directory inside a watch tree may carry rules of its own, in
+`.tycho/rules.toml`:
+
+```toml
+version = 1
+
+ignore    = ["datasets", "out"]
+reinclude = ["out/labels.sqlite"]
+globs     = ["*.ckpt"]
+```
+
+The keys are the profile's rule keys, scoped: every entry is **relative to the
+directory holding the `.tycho`**, so the rules survive that directory being
+renamed, moved, or cloned to another machine. A glob is anchored to the declaring
+directory's subtree - `*.ckpt` here matches beneath this directory and nowhere
+else - with the base glob-escaped, so a directory named `foo[1]` stays a literal.
+`version = 1` is required. `watch` is refused: a local file scopes a watch, it
+cannot create one. An unknown key is a warning at run time - a file authored
+against a newer tycho must not break tonight's backup - and an error under
+`tycho config check`, which is where people go looking for typos.
+
+**Containment.** An entry may only name what sits at or below the declaring
+directory. An absolute path, `~`, `$`, a drive letter, a `\`, a `..`, or an
+empty or `.` entry is a parse error naming the file and line, and the run stops.
+This is what bounds the trust a cloned repository gets - its rules cannot reach
+outside the repository - and what makes discovery correct at all: any rule that
+can affect a path was declared in that path's ancestor chain, and the walk
+visits ancestors first.
+
+**Discovery rides the plan walk.** There is no separate scan: when the walk pops
+a directory whose own verdict is Capture, it probes for `.tycho/rules.toml` and
+folds any rules in before classifying that directory's children. A pruned
+directory is never read at all, so a rule file inside one is physically never
+opened - git's own re-inclusion constraint, enforced by the absence of code. The
+read condition is the directory's **own Capture verdict**, not "was descended
+into": the walk does pass through skipped directories to reach a deeper
+re-include, and reading rule files there would let an ignored subtree re-include
+itself (truth-table row 10). A rule file that cannot be parsed stops the run; an
+unreadable one is a warning and the run continues with the rules it could read.
+
+**Reporting.** The run summary and `--dry-run` list every local file read with
+its rule count, so a `.tycho` appearing after a `git pull` is visible rather
+than silent, and a local rule that matched nothing is reported with its file and
+line.
+
+### Nested watches
+
+A watch root inside another watch root of the same profile is a config error
+(`NestedWatchedRoot`): the inner root's content would have no answer for which
+alias it is stored under. The correct spelling of "watch this subtree
+differently" is a local rule file inside the outer watch.
 
 ## 6. Store location
 

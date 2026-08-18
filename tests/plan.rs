@@ -116,7 +116,7 @@ fn write(path: &Path, text: &str) {
 fn run(dir: &TempDir, extra: &str) -> Result<tycho::plan::Plan, PlanError> {
     let profile = profile(dir.path(), extra);
     let tree = RuleTree::build(&profile.rule_set()).expect("rules compile");
-    build(&profile, &tree, &BTreeMap::new(), false)
+    build(&profile, tree, &BTreeMap::new(), false).map(|(plan, _)| plan)
 }
 
 fn stored(plan: &tycho::plan::Plan) -> Vec<String> {
@@ -448,12 +448,13 @@ fn a_large_drop_fails_unless_it_is_allowed() {
     let mut previous = BTreeMap::new();
     previous.insert("A".to_owned(), 1_000);
 
-    let error = build(&profile, &tree, &previous, false).expect_err("a 99% drop must fail");
+    let error = build(&profile, tree, &previous, false).expect_err("a 99% drop must fail");
     assert!(
         matches!(error, PlanError::RootShrank { .. }),
         "expected RootShrank, got {error}"
     );
-    build(&profile, &tree, &previous, true).expect("--allow-shrink accepts it");
+    let tree = RuleTree::build(&profile.rule_set()).expect("rules compile");
+    build(&profile, tree, &previous, true).expect("--allow-shrink accepts it");
 }
 
 #[test]
@@ -540,4 +541,165 @@ fn the_dry_run_renders_to_the_documented_column_model() {
         "--quick omits the expensive half: {rendered}"
     );
     assert!(rendered.contains("to read"), "{rendered}");
+}
+
+#[test]
+fn local_rules_fire_from_the_directory_that_declares_them() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let root = dir.path();
+    write(&root.join("A/mllab/datasets/big.bin"), "bulk");
+    write(&root.join("A/mllab/out/labels.sqlite"), "keep");
+    write(&root.join("A/mllab/out/scratch.tmp"), "drop");
+    write(&root.join("A/mllab/keep.md"), "keep");
+    write(
+        &root.join("A/mllab/.tycho/rules.toml"),
+        "version = 1\nignore = [\"datasets\", \"out\"]\nreinclude = [\"out/labels.sqlite\"]\n",
+    );
+
+    let plan = run(&dir, "").expect("the walk succeeds");
+    let stored = stored(&plan);
+    assert!(stored.iter().any(|p| p.ends_with("keep.md")), "{stored:?}");
+    assert!(
+        stored.iter().any(|p| p.ends_with("labels.sqlite")),
+        "the carve-out survives: {stored:?}"
+    );
+    assert!(!stored.iter().any(|p| p.ends_with("big.bin")), "{stored:?}");
+    assert!(
+        !stored.iter().any(|p| p.ends_with("scratch.tmp")),
+        "{stored:?}"
+    );
+    // The rule file itself is captured, so a restore brings the rules back.
+    assert!(
+        stored.iter().any(|p| p.ends_with("rules.toml")),
+        "{stored:?}"
+    );
+    assert_eq!(plan.rule_files.len(), 1);
+    assert_eq!(plan.local_rules(), 3);
+}
+
+#[test]
+fn a_rule_file_inside_an_ignored_directory_has_no_effect() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let root = toml_path(dir.path());
+    write(&dir.path().join("A/keep.md"), "k");
+    write(&dir.path().join("A/box/wanted.md"), "never seen");
+    write(
+        &dir.path().join("A/box/.tycho/rules.toml"),
+        "version = 1\nreinclude = [\"wanted.md\"]\n",
+    );
+
+    let plan = run(&dir, &format!("ignore = [\"{root}/A/box\"]\n")).expect("the walk succeeds");
+    let stored = stored(&plan);
+    assert!(
+        !stored.iter().any(|p| p.ends_with("wanted.md")),
+        "a skipped directory's rules must be dead: {stored:?}"
+    );
+    assert!(
+        plan.rule_files.is_empty(),
+        "the file must never have been read: {:?}",
+        plan.rule_files
+    );
+}
+
+#[test]
+fn a_rule_file_in_a_directory_descended_only_for_a_carve_out_is_not_read() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let root = toml_path(dir.path());
+    write(&dir.path().join("A/box/keep/wanted.md"), "carved out");
+    write(&dir.path().join("A/box/evil.bin"), "resurrection attempt");
+    write(
+        &dir.path().join("A/box/.tycho/rules.toml"),
+        "version = 1\nreinclude = [\"evil.bin\"]\n",
+    );
+
+    let plan = run(
+        &dir,
+        &format!("ignore = [\"{root}/A/box\"]\nreinclude = [\"{root}/A/box/keep\"]\n"),
+    )
+    .expect("the walk succeeds");
+    let stored = stored(&plan);
+    assert!(
+        stored.iter().any(|p| p.ends_with("wanted.md")),
+        "the operator's carve-out holds: {stored:?}"
+    );
+    assert!(
+        !stored.iter().any(|p| p.ends_with("evil.bin")),
+        "an ignored directory cannot re-include itself: {stored:?}"
+    );
+    assert!(plan.rule_files.is_empty(), "{:?}", plan.rule_files);
+}
+
+#[test]
+fn a_malformed_rule_file_stops_the_run() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    write(&dir.path().join("A/x.md"), "x");
+    write(&dir.path().join("A/.tycho/rules.toml"), "version = ");
+
+    let error = run(&dir, "").expect_err("a file that is not rules cannot be assumed permissive");
+    assert!(
+        matches!(error, PlanError::LocalRuleFile { .. }),
+        "expected LocalRuleFile, got {error}"
+    );
+}
+
+#[test]
+fn a_containment_violation_names_the_file_and_line() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    write(&dir.path().join("A/x.md"), "x");
+    write(
+        &dir.path().join("A/.tycho/rules.toml"),
+        "version = 1\nignore = [\"../escape\"]\n",
+    );
+
+    let error = run(&dir, "").expect_err("an escape is refused");
+    let shown = error.to_string();
+    assert!(shown.contains("rules.toml"), "{shown}");
+    assert!(shown.contains("line 2"), "{shown}");
+    assert!(shown.contains("escape"), "{shown}");
+}
+
+#[test]
+fn an_unknown_key_warns_and_the_rest_of_the_file_still_fires() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    write(&dir.path().join("A/skipme/x.bin"), "x");
+    write(&dir.path().join("A/keep.md"), "k");
+    write(
+        &dir.path().join("A/.tycho/rules.toml"),
+        "version = 1\nignore = [\"skipme\"]\nfuture_key = 1\n",
+    );
+
+    let plan = run(&dir, "").expect("an unknown key must not kill tonight's backup");
+    let stored = stored(&plan);
+    assert!(!stored.iter().any(|p| p.ends_with("x.bin")), "{stored:?}");
+    assert!(
+        plan.warnings().any(|warning| matches!(
+            warning,
+            Warning::LocalRules { reason, .. } if reason.contains("future_key")
+        )),
+        "the key must be named somewhere"
+    );
+}
+
+#[test]
+fn a_local_rule_that_matches_nothing_is_reported_with_its_line() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    write(&dir.path().join("A/keep.md"), "k");
+    write(
+        &dir.path().join("A/.tycho/rules.toml"),
+        "version = 1\nignore = [\"ghost\"]\n",
+    );
+
+    let plan = run(&dir, "").expect("the walk succeeds");
+    let nothing: Vec<&String> = plan
+        .excluded
+        .iter()
+        .filter(|(_, reason)| *reason == ExcludeReason::MatchedNothing)
+        .map(|(rule, _)| rule)
+        .collect();
+    assert!(
+        nothing
+            .iter()
+            .any(|rule| rule.contains("rules.toml:2") && rule.contains("ghost")),
+        "the dead rule should name its file and line: {nothing:?}"
+    );
 }

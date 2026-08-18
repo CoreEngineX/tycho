@@ -305,6 +305,32 @@ pub fn dry_run(plan: &Plan, repos: &[(String, Inspection)], quick: bool) -> Stri
         }
     }
 
+    if !plan.rule_files.is_empty() {
+        let _ = writeln!(out);
+        let files = plan.rule_files.len();
+        let _ = writeln!(
+            out,
+            "  {}{} global, {} local from {} file{}",
+            chrome(&format!("{:<13}", "rules")),
+            plan.global_rules,
+            plan.local_rules(),
+            files,
+            if files == 1 { "" } else { "s" }
+        );
+        for (file, rules) in &plan.rule_files {
+            let _ = writeln!(
+                out,
+                "  {:<13}{:<48}{}",
+                "",
+                fit(&abbreviate(&file.to_string()), 47),
+                chrome(&format!(
+                    "{rules} rule{}",
+                    if *rules == 1 { "" } else { "s" }
+                ))
+            );
+        }
+    }
+
     let _ = writeln!(out);
     let _ = writeln!(out, "{}", chrome(&format!("{:<50}reason", "excluded")));
     rule(&mut out);
@@ -419,6 +445,16 @@ pub fn run_result(profile: &str, done: &crate::store::run::Completed) -> String 
         format!("in {}s", summary.seconds),
         size(summary.written_bytes)
     );
+    if !done.rule_files.is_empty() {
+        let count: usize = done.rule_files.iter().map(|(_, rules)| rules).sum();
+        let files = done.rule_files.len();
+        let _ = writeln!(
+            out,
+            "  {:<13}{count} local from {files} file{}",
+            "rules",
+            if files == 1 { "" } else { "s" }
+        );
+    }
     out
 }
 
@@ -1331,6 +1367,7 @@ mod tests {
                 warnings: Vec::new(),
             },
             remotes: Vec::new(),
+            rule_files: Vec::new(),
         };
 
         set_colour(false);

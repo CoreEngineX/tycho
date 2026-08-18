@@ -163,7 +163,18 @@ pub struct RuleTree {
     junk_names: BTreeMap<&'static str, RuleId>,
     junk_globs: GlobSet,
     junk_glob_ids: Vec<RuleId>,
+    local_globs: Vec<LocalGlobSet>,
     metas: Vec<RuleMeta>,
+}
+
+/// One local file's compiled globs. The patterns are anchored to the declaring
+/// directory when they are built, so matching needs no base check here.
+#[derive(Debug)]
+struct LocalGlobSet {
+    /// The declaring directory's depth, which is the rules' origin.
+    depth: usize,
+    set: GlobSet,
+    ids: Vec<RuleId>,
 }
 
 /// The inputs, already expanded and validated by layer 0.
@@ -225,8 +236,64 @@ impl RuleTree {
             junk_names,
             junk_globs: compile(&junk_glob_patterns)?,
             junk_glob_ids,
+            local_globs: Vec::new(),
             metas,
         })
+    }
+
+    /// Folds one local rule file into the tree. `base` is the directory holding
+    /// the `.tycho`; `file` is the rules file itself, recorded as each rule's
+    /// source so `--dry-run` and `rules explain` can point at it.
+    ///
+    /// # Errors
+    ///
+    /// If a glob does not compile.
+    pub fn add_local(
+        &mut self,
+        base: &AbsPath,
+        file: &AbsPath,
+        rules: &crate::config::local::LocalRules,
+    ) -> Result<(), RuleError> {
+        let depth = base.as_path().components().count();
+        let origin = Origin::Local(depth);
+        for (entries, verdict) in [
+            (&rules.ignore, Verdict::Skip),
+            (&rules.reinclude, Verdict::Capture),
+        ] {
+            for entry in entries {
+                let source = Source::Local {
+                    file: file.clone(),
+                    line: entry.line,
+                };
+                let id = intern(&mut self.metas, entry.text.clone(), source);
+                // The higher origin keeps a contested path: the operator's config
+                // outranks any local file, and a deeper local file outranks a
+                // shallower one.
+                let keep = self
+                    .explicit
+                    .get(entry.path.as_path())
+                    .is_none_or(|(_, _, existing)| origin > *existing);
+                if keep {
+                    self.explicit
+                        .insert(entry.path.clone(), (verdict, id, origin));
+                }
+            }
+        }
+        if !rules.globs.is_empty() {
+            let mut ids = Vec::new();
+            let mut patterns = Vec::new();
+            for glob in &rules.globs {
+                let source = Source::Local {
+                    file: file.clone(),
+                    line: glob.line,
+                };
+                ids.push(intern(&mut self.metas, glob.text.clone(), source));
+                patterns.push(anchored(base, &glob.text));
+            }
+            let set = compile(&patterns)?;
+            self.local_globs.push(LocalGlobSet { depth, set, ids });
+        }
+        Ok(())
     }
 
     /// Evaluates every rule against the path and each of its ancestors, and returns
@@ -307,6 +374,20 @@ impl RuleTree {
                 },
             );
         }
+        for local in &self.local_globs {
+            if let Some(id) = matched(&local.set, &local.ids, &candidate) {
+                consider(
+                    &mut best,
+                    Decision {
+                        verdict: Verdict::Skip,
+                        tier: Tier::Glob,
+                        depth,
+                        origin: Origin::Local(local.depth),
+                        rule: Some(id),
+                    },
+                );
+            }
+        }
         best
     }
 
@@ -351,6 +432,18 @@ impl RuleTree {
         for index in self.globs.matches_candidate(&candidate) {
             hits.globs.insert(index);
         }
+        for local in &self.local_globs {
+            for index in local.set.matches_candidate(&candidate) {
+                hits.local.insert(local.ids[index]);
+            }
+        }
+    }
+
+    /// Every local glob rule's id, for the unfired-rule report.
+    pub fn local_glob_ids(&self) -> impl Iterator<Item = RuleId> {
+        self.local_globs
+            .iter()
+            .flat_map(|local| local.ids.iter().copied())
     }
 
     /// The global glob patterns in hit-index order, for the unfired-rule report.
@@ -377,6 +470,8 @@ impl RuleTree {
 #[derive(Debug, Default)]
 pub struct Hits {
     pub globs: BTreeSet<usize>,
+    /// Local glob rules that fired, by id.
+    pub local: BTreeSet<RuleId>,
 }
 
 fn matched(matcher: &GlobSet, ids: &[RuleId], candidate: &Candidate<'_>) -> Option<RuleId> {
@@ -397,6 +492,25 @@ fn consider(best: &mut Decision, candidate: Decision) {
             && candidate.origin > best.origin)
     {
         *best = candidate;
+    }
+}
+
+/// A local glob rooted at its declaring directory: a bare basename pattern
+/// matches at any depth beneath it, a pattern with `/` sits directly under it -
+/// `compile`'s convention, rooted at the base instead of anywhere. The base is
+/// escaped so a directory named `foo[1]` stays a literal.
+fn anchored(base: &AbsPath, pattern: &str) -> String {
+    // Candidates are matched with `/` separators on every platform, so the base
+    // must use them too. Only Windows rewrites: a Unix filename may legally
+    // contain `\`, and rewriting it would corrupt the path to fix nothing.
+    #[cfg(windows)]
+    let base = globset::escape(&base.as_path().to_string_lossy().replace('\\', "/"));
+    #[cfg(unix)]
+    let base = globset::escape(&base.as_path().to_string_lossy());
+    if pattern.contains('/') {
+        format!("{base}/{pattern}")
+    } else {
+        format!("{base}/**/{pattern}")
     }
 }
 
@@ -698,6 +812,180 @@ mod tests {
         tree.record_hits(home("A/p/target/a.log").as_path(), &mut hits);
         assert!(hits.globs.contains(&0), "*.log matched");
         assert!(!hits.globs.contains(&1), "*.never matched nothing");
+    }
+
+    fn add_local(tree: &mut RuleTree, base: &str, lists: Local<'_>) {
+        use crate::config::local::{Entry, GlobEntry, LocalRules};
+        let base_path = home(base);
+        let file = home(&format!("{base}/.tycho/rules.toml"));
+        let entry = |text: &&str| Entry {
+            text: (*text).to_owned(),
+            line: 1,
+            path: home(&format!("{base}/{text}")),
+        };
+        let rules = LocalRules {
+            ignore: lists.ignore.iter().map(entry).collect(),
+            reinclude: lists.reinclude.iter().map(entry).collect(),
+            globs: lists
+                .globs
+                .iter()
+                .map(|text| GlobEntry {
+                    text: (*text).to_owned(),
+                    line: 1,
+                })
+                .collect(),
+            unknown: Vec::new(),
+        };
+        tree.add_local(&base_path, &file, &rules)
+            .expect("local rules compile");
+    }
+
+    #[derive(Clone, Copy, Default)]
+    struct Local<'a> {
+        ignore: &'a [&'a str],
+        reinclude: &'a [&'a str],
+        globs: &'a [&'a str],
+    }
+
+    /// Row 9: identical path, tier and depth from two sources - the operator's
+    /// config wins, so a repository's own rules can always be overridden.
+    #[test]
+    fn row_9_a_global_rule_beats_a_local_rule_on_an_exact_tie() {
+        let mut ignoring = tree(&RuleSet {
+            watch: paths(&["A"]),
+            ignore_paths: paths(&["A/proj/data"]),
+            ..RuleSet::default()
+        });
+        add_local(
+            &mut ignoring,
+            "A/proj",
+            Local {
+                reinclude: &["data"],
+                ..Local::default()
+            },
+        );
+        assert!(
+            !captured(&ignoring, "A/proj/data/model.bin"),
+            "the ignore holds"
+        );
+
+        let mut keeping = tree(&RuleSet {
+            watch: paths(&["A"]),
+            reinclude: paths(&["A/proj/data"]),
+            ..RuleSet::default()
+        });
+        add_local(
+            &mut keeping,
+            "A/proj",
+            Local {
+                ignore: &["data"],
+                ..Local::default()
+            },
+        );
+        assert!(
+            captured(&keeping, "A/proj/data/model.bin"),
+            "the reinclude holds"
+        );
+    }
+
+    /// Two local files name the same path: the deeper file is closer to the data,
+    /// so it wins - in whichever order discovery found the two.
+    #[test]
+    fn a_deeper_local_file_beats_a_shallower_one() {
+        for deeper_first in [false, true] {
+            let mut tree = tree(&RuleSet {
+                watch: paths(&["A"]),
+                ..RuleSet::default()
+            });
+            let shallow = Local {
+                ignore: &["sub/data"],
+                ..Local::default()
+            };
+            let deep = Local {
+                reinclude: &["data"],
+                ..Local::default()
+            };
+            if deeper_first {
+                add_local(&mut tree, "A/sub", deep);
+                add_local(&mut tree, "A", shallow);
+            } else {
+                add_local(&mut tree, "A", shallow);
+                add_local(&mut tree, "A/sub", deep);
+            }
+            assert!(
+                captured(&tree, "A/sub/data/keep.txt"),
+                "deeper_first: {deeper_first}"
+            );
+        }
+    }
+
+    /// A local glob is scoped: it matches beneath its directory - including
+    /// directly beneath it, the zero-component case of `**` - and nowhere else.
+    #[test]
+    fn a_local_glob_stays_inside_its_directory() {
+        let mut tree = tree(&RuleSet {
+            watch: paths(&["A"]),
+            ..RuleSet::default()
+        });
+        add_local(
+            &mut tree,
+            "A/proj",
+            Local {
+                globs: &["*.ckpt"],
+                ..Local::default()
+            },
+        );
+        assert!(!captured(&tree, "A/proj/model.ckpt"), "directly beneath");
+        assert!(!captured(&tree, "A/proj/deep/nest/model.ckpt"), "any depth");
+        assert!(
+            captured(&tree, "A/other/model.ckpt"),
+            "a sibling is out of reach"
+        );
+        assert!(
+            captured(&tree, "A/model.ckpt"),
+            "the parent is out of reach"
+        );
+    }
+
+    /// A directory named like a glob must stay a literal, or its rules would
+    /// reach into siblings their author never named.
+    #[test]
+    fn a_base_with_metacharacters_is_matched_literally() {
+        let mut tree = tree(&RuleSet {
+            watch: paths(&["A"]),
+            ..RuleSet::default()
+        });
+        add_local(
+            &mut tree,
+            "A/pro[1]ject",
+            Local {
+                globs: &["*.ckpt"],
+                ..Local::default()
+            },
+        );
+        assert!(!captured(&tree, "A/pro[1]ject/model.ckpt"));
+        assert!(captured(&tree, "A/pro1ject/model.ckpt"), "no class match");
+    }
+
+    #[test]
+    fn local_glob_hits_are_recorded_by_id() {
+        let mut tree = tree(&RuleSet {
+            watch: paths(&["A"]),
+            ..RuleSet::default()
+        });
+        add_local(
+            &mut tree,
+            "A/proj",
+            Local {
+                globs: &["*.log", "*.never"],
+                ..Local::default()
+            },
+        );
+        let ids: Vec<_> = tree.local_glob_ids().collect();
+        let mut hits = super::Hits::default();
+        tree.record_hits(home("A/proj/x.log").as_path(), &mut hits);
+        assert!(hits.local.contains(&ids[0]), "*.log matched");
+        assert!(!hits.local.contains(&ids[1]), "*.never matched nothing");
     }
 
     /// The walk resolves by descending one step per entry; a divergence between

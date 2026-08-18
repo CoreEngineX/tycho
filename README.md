@@ -220,6 +220,20 @@ excluded                                          reason
   ~/Documents/.audit/keep                         matched nothing
 ```
 
+Rules can also live with the data instead of in the config: any watched
+directory may carry a `.tycho/rules.toml` whose entries are relative to it, so
+they survive the directory being renamed or moved.
+
+```toml
+version = 1
+ignore    = ["datasets", "out"]
+reinclude = ["out/labels.sqlite"]
+```
+
+Entries may only name things at or below the declaring directory, the global
+config always wins a direct conflict, and a rule file inside an ignored
+directory is never read. Every file read is listed in the run summary.
+
 Resist the urge to add `.env` to that list. Capturing exactly what git itself will
 never track - gitignored secrets included - is the reason this exists over `git
 push`.

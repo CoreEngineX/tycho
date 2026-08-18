@@ -2,6 +2,7 @@
 //! whose root yielded nothing.
 
 use crate::config::Profile;
+use crate::config::local;
 use crate::config::rules::{Decision, Hits, RuleId, RuleTree, Tier, Verdict};
 use crate::primitives::encode::{FileMode, percent_component};
 use crate::primitives::names::{AliasError, BranchName, RootAlias};
@@ -77,6 +78,12 @@ pub enum Warning {
     BrokenRepo {
         path: String,
     },
+    /// A local rule file that could not be used in a way that does not poison the
+    /// run: unreadable, or carrying a key this version does not know.
+    LocalRules {
+        path: String,
+        reason: String,
+    },
 }
 
 /// A sentence, because these reach the reader.
@@ -97,6 +104,7 @@ impl std::fmt::Display for Warning {
             Self::NotStorable { path, reason } => {
                 write!(f, "{path} cannot be stored: {reason}")
             }
+            Self::LocalRules { path, reason } => write!(f, "{path}: {reason}"),
             // Says what happened to the contents, because "broken" on its own reads
             // as data lost when nothing was.
             Self::BrokenRepo { path } => write!(
@@ -111,6 +119,8 @@ impl std::fmt::Display for Warning {
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum PlanError {
+    #[error("{path}: {reason}")]
+    LocalRuleFile { path: String, reason: String },
     #[error("watched root {root} could not be read: {reason}")]
     RootUnreadable { root: String, reason: String },
     #[error(
@@ -180,6 +190,10 @@ impl ExcludeReason {
 #[derive(Debug, Default)]
 pub struct Plan {
     pub roots: Vec<RootPlan>,
+    /// Every `.tycho/rules.toml` the walk read, with how many rules it declared.
+    pub rule_files: Vec<(AbsPath, usize)>,
+    /// How many rules the profile itself declares, for the summary line.
+    pub global_rules: usize,
     /// What the rules threw away, and what they failed to throw away. A rule that
     /// matched nothing is the row that earns `--dry-run`: a typo'd ignore path is
     /// otherwise a silent no-op that commits gigabytes into permanent history.
@@ -209,6 +223,12 @@ impl Plan {
     pub fn warnings(&self) -> impl Iterator<Item = &Warning> {
         self.roots.iter().flat_map(|root| root.warnings.iter())
     }
+
+    /// How many rules the local files declared, summed for the summary line.
+    #[must_use]
+    pub fn local_rules(&self) -> usize {
+        self.rule_files.iter().map(|(_, count)| count).sum()
+    }
 }
 
 /// Walks every watched root and applies the gate.
@@ -219,13 +239,14 @@ impl Plan {
 /// `allow_shrink`.
 pub fn build(
     profile: &Profile,
-    tree: &RuleTree,
+    mut tree: RuleTree,
     previous: &BTreeMap<String, usize>,
     allow_shrink: bool,
-) -> Result<Plan, PlanError> {
+) -> Result<(Plan, RuleTree), PlanError> {
     let mut plan = Plan::default();
     let mut hits = Hits::default();
     let mut fired: BTreeMap<RuleId, ExcludeReason> = BTreeMap::new();
+    let mut local = LocalReport::default();
 
     for entry in &profile.watch {
         let alias = entry
@@ -234,7 +255,14 @@ pub fn build(
                 root: entry.path().to_string(),
                 reason: reason.to_string(),
             })?;
-        let root = walk_root(entry.path(), &alias, tree, &mut hits, &mut fired)?;
+        let root = walk_root(
+            entry.path(),
+            &alias,
+            &mut tree,
+            &mut hits,
+            &mut fired,
+            &mut local,
+        )?;
 
         if root.capturable() == 0 {
             return Err(PlanError::RootEmpty {
@@ -254,12 +282,24 @@ pub fn build(
         plan.roots.push(root);
     }
 
+    plan.global_rules =
+        profile.ignore_paths.len() + profile.reinclude.len() + profile.ignore_globs.len();
+    plan.rule_files = local.files;
     plan.excluded = fired
         .into_iter()
         .map(|(id, reason)| (tree.rule_text(id).to_owned(), reason))
         .collect();
-    plan.excluded.extend(unfired(profile, tree, &hits));
-    Ok(plan)
+    plan.excluded.extend(local.unfired);
+    plan.excluded.extend(unfired(profile, &tree, &hits));
+    Ok((plan, tree))
+}
+
+/// What discovery gathered across every root: the files read, and the local
+/// rules that named something that does not exist.
+#[derive(Debug, Default)]
+struct LocalReport {
+    files: Vec<(AbsPath, usize)>,
+    unfired: Vec<(String, ExcludeReason)>,
 }
 
 /// Whether a drop is large enough to be worth confirming once.
@@ -280,9 +320,10 @@ pub fn shrank(before: usize, after: usize) -> bool {
 fn walk_root(
     root: &AbsPath,
     alias: &RootAlias,
-    tree: &RuleTree,
+    tree: &mut RuleTree,
     hits: &mut Hits,
     fired: &mut BTreeMap<RuleId, ExcludeReason>,
+    local: &mut LocalReport,
 ) -> Result<RootPlan, PlanError> {
     let mut plan = RootPlan {
         alias: alias.to_string(),
@@ -298,6 +339,7 @@ fn walk_root(
         tree,
         hits,
         fired,
+        local,
     };
 
     // A watch entry may name a file rather than a directory - the escape hatch for
@@ -327,6 +369,9 @@ fn walk_root(
     let mut first = true;
 
     while let Some((dir, inside_repo, dir_decision, dir_depth)) = stack.pop() {
+        if dir_decision.verdict == Verdict::Capture {
+            load_local_rules(&mut walk, &mut plan, &dir)?;
+        }
         let listing = match fs::read_dir(&dir) {
             Ok(listing) => listing,
             Err(error) => {
@@ -421,9 +466,67 @@ fn walk_root(
 struct Walk<'a> {
     root: &'a AbsPath,
     alias: &'a RootAlias,
-    tree: &'a RuleTree,
+    tree: &'a mut RuleTree,
     hits: &'a mut Hits,
     fired: &'a mut BTreeMap<RuleId, ExcludeReason>,
+    local: &'a mut LocalReport,
+}
+
+/// Reads `dir/.tycho/rules.toml` into the tree, if the directory declares one.
+///
+/// Unreadable is a warning and the walk continues: tonight's backup should not
+/// die because one directory's permissions changed. Unparseable is an error and
+/// the run stops, because a rule file that cannot be read as rules cannot be
+/// assumed permissive.
+fn load_local_rules(walk: &mut Walk<'_>, plan: &mut RootPlan, dir: &Path) -> Result<(), PlanError> {
+    let path = dir.join(local::DIR_NAME).join(local::FILE_NAME);
+    if fs::symlink_metadata(&path).is_err() {
+        return Ok(());
+    }
+    let shown = path.display().to_string();
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) => {
+            plan.warnings.push(Warning::LocalRules {
+                path: shown,
+                reason: error.to_string(),
+            });
+            return Ok(());
+        }
+    };
+    let (Ok(base), Ok(file)) = (AbsPath::from_absolute(dir), AbsPath::from_absolute(&path)) else {
+        plan.warnings.push(Warning::LocalRules {
+            path: shown,
+            reason: "not an absolute path this host can hold".to_owned(),
+        });
+        return Ok(());
+    };
+    let rules = local::parse(&text, &base).map_err(|error| PlanError::LocalRuleFile {
+        path: shown.clone(),
+        reason: error.to_string(),
+    })?;
+    for key in &rules.unknown {
+        plan.warnings.push(Warning::LocalRules {
+            path: shown.clone(),
+            reason: format!("unknown key `{key}` was ignored; `tycho config check` rejects it"),
+        });
+    }
+    for entry in rules.ignore.iter().chain(&rules.reinclude) {
+        if fs::symlink_metadata(entry.path.as_path()).is_err() {
+            walk.local.unfired.push((
+                format!("{shown}:{}  {}", entry.line, entry.text),
+                ExcludeReason::MatchedNothing,
+            ));
+        }
+    }
+    walk.tree
+        .add_local(&base, &file, &rules)
+        .map_err(|error| PlanError::LocalRuleFile {
+            path: shown,
+            reason: error.to_string(),
+        })?;
+    walk.local.files.push((file, rules.len()));
+    Ok(())
 }
 
 fn take_file(
@@ -565,6 +668,18 @@ fn unfired(profile: &Profile, tree: &RuleTree, hits: &Hits) -> Vec<(String, Excl
     for (index, pattern) in tree.glob_patterns().enumerate() {
         if !hits.globs.contains(&index) {
             out.push((pattern.to_owned(), ExcludeReason::MatchedNothing));
+        }
+    }
+    for id in tree.local_glob_ids() {
+        if !hits.local.contains(&id) {
+            let text = tree.rule_text(id);
+            let shown = match tree.rule_source(id) {
+                crate::config::rules::Source::Local { file, line } => {
+                    format!("{file}:{line}  {text}")
+                }
+                _ => text.to_owned(),
+            };
+            out.push((shown, ExcludeReason::MatchedNothing));
         }
     }
     out

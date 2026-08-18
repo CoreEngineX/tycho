@@ -2,6 +2,7 @@
 //! rule resolution is testable with plain values.
 
 pub mod check;
+pub mod local;
 pub mod raw;
 pub mod rules;
 
