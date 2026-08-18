@@ -2,7 +2,7 @@
 //! whose root yielded nothing.
 
 use crate::config::Profile;
-use crate::config::rules::{Decision, Hits, RuleTree, Tier, Verdict};
+use crate::config::rules::{Decision, Hits, RuleId, RuleTree, Tier, Verdict};
 use crate::primitives::encode::{FileMode, percent_component};
 use crate::primitives::names::{AliasError, BranchName, RootAlias};
 use crate::primitives::oid::Oid;
@@ -225,7 +225,7 @@ pub fn build(
 ) -> Result<Plan, PlanError> {
     let mut plan = Plan::default();
     let mut hits = Hits::default();
-    let mut fired: BTreeMap<String, ExcludeReason> = BTreeMap::new();
+    let mut fired: BTreeMap<RuleId, ExcludeReason> = BTreeMap::new();
 
     for entry in &profile.watch {
         let alias = entry
@@ -254,7 +254,10 @@ pub fn build(
         plan.roots.push(root);
     }
 
-    plan.excluded = fired.into_iter().collect();
+    plan.excluded = fired
+        .into_iter()
+        .map(|(id, reason)| (tree.rule_text(id).to_owned(), reason))
+        .collect();
     plan.excluded.extend(unfired(profile, tree, &hits));
     Ok(plan)
 }
@@ -279,7 +282,7 @@ fn walk_root(
     alias: &RootAlias,
     tree: &RuleTree,
     hits: &mut Hits,
-    fired: &mut BTreeMap<String, ExcludeReason>,
+    fired: &mut BTreeMap<RuleId, ExcludeReason>,
 ) -> Result<RootPlan, PlanError> {
     let mut plan = RootPlan {
         alias: alias.to_string(),
@@ -303,20 +306,27 @@ fn walk_root(
         root: root.to_string(),
         reason: error.to_string(),
     })?;
+    // The root's whole prefix chain, recorded and resolved once. Every deeper
+    // entry records and resolves only itself, on top of what its parent carried.
+    walk.tree.record_hits(root.as_path(), walk.hits);
+    let root_decision = walk.tree.resolve(root.as_path());
     if kind != FileKind::Directory {
-        // The directory loop records hits for every entry it lists; a file root
-        // never enters that loop, so its one path is recorded here.
-        walk.tree.record_hits(root.as_path(), walk.hits);
-        take_file(&mut walk, &mut plan, root.as_path(), kind);
+        take_file(&mut walk, &mut plan, root.as_path(), kind, root_decision);
         return Ok(plan);
     }
 
     // An explicit stack rather than recursion, so a pathological depth is not a
     // stack overflow.
-    let mut stack = vec![(root.as_path().to_path_buf(), false)];
+    let root_depth = root.as_path().components().count();
+    let mut stack = vec![(
+        root.as_path().to_path_buf(),
+        false,
+        root_decision,
+        root_depth,
+    )];
     let mut first = true;
 
-    while let Some((dir, inside_repo)) = stack.pop() {
+    while let Some((dir, inside_repo, dir_decision, dir_depth)) = stack.pop() {
         let listing = match fs::read_dir(&dir) {
             Ok(listing) => listing,
             Err(error) => {
@@ -351,7 +361,7 @@ fn walk_root(
             if is_git_marker(&path) {
                 continue;
             }
-            walk.tree.record_hits(&path, walk.hits);
+            walk.tree.record_hit(&path, walk.hits);
 
             let kind = match classify_path(&path) {
                 Ok(kind) => kind,
@@ -365,7 +375,7 @@ fn walk_root(
             };
 
             if kind == FileKind::Directory {
-                let decision = walk.tree.resolve(&path);
+                let decision = walk.tree.descend(dir_decision, &path, dir_depth + 1);
                 if decision.verdict == Verdict::Skip {
                     note(walk.fired, &decision);
                     if !walk.tree.may_contain_captures(&path) {
@@ -381,15 +391,15 @@ fn walk_root(
                                 reason,
                             }),
                         }
-                        stack.push((path, true));
+                        stack.push((path, true, decision, dir_depth + 1));
                     }
                     Some(false) => {
                         plan.warnings.push(Warning::BrokenRepo {
                             path: path.display().to_string(),
                         });
-                        stack.push((path, inside_repo));
+                        stack.push((path, inside_repo, decision, dir_depth + 1));
                     }
-                    None => stack.push((path, inside_repo)),
+                    None => stack.push((path, inside_repo, decision, dir_depth + 1)),
                 }
                 continue;
             }
@@ -398,7 +408,8 @@ fn walk_root(
             if inside_repo {
                 continue;
             }
-            take_file(&mut walk, &mut plan, &path, kind);
+            let decision = walk.tree.descend(dir_decision, &path, dir_depth + 1);
+            take_file(&mut walk, &mut plan, &path, kind, decision);
         }
     }
 
@@ -412,12 +423,17 @@ struct Walk<'a> {
     alias: &'a RootAlias,
     tree: &'a RuleTree,
     hits: &'a mut Hits,
-    fired: &'a mut BTreeMap<String, ExcludeReason>,
+    fired: &'a mut BTreeMap<RuleId, ExcludeReason>,
 }
 
-fn take_file(walk: &mut Walk<'_>, plan: &mut RootPlan, path: &Path, kind: FileKind) {
-    let (root, alias, tree) = (walk.root, walk.alias, walk.tree);
-    let decision = tree.resolve(path);
+fn take_file(
+    walk: &mut Walk<'_>,
+    plan: &mut RootPlan,
+    path: &Path,
+    kind: FileKind,
+    decision: Decision,
+) {
+    let (root, alias) = (walk.root, walk.alias);
     if decision.verdict == Verdict::Skip {
         note(walk.fired, &decision);
         return;
@@ -525,16 +541,14 @@ fn source_of(entry: &Entry) -> &AbsPath {
 
 /// Records the rule that decided a skip, so the dry run can say what was thrown
 /// away and by what.
-fn note(fired: &mut BTreeMap<String, ExcludeReason>, decision: &Decision) {
-    if decision.rule.is_empty() {
-        return;
-    }
+fn note(fired: &mut BTreeMap<RuleId, ExcludeReason>, decision: &Decision) {
+    let Some(id) = decision.rule else { return };
     let reason = match decision.tier {
         Tier::ExplicitPath => ExcludeReason::IgnoreRule,
         Tier::Glob => ExcludeReason::GlobRule,
         Tier::Junk => ExcludeReason::DefaultJunk,
     };
-    fired.insert(decision.rule.clone(), reason);
+    fired.insert(id, reason);
 }
 
 /// Rules a person wrote that matched nothing: an ignore or reinclude path that does
@@ -548,9 +562,9 @@ fn unfired(profile: &Profile, tree: &RuleTree, hits: &Hits) -> Vec<(String, Excl
             out.push((path.to_string(), ExcludeReason::MatchedNothing));
         }
     }
-    for (index, pattern) in tree.glob_patterns().iter().enumerate() {
+    for (index, pattern) in tree.glob_patterns().enumerate() {
         if !hits.globs.contains(&index) {
-            out.push((pattern.clone(), ExcludeReason::MatchedNothing));
+            out.push((pattern.to_owned(), ExcludeReason::MatchedNothing));
         }
     }
     out

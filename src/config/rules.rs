@@ -6,6 +6,7 @@
 use crate::primitives::path::AbsPath;
 use globset::{Candidate, Glob, GlobSet, GlobSetBuilder};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
 use std::ops::Bound;
 use std::path::Path;
 
@@ -82,15 +83,63 @@ pub enum Verdict {
     Skip,
 }
 
+/// Where a rule came from, and how much authority that gives it when two rules
+/// name the same path at the same tier and depth. Ordered: junk loses to a local
+/// file, a deeper local file beats a shallower one, and the operator's own config
+/// beats every local file, so a repository's rules can always be overridden
+/// without editing the repository.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Origin {
+    Junk,
+    /// Depth of the directory holding the `.tycho` that declared the rule.
+    Local(usize),
+    Global,
+}
+
+/// One rule's identity in the tree's arena, so a `Decision` costs a copy rather
+/// than a clone of the rule's text in the hottest loop in the program.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RuleId(u32);
+
+/// What an id resolves to when a person needs to read the rule.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuleMeta {
+    /// As written in its file, not as expanded.
+    pub text: String,
+    pub source: Source,
+}
+
+/// The file a rule was written in. A `Local` carries the line so `rules explain`
+/// can point at it; the junk list is compiled in and has no file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Source {
+    Junk,
+    Global,
+    Local { file: AbsPath, line: u32 },
+}
+
 /// Which rule decided, and how deep it matched. Returned rather than a bare verdict
 /// so `--dry-run` can name the rule that excluded a path and `config check` can
 /// report a rule that matched nothing.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Decision {
     pub verdict: Verdict,
     pub tier: Tier,
     pub depth: usize,
-    pub rule: String,
+    pub origin: Origin,
+    /// `None` when no rule matched anywhere along the path.
+    pub rule: Option<RuleId>,
+}
+
+impl Decision {
+    /// Resolution's starting point: nothing has matched, so the verdict is skip.
+    pub const NONE: Self = Self {
+        verdict: Verdict::Skip,
+        tier: Tier::Junk,
+        depth: 0,
+        origin: Origin::Junk,
+        rule: None,
+    };
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -108,12 +157,13 @@ pub enum RuleError {
 /// justification was its name would be a worse thing to maintain.
 #[derive(Debug)]
 pub struct RuleTree {
-    explicit: BTreeMap<AbsPath, (Verdict, String)>,
+    explicit: BTreeMap<AbsPath, (Verdict, RuleId, Origin)>,
     globs: GlobSet,
-    glob_patterns: Vec<String>,
-    junk_names: BTreeSet<&'static str>,
+    glob_ids: Vec<RuleId>,
+    junk_names: BTreeMap<&'static str, RuleId>,
     junk_globs: GlobSet,
-    junk_glob_patterns: Vec<&'static str>,
+    junk_glob_ids: Vec<RuleId>,
+    metas: Vec<RuleMeta>,
 }
 
 /// The inputs, already expanded and validated by layer 0.
@@ -131,106 +181,131 @@ impl RuleTree {
     ///
     /// If a glob or junk pattern does not compile.
     pub fn build(rules: &RuleSet) -> Result<Self, RuleError> {
+        let mut metas = Vec::new();
         let mut explicit = BTreeMap::new();
         for path in &rules.watch {
-            explicit.insert(path.clone(), (Verdict::Capture, path.to_string()));
+            let id = intern(&mut metas, path.to_string(), Source::Global);
+            explicit.insert(path.clone(), (Verdict::Capture, id, Origin::Global));
         }
         for path in &rules.reinclude {
-            explicit.insert(path.clone(), (Verdict::Capture, path.to_string()));
+            let id = intern(&mut metas, path.to_string(), Source::Global);
+            explicit.insert(path.clone(), (Verdict::Capture, id, Origin::Global));
         }
         // Last wins only if the same path appears twice with different verdicts,
         // which `check` reports as an error before this is ever built.
         for path in &rules.ignore_paths {
-            explicit.insert(path.clone(), (Verdict::Skip, path.to_string()));
+            let id = intern(&mut metas, path.to_string(), Source::Global);
+            explicit.insert(path.clone(), (Verdict::Skip, id, Origin::Global));
         }
 
-        let mut junk_names = BTreeSet::new();
+        let mut junk_names = BTreeMap::new();
         let mut junk_glob_patterns = Vec::new();
+        let mut junk_glob_ids = Vec::new();
         for entry in rules.junk {
             match *entry {
                 Junk::Name(name) => {
-                    junk_names.insert(name);
+                    junk_names.insert(name, intern(&mut metas, name.to_owned(), Source::Junk));
                 }
-                Junk::Glob(pattern) => junk_glob_patterns.push(pattern),
+                Junk::Glob(pattern) => {
+                    junk_glob_patterns.push(pattern);
+                    junk_glob_ids.push(intern(&mut metas, pattern.to_owned(), Source::Junk));
+                }
             }
         }
+        let glob_ids = rules
+            .ignore_globs
+            .iter()
+            .map(|pattern| intern(&mut metas, pattern.clone(), Source::Global))
+            .collect();
 
         Ok(Self {
             explicit,
             globs: compile(&rules.ignore_globs)?,
-            glob_patterns: rules.ignore_globs.clone(),
+            glob_ids,
             junk_names,
             junk_globs: compile(&junk_glob_patterns)?,
-            junk_glob_patterns,
+            junk_glob_ids,
+            metas,
         })
     }
 
     /// Evaluates every rule against the path and each of its ancestors, and returns
-    /// the deepest match, ties broken by tier.
+    /// the deepest match, ties broken by tier then origin.
     ///
     /// A path no rule matches is skipped. The walk starts at watched roots so that
     /// should not arise, but the function is total either way.
     #[must_use]
     pub fn resolve(&self, path: &Path) -> Decision {
-        let mut best = Decision {
-            verdict: Verdict::Skip,
-            tier: Tier::Junk,
-            depth: 0,
-            rule: String::new(),
-        };
+        let mut best = Decision::NONE;
         let mut prefix = std::path::PathBuf::new();
-
         for (index, component) in path.components().enumerate() {
             prefix.push(component);
-            let depth = index + 1;
-            let candidate = Candidate::new(&prefix);
+            best = self.step(best, &prefix, component.as_os_str(), index + 1);
+        }
+        best
+    }
 
-            if let Some((verdict, rule)) = self.explicit.get(prefix.as_path()) {
-                consider(
-                    &mut best,
-                    Decision {
-                        verdict: *verdict,
-                        tier: Tier::ExplicitPath,
-                        depth,
-                        rule: rule.clone(),
-                    },
-                );
-            }
-            if let Some(name) = component.as_os_str().to_str()
-                && let Some(hit) = self.junk_names.get(name)
-            {
-                consider(
-                    &mut best,
-                    Decision {
-                        verdict: Verdict::Skip,
-                        tier: Tier::Junk,
-                        depth,
-                        rule: (*hit).to_owned(),
-                    },
-                );
-            }
-            if let Some(rule) = matched(&self.globs, &self.glob_patterns, &candidate) {
-                consider(
-                    &mut best,
-                    Decision {
-                        verdict: Verdict::Skip,
-                        tier: Tier::Glob,
-                        depth,
-                        rule,
-                    },
-                );
-            }
-            if let Some(rule) = matched(&self.junk_globs, &self.junk_glob_patterns, &candidate) {
-                consider(
-                    &mut best,
-                    Decision {
-                        verdict: Verdict::Skip,
-                        tier: Tier::Junk,
-                        depth,
-                        rule,
-                    },
-                );
-            }
+    /// One resolution step: the rules matching `child` itself, weighed against the
+    /// best its parent's chain already produced. The walk carries each directory's
+    /// decision down its stack and pays one step per entry; [`Self::resolve`] is
+    /// the fold of this over a path's components, so the two cannot disagree.
+    #[must_use]
+    pub fn descend(&self, parent: Decision, child: &Path, depth: usize) -> Decision {
+        let component = child.file_name().unwrap_or_default();
+        self.step(parent, child, component, depth)
+    }
+
+    fn step(&self, mut best: Decision, prefix: &Path, component: &OsStr, depth: usize) -> Decision {
+        if let Some((verdict, id, origin)) = self.explicit.get(prefix) {
+            consider(
+                &mut best,
+                Decision {
+                    verdict: *verdict,
+                    tier: Tier::ExplicitPath,
+                    depth,
+                    origin: *origin,
+                    rule: Some(*id),
+                },
+            );
+        }
+        if let Some(name) = component.to_str()
+            && let Some(id) = self.junk_names.get(name)
+        {
+            consider(
+                &mut best,
+                Decision {
+                    verdict: Verdict::Skip,
+                    tier: Tier::Junk,
+                    depth,
+                    origin: Origin::Junk,
+                    rule: Some(*id),
+                },
+            );
+        }
+        let candidate = Candidate::new(prefix);
+        if let Some(id) = matched(&self.globs, &self.glob_ids, &candidate) {
+            consider(
+                &mut best,
+                Decision {
+                    verdict: Verdict::Skip,
+                    tier: Tier::Glob,
+                    depth,
+                    origin: Origin::Global,
+                    rule: Some(id),
+                },
+            );
+        }
+        if let Some(id) = matched(&self.junk_globs, &self.junk_glob_ids, &candidate) {
+            consider(
+                &mut best,
+                Decision {
+                    verdict: Verdict::Skip,
+                    tier: Tier::Junk,
+                    depth,
+                    origin: Origin::Junk,
+                    rule: Some(id),
+                },
+            );
         }
         best
     }
@@ -254,7 +329,7 @@ impl RuleTree {
         self.explicit
             .range::<Path, _>((Bound::Included(dir), Bound::Unbounded))
             .take_while(|(path, _)| path.as_path().starts_with(dir))
-            .any(|(_, (verdict, _))| *verdict == Verdict::Capture)
+            .any(|(_, (verdict, _, _))| *verdict == Verdict::Capture)
     }
 
     /// Records every glob and junk pattern that matched anywhere along the path, so
@@ -264,16 +339,35 @@ impl RuleTree {
         let mut prefix = std::path::PathBuf::new();
         for component in path.components() {
             prefix.push(component);
-            let candidate = Candidate::new(&prefix);
-            for index in self.globs.matches_candidate(&candidate) {
-                hits.globs.insert(index);
-            }
+            self.record_hit(&prefix, hits);
         }
     }
 
+    /// [`Self::record_hits`] for one path whose ancestors are already recorded. The
+    /// walk records each entry it lists, so an entry's chain is covered by its
+    /// parents' own recordings plus this.
+    pub fn record_hit(&self, path: &Path, hits: &mut Hits) {
+        let candidate = Candidate::new(path);
+        for index in self.globs.matches_candidate(&candidate) {
+            hits.globs.insert(index);
+        }
+    }
+
+    /// The global glob patterns in hit-index order, for the unfired-rule report.
+    pub fn glob_patterns(&self) -> impl Iterator<Item = &str> {
+        self.glob_ids.iter().map(|id| self.rule_text(*id))
+    }
+
+    /// The rule's text as a person wrote it.
     #[must_use]
-    pub fn glob_patterns(&self) -> &[String] {
-        &self.glob_patterns
+    pub fn rule_text(&self, id: RuleId) -> &str {
+        &self.metas[id.0 as usize].text
+    }
+
+    /// Which file the rule came from.
+    #[must_use]
+    pub fn rule_source(&self, id: RuleId) -> &Source {
+        &self.metas[id.0 as usize].source
     }
 }
 
@@ -285,17 +379,22 @@ pub struct Hits {
     pub globs: BTreeSet<usize>,
 }
 
-fn matched<S: AsRef<str>>(
-    matcher: &GlobSet,
-    patterns: &[S],
-    candidate: &Candidate<'_>,
-) -> Option<String> {
+fn matched(matcher: &GlobSet, ids: &[RuleId], candidate: &Candidate<'_>) -> Option<RuleId> {
     let index = *matcher.matches_candidate(candidate).first()?;
-    Some(patterns[index].as_ref().to_owned())
+    Some(ids[index])
+}
+
+fn intern(metas: &mut Vec<RuleMeta>, text: String, source: Source) -> RuleId {
+    metas.push(RuleMeta { text, source });
+    RuleId((metas.len() - 1) as u32)
 }
 
 fn consider(best: &mut Decision, candidate: Decision) {
-    if candidate.depth > best.depth || (candidate.depth == best.depth && candidate.tier > best.tier)
+    if candidate.depth > best.depth
+        || (candidate.depth == best.depth && candidate.tier > best.tier)
+        || (candidate.depth == best.depth
+            && candidate.tier == best.tier
+            && candidate.origin > best.origin)
     {
         *best = candidate;
     }
@@ -406,7 +505,10 @@ mod tests {
         let decision = tree.resolve(home("A/p/target/x.o").as_path());
         assert_eq!(decision.verdict, Verdict::Skip);
         assert_eq!(decision.tier, Tier::Junk);
-        assert_eq!(decision.rule, "target");
+        assert_eq!(
+            tree.rule_text(decision.rule.expect("a junk rule fired")),
+            "target"
+        );
     }
 
     /// Row 5: + reinclude `~/A/p/target` (d3). Reinclude beats junk at equal depth.
@@ -457,7 +559,10 @@ mod tests {
         });
         let decision = tree.resolve(home("A/s/keep/a.log").as_path());
         assert_eq!(decision.verdict, Verdict::Skip);
-        assert_eq!(decision.rule, "*.log");
+        assert_eq!(
+            tree.rule_text(decision.rule.expect("the glob fired")),
+            "*.log"
+        );
         // The sibling that no glob matches is still captured.
         assert!(captured(&tree, "A/s/keep/a.md"));
         // And naming the file itself, at its own depth, is how you keep it.
@@ -489,7 +594,11 @@ mod tests {
         });
         let decision = tree.resolve(home("A/p/target/x.o").as_path());
         assert_eq!(decision.verdict, Verdict::Skip);
-        assert_eq!(decision.rule, "*.o", "the deeper junk glob should win");
+        assert_eq!(
+            tree.rule_text(decision.rule.expect("a junk rule fired")),
+            "*.o",
+            "the deeper junk glob should win"
+        );
         // A file the junk list does not name comes back.
         assert!(captured(&tree, "A/p/target/keep.txt"));
     }
@@ -503,8 +612,10 @@ mod tests {
             junk: &[Junk::Name("out"), Junk::Glob("*.o")],
             ..RuleSet::default()
         });
-        assert_eq!(tree.resolve(home("A/out/x.js").as_path()).rule, "out");
-        assert_eq!(tree.resolve(home("A/src/x.o").as_path()).rule, "*.o");
+        let named = tree.resolve(home("A/out/x.js").as_path());
+        assert_eq!(tree.rule_text(named.rule.expect("the name fired")), "out");
+        let globbed = tree.resolve(home("A/src/x.o").as_path());
+        assert_eq!(tree.rule_text(globbed.rule.expect("the glob fired")), "*.o");
         assert!(captured(&tree, "A/output/x.js"), "a name is not a prefix");
         assert!(
             captured(&tree, "A/src/x.object"),
@@ -587,6 +698,36 @@ mod tests {
         tree.record_hits(home("A/p/target/a.log").as_path(), &mut hits);
         assert!(hits.globs.contains(&0), "*.log matched");
         assert!(!hits.globs.contains(&1), "*.never matched nothing");
+    }
+
+    /// The walk resolves by descending one step per entry; a divergence between
+    /// the two would make what the walk keeps differ from what `capture` keeps.
+    #[test]
+    fn resolve_is_the_fold_of_descend() {
+        let tree = tree(&RuleSet {
+            watch: paths(&["A"]),
+            ignore_paths: paths(&["A/s"]),
+            reinclude: paths(&["A/s/keep"]),
+            ignore_globs: vec!["*.log".to_owned()],
+            junk: DEFAULT_JUNK,
+        });
+        for candidate in [
+            "A/x.md",
+            "A/s/t.bin",
+            "A/s/keep/k.pem",
+            "A/s/keep/a.log",
+            "A/p/target/x.o",
+            "B/y.md",
+        ] {
+            let path = home(candidate);
+            let mut folded = super::Decision::NONE;
+            let mut prefix = std::path::PathBuf::new();
+            for (index, component) in path.as_path().components().enumerate() {
+                prefix.push(component);
+                folded = tree.descend(folded, &prefix, index + 1);
+            }
+            assert_eq!(folded, tree.resolve(path.as_path()), "{candidate}");
+        }
     }
 
     #[test]
