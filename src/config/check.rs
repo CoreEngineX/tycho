@@ -102,10 +102,6 @@ pub enum DiagnosticKind {
     IgnoreOutsideEveryRoot {
         path: String,
     },
-    RedundantWatch {
-        path: String,
-        covered_by: String,
-    },
 }
 
 impl fmt::Display for DiagnosticKind {
@@ -170,9 +166,6 @@ impl fmt::Display for DiagnosticKind {
                 f,
                 "ignore path {path} is not under any watched root, so it can never fire"
             ),
-            Self::RedundantWatch { path, covered_by } => {
-                write!(f, "watched root {path} is already covered by {covered_by}")
-            }
         }
     }
 }
@@ -541,24 +534,6 @@ fn validate_profile(
             pattern: error.to_string(),
             reason: "globset rejected it".to_owned(),
         });
-    }
-
-    for (index, inner) in profile.watch.iter().enumerate() {
-        for (other, outer) in profile.watch.iter().enumerate() {
-            if index != other
-                && outer.path().contains(inner.path())
-                && outer.path() != inner.path()
-                && !profile
-                    .ignore_paths
-                    .iter()
-                    .any(|ignored| outer.path().contains(ignored))
-            {
-                collector.warn(DiagnosticKind::RedundantWatch {
-                    path: inner.path().to_string(),
-                    covered_by: outer.path().to_string(),
-                });
-            }
-        }
     }
 
     Some(profile)

@@ -304,6 +304,9 @@ fn walk_root(
         reason: error.to_string(),
     })?;
     if kind != FileKind::Directory {
+        // The directory loop records hits for every entry it lists; a file root
+        // never enters that loop, so its one path is recorded here.
+        walk.tree.record_hits(root.as_path(), walk.hits);
         take_file(&mut walk, &mut plan, root.as_path(), kind);
         return Ok(plan);
     }
@@ -414,7 +417,6 @@ struct Walk<'a> {
 
 fn take_file(walk: &mut Walk<'_>, plan: &mut RootPlan, path: &Path, kind: FileKind) {
     let (root, alias, tree) = (walk.root, walk.alias, walk.tree);
-    tree.record_hits(path, walk.hits);
     let decision = tree.resolve(path);
     if decision.verdict == Verdict::Skip {
         note(walk.fired, &decision);

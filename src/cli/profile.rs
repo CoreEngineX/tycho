@@ -5,7 +5,7 @@ use crate::cli::render::Change;
 use crate::cli::report::{at_profile, report};
 use crate::cli::{Exit, ProfileAction, ProfileAddArgs, ProfileArgs, ProfileRmArgs, render};
 use crate::config::Schedule;
-use crate::config_edit::{Editing, NewProfile, NewRemote};
+use crate::config_edit::{Editing, NewProfile, RemoteEntry};
 use crate::primitives::names::{ProfileName, RemoteName};
 use crate::primitives::path::AbsPath;
 use std::path::{Path, PathBuf};
@@ -183,9 +183,9 @@ fn add_profile(config: Option<PathBuf>, args: &ProfileAddArgs) -> Exit {
         }
     }
 
-    let new_remotes: Vec<NewRemote> = remotes
+    let new_remotes: Vec<RemoteEntry> = remotes
         .iter()
-        .map(|remote| NewRemote {
+        .map(|remote| RemoteEntry {
             name: remote.name.as_str().to_owned(),
             path: remote.path.clone(),
             optional: args.optional.contains(&remote.raw_name),

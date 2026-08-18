@@ -285,7 +285,7 @@ impl Editing {
     /// # Errors
     ///
     /// If the profile does not exist.
-    pub fn add_remote(&mut self, profile: usize, remote: &NewRemote) -> Result<(), EditError> {
+    pub fn add_remote(&mut self, profile: usize, remote: &RemoteEntry) -> Result<(), EditError> {
         let array = self.remotes_array(profile)?;
         array.push(remote_inline(remote));
         if let Some(added) = array.iter_mut().last() {
@@ -414,21 +414,12 @@ impl Editing {
     }
 }
 
-/// A remote as read back from the file, unvalidated.
+/// A remote at this file's boundary, unvalidated: what `remotes` reads back and
+/// what `add_remote` appends. When one is written, a default-valued field is
+/// omitted rather than spelled out, so an added remote reads the way a
+/// hand-written one would.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteEntry {
-    pub name: String,
-    pub path: String,
-    pub optional: bool,
-    pub trust_ownership: bool,
-    pub behind_tolerance: Option<u32>,
-}
-
-/// A remote to append. Every field here becomes a key in the same inline table
-/// `config.md` documents, and a default-valued one is omitted rather than written
-/// out, so an added remote reads the way a hand-written one would.
-#[derive(Clone, Debug)]
-pub struct NewRemote {
     pub name: String,
     pub path: String,
     pub optional: bool,
@@ -441,7 +432,7 @@ pub struct NewRemote {
 pub struct NewProfile {
     pub name: String,
     pub watch: Vec<String>,
-    pub remotes: Vec<NewRemote>,
+    pub remotes: Vec<RemoteEntry>,
     pub schedule: Option<crate::config::Schedule>,
     pub local_only: bool,
 }
@@ -496,7 +487,7 @@ fn multiline(mut array: Array) -> Array {
     array
 }
 
-fn remote_inline(remote: &NewRemote) -> InlineTable {
+fn remote_inline(remote: &RemoteEntry) -> InlineTable {
     let mut table = InlineTable::new();
     table.insert("name", Value::from(remote.name.clone()));
     table.insert("path", Value::from(remote.path.clone()));
@@ -844,8 +835,8 @@ watch = [
         assert_eq!(editing.profiles(), ["me"]);
     }
 
-    fn new_remote(name: &str, path: &str) -> super::NewRemote {
-        super::NewRemote {
+    fn new_remote(name: &str, path: &str) -> super::RemoteEntry {
+        super::RemoteEntry {
             name: name.to_owned(),
             path: path.to_owned(),
             optional: false,
@@ -904,7 +895,7 @@ watch = [
         editing
             .add_remote(
                 0,
-                &super::NewRemote {
+                &super::RemoteEntry {
                     name: "drive".to_owned(),
                     path: REMOTE.to_owned(),
                     optional: true,

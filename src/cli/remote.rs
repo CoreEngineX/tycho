@@ -3,7 +3,7 @@
 use crate::cli::render::Change;
 use crate::cli::report::{at_profile, at_remote, report};
 use crate::cli::{Exit, RemoteAction, RemoteAddArgs, RemoteArgs, RemoteRmArgs, render};
-use crate::config_edit::{Editing, NewRemote};
+use crate::config_edit::{Editing, RemoteEntry};
 use crate::primitives::names::RemoteName;
 use std::path::{Path, PathBuf};
 
@@ -101,7 +101,7 @@ fn add_remote(args: &RemoteArgs, add: &RemoteAddArgs) -> Exit {
         Err(exit) => return exit,
     };
 
-    let new = NewRemote {
+    let new = RemoteEntry {
         name: name.as_str().to_owned(),
         path: add.path.clone(),
         optional: add.optional,
