@@ -12,8 +12,9 @@ tycho status [PROFILE] [--check] [--strict]
 tycho history [PROFILE] [-n N] [--path PATH]
 tycho restore [PROFILE] [--store PATH] [--at TIME] [--bundle] [--force] [-- PATH ...] --into DEST
 tycho watch add|rm|list [-p PROFILE] [PATH]
-tycho ignore add|rm|list [-p PROFILE] [PATTERN]
-tycho reinclude add|rm|list [-p PROFILE] [PATH]
+tycho ignore add|rm|list [-p PROFILE] [PATTERN] [--local]
+tycho reinclude add|rm|list [-p PROFILE] [PATH] [--local]
+tycho rules explain PATH [-p PROFILE]
 tycho profile list
 tycho profile add NAME [--watch PATH]... [--remote NAME=PATH]... [--optional NAME]...
                         [--trust-ownership NAME]... [--schedule SPEC] [--local-only] [--dry-run]
@@ -39,7 +40,8 @@ global: --no-color
 | `status` | Per profile: next scheduled run, store size and backup count, one line per remote. `--check` for monitoring |
 | `history` | The store's commits, rendered. `--path` limits it to backups that touched one path |
 | `restore` | Recover to a destination directory. See section 7 |
-| `watch` / `ignore` / `reinclude` | Rule management, editing the config in place |
+| `watch` / `ignore` / `reinclude` | Rule management, editing the config in place. `--local` on `ignore`/`reinclude` writes into a `.tycho/rules.toml` inside the tree instead - see below |
+| `rules` | `explain PATH` prints the rule that decides a path and every rule it beat, each with its verdict, depth, tier, origin, and the file and line that declared it |
 | `profile` | Add, remove or list profiles. `add` writes a `[[profile]]` block; `--dry-run` prints it instead. `rm` requires `--keep-store` or `--delete-store` |
 | `remote` | Add, remove or list a profile's destinations |
 | `schedule` | Show, replace or clear a profile's schedule |
@@ -69,6 +71,29 @@ otherwise indistinguishable to a parser and to a reader.
 | `status`, `history`, `doctor`, `log`, `config check|path`, `profile list`, `remote list`, `schedule show` | nothing |
 
 `push` touching the store is why it takes the same profile lock as `run`.
+
+### `--local`, and the overlap prompt
+
+`ignore add --local` and `reinclude add --local` write the rule into the
+`.tycho/rules.toml` of the target's deepest still-captured ancestor, creating
+the file if it is absent, with the entry relative to that directory. For an
+ignore that is simply the parent; for a re-include beneath an ignored directory
+it is the nearest ancestor above the ignore, which is the only placement at
+which the rule would ever be read (`config.md` section 5). The flag is always
+explicit: without it the rule goes in the config, as before. `--local` on
+`watch` is refused - a local file scopes a watch, it cannot create one.
+
+`rules explain` resolves the path against the profile's rules plus the target's
+ancestor chain of local files - containment guarantees nothing else can matter -
+and prints the winner first, then everything it beat. When more than one profile
+watches the path, `-p` picks one.
+
+`watch add` of a root that overlaps another **profile's** root prints a warning
+and asks `add it anyway? [y/N]`; `N` leaves the config untouched. When stdin is
+not a terminal the warning prints and the add proceeds - cross-profile overlap
+is double coverage into two stores, a cost worth a pause but not an error. A
+root inside another root of the **same** profile remains a hard error: its
+content would have no answer for which alias it is stored under.
 
 ## 2. Output rules
 
@@ -376,12 +401,16 @@ repositories                              head              state
   CoreEngineX/products/pager/pager-daemon detached ca905eb  clean
                                                             and 10 more
 
+rules        2 global, 4 local from 1 file
+             ~/Developer/CoreEngineX/products/photoflick/mllab/.tycho/rules.toml   4 rules
+
 excluded                                          reason
 --------------------------------------------------------------------------
   ~/Developer/CoreEngineX/scratch                 ignore rule
   node_modules                                    default junk
   target                                          default junk
   ~/Developer/CoreEngineX/scrach                  matched nothing
+  ~/.../mllab/.tycho/rules.toml:4  *.ckpt         matched nothing
 
 --------------------------------------------------------------------------
   to read      157 files                                            340 MB
@@ -389,7 +418,10 @@ excluded                                          reason
 ```
 
 Three tables, because the three questions are separate: how much is coming, what
-repositories were found and in what state, and what the rules threw away.
+repositories were found and in what state, and what the rules threw away. The
+`rules` block appears only when local rule files were read, and a local rule
+that matched nothing is reported with its file and line - the global form of
+that row keeps its plain text.
 
 **`matched nothing` is the row that earns this command.** A typo'd ignore path is
 otherwise a silent no-op that commits gigabytes into permanent history, so every rule
@@ -442,3 +474,9 @@ coreenginex
 
 3 errors, 3 warnings
 ```
+
+Once the file itself is clean, the check also walks the watched trees for
+`.tycho/rules.toml` files and validates each one. What a run merely warns
+about - an unknown key - is an error here, because the check is where people
+go looking for typos. Whether a root is readable or empty stays the run's
+business; the check owns only the rule files.

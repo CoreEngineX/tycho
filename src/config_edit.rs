@@ -414,6 +414,112 @@ impl Editing {
     }
 }
 
+/// A `.tycho/rules.toml` open for editing - [`Editing`]'s flat-file sibling.
+/// The global config nests its lists under `[[profile]]`; this file keeps them
+/// at top level, which is why the two cannot share an accessor.
+#[derive(Debug)]
+pub struct LocalEditing {
+    document: DocumentMut,
+    path: PathBuf,
+}
+
+impl LocalEditing {
+    /// Opens the file, or starts one carrying `version = 1`.
+    ///
+    /// # Errors
+    ///
+    /// If the file exists but cannot be read, or is not TOML.
+    pub fn open_or_start(path: &Path) -> Result<Self, EditError> {
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                "version = 1\n".to_owned()
+            }
+            Err(source) => {
+                return Err(EditError::Io {
+                    context: format!("reading {}", path.display()),
+                    source,
+                });
+            }
+        };
+        let document = text
+            .parse::<DocumentMut>()
+            .map_err(|source| EditError::Malformed {
+                path: path.display().to_string(),
+                source,
+            })?;
+        Ok(Self {
+            document,
+            path: path.to_path_buf(),
+        })
+    }
+
+    /// Appends to the named list, creating it if absent. `Ok(false)` means the
+    /// value was already there and nothing changed.
+    ///
+    /// # Errors
+    ///
+    /// If the key exists but is not an array.
+    pub fn add(&mut self, list: List, value: &str) -> Result<bool, EditError> {
+        let array = self.array(list)?;
+        if array.iter().any(|item| item.as_str() == Some(value)) {
+            return Ok(false);
+        }
+        array.push(value);
+        if let Some(added) = array.iter_mut().last() {
+            added.decor_mut().set_prefix("\n  ");
+        }
+        array.set_trailing_comma(true);
+        array.set_trailing("\n");
+        Ok(true)
+    }
+
+    /// # Errors
+    ///
+    /// [`EditError::NotPresent`] when the value is not in the list.
+    pub fn remove(&mut self, list: List, value: &str) -> Result<(), EditError> {
+        let shown = format!("{} in {}", list.key(), self.path.display());
+        let array = self.array(list)?;
+        let Some(index) = array.iter().position(|item| item.as_str() == Some(value)) else {
+            return Err(EditError::NotPresent {
+                value: value.to_owned(),
+                list: shown,
+            });
+        };
+        array.remove(index);
+        Ok(())
+    }
+
+    /// Writes the file back, creating `.tycho/` on the way if this is its first
+    /// rule.
+    ///
+    /// # Errors
+    ///
+    /// If a directory or the file cannot be written.
+    pub fn save(&self) -> Result<(), EditError> {
+        let context = |source| EditError::Io {
+            context: format!("writing {}", self.path.display()),
+            source,
+        };
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent).map_err(context)?;
+        }
+        crate::sys::fs::write_atomic(&self.path, self.document.to_string().as_bytes())
+            .map_err(context)
+    }
+
+    fn array(&mut self, list: List) -> Result<&mut Array, EditError> {
+        let item = self
+            .document
+            .entry(list.key())
+            .or_insert_with(|| toml_edit::Item::Value(Value::Array(Array::new())));
+        item.as_array_mut().ok_or_else(|| EditError::NotPresent {
+            value: list.key().to_owned(),
+            list: "this file as a list".to_owned(),
+        })
+    }
+}
+
 /// A remote at this file's boundary, unvalidated: what `remotes` reads back and
 /// what `add_remote` appends. When one is written, a default-valued field is
 /// omitted rather than spelled out, so an added remote reads the way a

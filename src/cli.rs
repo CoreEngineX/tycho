@@ -297,11 +297,40 @@ pub struct RuleArgs {
 #[derive(Clone, Debug, Subcommand)]
 pub enum RuleAction {
     /// Add an entry
-    Add { value: String },
+    Add {
+        value: String,
+        /// Write into the nearest `.tycho/rules.toml` instead of the config
+        #[arg(long)]
+        local: bool,
+    },
     /// Remove an entry
-    Rm { value: String },
+    Rm {
+        value: String,
+        /// Remove from the `.tycho/rules.toml` that holds it instead of the config
+        #[arg(long)]
+        local: bool,
+    },
     /// Print the entries
     List,
+}
+
+/// `tycho rules`: the resolved rule tree, inspected.
+#[derive(Clone, Debug, Args)]
+pub struct RulesArgs {
+    #[command(subcommand)]
+    pub action: RulesAction,
+    /// Which profile, when more than one watches the path
+    #[arg(short = 'p', long, global = true, value_name = "PROFILE")]
+    pub profile: Option<String>,
+    /// Read this config file instead of the default location
+    #[arg(long, value_name = "PATH", global = true)]
+    pub config: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Subcommand)]
+pub enum RulesAction {
+    /// Which rule decides a path, and every rule it beat
+    Explain { path: String },
 }
 
 #[derive(Clone, Debug, Args)]
@@ -448,6 +477,8 @@ pub enum Command {
     Ignore(RuleArgs),
     /// Manage re-include rules
     Reinclude(RuleArgs),
+    /// Why a path is or is not backed up
+    Rules(RulesArgs),
     /// Manage profiles
     Profile(ProfileArgs),
     /// Manage a profile's remotes
@@ -473,7 +504,7 @@ pub enum Command {
 impl Command {
     /// Every subcommand as it is typed, which must stay identical to clap's own
     /// kebab-case rename of the variants.
-    pub const NAMES: [&'static str; 16] = [
+    pub const NAMES: [&'static str; 17] = [
         "run",
         "push",
         "status",
@@ -482,6 +513,7 @@ impl Command {
         "watch",
         "ignore",
         "reinclude",
+        "rules",
         "profile",
         "remote",
         "schedule",
@@ -506,6 +538,7 @@ impl Command {
             Self::Watch(_) => "watch",
             Self::Ignore(_) => "ignore",
             Self::Reinclude(_) => "reinclude",
+            Self::Rules(_) => "rules",
             Self::Profile(_) => "profile",
             Self::Remote(_) => "remote",
             Self::Schedule(_) => "schedule",
@@ -562,6 +595,7 @@ pub fn dispatch(command: Command) -> Exit {
         Command::Watch(args) => rules::dispatch(crate::config_edit::List::Watch, &args),
         Command::Ignore(args) => rules::dispatch(crate::config_edit::List::Ignore, &args),
         Command::Reinclude(args) => rules::dispatch(crate::config_edit::List::Reinclude, &args),
+        Command::Rules(args) => rules::explain_dispatch(&args),
         Command::Profile(args) => profile::dispatch(&args),
         Command::Remote(args) => remote::dispatch(&args),
         Command::Schedule(args) => schedule::dispatch(&args),

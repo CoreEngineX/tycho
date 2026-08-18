@@ -322,73 +322,91 @@ impl RuleTree {
         self.step(parent, child, component, depth)
     }
 
-    fn step(&self, mut best: Decision, prefix: &Path, component: &OsStr, depth: usize) -> Decision {
+    fn step(&self, best: Decision, prefix: &Path, component: &OsStr, depth: usize) -> Decision {
+        let mut best = best;
+        self.candidates_at(prefix, component, depth, &mut |candidate| {
+            consider(&mut best, candidate);
+        });
+        best
+    }
+
+    /// Every rule matching this exact prefix, handed to `sink`. `step` folds them
+    /// into a best; [`Self::explain`] collects them all - one place lists the
+    /// rules, so the two cannot disagree.
+    fn candidates_at(
+        &self,
+        prefix: &Path,
+        component: &OsStr,
+        depth: usize,
+        sink: &mut impl FnMut(Decision),
+    ) {
         if let Some((verdict, id, origin)) = self.explicit.get(prefix) {
-            consider(
-                &mut best,
-                Decision {
-                    verdict: *verdict,
-                    tier: Tier::ExplicitPath,
-                    depth,
-                    origin: *origin,
-                    rule: Some(*id),
-                },
-            );
+            sink(Decision {
+                verdict: *verdict,
+                tier: Tier::ExplicitPath,
+                depth,
+                origin: *origin,
+                rule: Some(*id),
+            });
         }
         if let Some(name) = component.to_str()
             && let Some(id) = self.junk_names.get(name)
         {
-            consider(
-                &mut best,
-                Decision {
-                    verdict: Verdict::Skip,
-                    tier: Tier::Junk,
-                    depth,
-                    origin: Origin::Junk,
-                    rule: Some(*id),
-                },
-            );
+            sink(Decision {
+                verdict: Verdict::Skip,
+                tier: Tier::Junk,
+                depth,
+                origin: Origin::Junk,
+                rule: Some(*id),
+            });
         }
         let candidate = Candidate::new(prefix);
         if let Some(id) = matched(&self.globs, &self.glob_ids, &candidate) {
-            consider(
-                &mut best,
-                Decision {
-                    verdict: Verdict::Skip,
-                    tier: Tier::Glob,
-                    depth,
-                    origin: Origin::Global,
-                    rule: Some(id),
-                },
-            );
+            sink(Decision {
+                verdict: Verdict::Skip,
+                tier: Tier::Glob,
+                depth,
+                origin: Origin::Global,
+                rule: Some(id),
+            });
         }
         if let Some(id) = matched(&self.junk_globs, &self.junk_glob_ids, &candidate) {
-            consider(
-                &mut best,
-                Decision {
-                    verdict: Verdict::Skip,
-                    tier: Tier::Junk,
-                    depth,
-                    origin: Origin::Junk,
-                    rule: Some(id),
-                },
-            );
+            sink(Decision {
+                verdict: Verdict::Skip,
+                tier: Tier::Junk,
+                depth,
+                origin: Origin::Junk,
+                rule: Some(id),
+            });
         }
         for local in &self.local_globs {
             if let Some(id) = matched(&local.set, &local.ids, &candidate) {
-                consider(
-                    &mut best,
-                    Decision {
-                        verdict: Verdict::Skip,
-                        tier: Tier::Glob,
-                        depth,
-                        origin: Origin::Local(local.depth),
-                        rule: Some(id),
-                    },
-                );
+                sink(Decision {
+                    verdict: Verdict::Skip,
+                    tier: Tier::Glob,
+                    depth,
+                    origin: Origin::Local(local.depth),
+                    rule: Some(id),
+                });
             }
         }
-        best
+    }
+
+    /// Every rule that matched anywhere along the path, strongest first, so the
+    /// head is the decision [`Self::resolve`] returns and the rest are what it
+    /// beat. `rules explain` renders this.
+    #[must_use]
+    pub fn explain(&self, path: &Path) -> Vec<Decision> {
+        let mut candidates = Vec::new();
+        let mut prefix = std::path::PathBuf::new();
+        for (index, component) in path.components().enumerate() {
+            prefix.push(component);
+            self.candidates_at(&prefix, component.as_os_str(), index + 1, &mut |found| {
+                candidates.push(found);
+            });
+        }
+        candidates.sort_by_key(|found| std::cmp::Reverse((found.depth, found.tier, found.origin)));
+        candidates
     }
 
     /// Whether a path is captured. The whole of the rule tree from a caller's view.
@@ -1015,6 +1033,46 @@ mod tests {
                 folded = tree.descend(folded, &prefix, index + 1);
             }
             assert_eq!(folded, tree.resolve(path.as_path()), "{candidate}");
+        }
+    }
+
+    /// The head of `explain` is the decision `resolve` returns; anything else
+    /// and the command would lie about what a run does.
+    #[test]
+    fn explain_leads_with_the_decision_resolve_makes() {
+        let mut tree = tree(&RuleSet {
+            watch: paths(&["A"]),
+            ignore_paths: paths(&["A/s"]),
+            reinclude: paths(&["A/s/keep"]),
+            ignore_globs: vec!["*.log".to_owned()],
+            junk: DEFAULT_JUNK,
+        });
+        add_local(
+            &mut tree,
+            "A/s",
+            Local {
+                globs: &["*.tmp"],
+                ..Local::default()
+            },
+        );
+        for (candidate, beats_something) in [
+            ("A/s/keep/a.log", true),
+            ("A/s/keep/k.pem", true),
+            ("A/s/x.tmp", true),
+            ("A/x.md", false),
+        ] {
+            let path = home(candidate);
+            let explained = tree.explain(path.as_path());
+            assert_eq!(
+                explained.first().copied(),
+                Some(tree.resolve(path.as_path())),
+                "{candidate}"
+            );
+            assert_eq!(
+                explained.len() > 1,
+                beats_something,
+                "{candidate}: {explained:?}"
+            );
         }
     }
 

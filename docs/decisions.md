@@ -257,3 +257,36 @@ also fails, unless `--allow-shrink` is passed. Leaf-file read failures remain
 warnings, because one unreadable file is not a reason to lose the other fifty
 thousand.
 
+## D17. Rules can live with the data: `.tycho/rules.toml`
+
+**Rejected:** all rules in the one config file, as absolute paths. A rule
+pinned to a path fails silently when the path moves - the 35 GB `datasets`
+recapture was one rename away at any moment.
+
+**Chosen:** any captured directory may carry `.tycho/rules.toml`, entries
+relative to itself, discovered by the plan walk as it descends (RFC 001).
+Containment - an entry may only name what sits at or below its directory - is
+what makes in-walk discovery correct and what bounds the trust a cloned
+repository gets. A file inside a skipped directory is never read, even when the
+walk passes through for a deeper carve-out, and the operator's config beats any
+local file on a direct conflict, so a repository can never overrule the person
+backing it up.
+
+**Rejected along the way:** a separate discovery pre-pass (the walk already
+visits every reachable directory; a second traversal re-reads thousands of
+listings to learn nothing), and analysing whether an outer watch already
+ignores an inner one (config validity must never depend on config content
+elsewhere - the dead `RedundantWatch` warning was that design, shipped, wrong,
+and unreachable, and its deletion is the evidence).
+
+## D18. Provenance is a rule id, not prose
+
+**Rejected:** `Decision.rule: String`, cloned per matched component.
+
+**Chosen:** a `Copy` id into an arena of `RuleMeta { text, source }` on the
+tree. With two sources able to name the same path, "which rule" must answer
+"which file, which line" - a string cannot, and it was also the hot loop's only
+allocation. `Decision` becoming `Copy` is what lets the walk carry each
+directory's decision down its stack and resolve children in one step instead of
+re-deriving every ancestor per path; `resolve` stays the fold of that step, so
+the overlay's context-free callers kept their contract untouched.

@@ -2,7 +2,7 @@
 
 | Field             | Value                                                    |
 |-------------------|----------------------------------------------------------|
-| **Status**        | `Locked`                                                 |
+| **Status**        | `Implemented`                                            |
 | **Ticket**        | `ENG-279`                                                |
 | **Branch**        | `dev`                                                    |
 | **Contract docs** | `docs/architecture/config.md`, `docs/architecture/capture.md`, `docs/architecture/cli.md` |
