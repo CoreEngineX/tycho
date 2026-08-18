@@ -51,6 +51,18 @@ pub(crate) fn set_colour_for_test(on: bool) {
     COLOUR.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Serialises the tests that write [`COLOUR`]. The flag is process-global and the
+/// harness runs tests on parallel threads, so a paint assertion in one test can
+/// otherwise observe the colour another test just set. Poisoning is ignored: a
+/// panicked holder left the flag in some state, which the next holder sets anyway.
+#[cfg(test)]
+pub(crate) fn colour_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    GUARD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Wraps text in an SGR colour, or returns it untouched.
 #[must_use]
 pub fn paint(text: &str, code: &str) -> String {
@@ -1091,6 +1103,7 @@ mod tests {
 
     #[test]
     fn sizes_match_the_documented_examples() {
+        let _serial = super::colour_test_guard();
         assert_eq!(size(0), "0 B");
         assert_eq!(size(999), "999 B");
         assert_eq!(size(1_190_000_000), "1.19 GB");
@@ -1140,6 +1153,7 @@ mod tests {
     /// it too.
     #[test]
     fn a_failed_remote_is_painted_and_still_readable_without_colour() {
+        let _serial = super::colour_test_guard();
         set_colour(false);
         let plain = verdict_word(&failed_row());
         assert!(!plain.contains(''), "{plain:?}");
@@ -1156,6 +1170,7 @@ mod tests {
     /// padding shifts every later column by exactly its length.
     #[test]
     fn colour_does_not_change_the_column_width() {
+        let _serial = super::colour_test_guard();
         set_colour(false);
         let plain = verdict_word(&failed_row());
         set_colour(true);
@@ -1171,6 +1186,7 @@ mod tests {
 
     #[test]
     fn severity_label_pads_before_it_paints() {
+        let _serial = super::colour_test_guard();
         set_colour(false);
         let plain_error = severity_label(Severity::Error);
         let plain_warn = severity_label(Severity::Warning);
@@ -1187,6 +1203,7 @@ mod tests {
 
     #[test]
     fn counted_cell_is_only_painted_when_there_is_nothing_to_report() {
+        let _serial = super::colour_test_guard();
         set_colour(false);
         let plain_empty = counted_cell("no changes", true, 40);
         let plain_busy = counted_cell("14 changed, 2 added", false, 40);
@@ -1204,6 +1221,7 @@ mod tests {
 
     #[test]
     fn reason_label_colours_only_matched_nothing() {
+        let _serial = super::colour_test_guard();
         set_colour(false);
         let plain_matched = reason_label(ExcludeReason::MatchedNothing);
         let plain_junk = reason_label(ExcludeReason::DefaultJunk);
@@ -1223,6 +1241,7 @@ mod tests {
 
     #[test]
     fn agent_state_pads_before_it_paints() {
+        let _serial = super::colour_test_guard();
         use crate::platform::{Ended, Loaded};
 
         let clean = Loaded::Yes {
@@ -1260,6 +1279,7 @@ mod tests {
     /// the shape `cli.md` section 9 documents.
     #[test]
     fn config_check_keeps_its_columns_when_painted() {
+        let _serial = super::colour_test_guard();
         let diagnostics = vec![
             crate::config::Diagnostic {
                 severity: Severity::Error,
@@ -1293,6 +1313,7 @@ mod tests {
     /// padding trap, and the only one this renderer paints.
     #[test]
     fn run_result_keeps_its_columns_when_painted() {
+        let _serial = super::colour_test_guard();
         let commit =
             crate::primitives::oid::Oid::parse("8f2a10c8f2a10c8f2a10c8f2a10c8f2a10c8f2a1").unwrap();
         let done = crate::store::run::Completed {
@@ -1324,6 +1345,7 @@ mod tests {
 
     #[test]
     fn history_keeps_its_columns_when_painted() {
+        let _serial = super::colour_test_guard();
         let commit =
             crate::primitives::oid::Oid::parse("1c93bb71c93bb71c93bb71c93bb71c93bb71c93b").unwrap();
         let backups = vec![
@@ -1353,6 +1375,7 @@ mod tests {
     /// three coloured spots in one report.
     #[test]
     fn restored_keeps_its_columns_when_painted() {
+        let _serial = super::colour_test_guard();
         let done = crate::restore::Done {
             missing: vec!["CoreEngineX/org/notes.md".to_owned()],
             metadata: Some(crate::metadata::Applied {

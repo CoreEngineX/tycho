@@ -168,12 +168,14 @@ mod tests {
 
     #[test]
     fn planning_names_the_profile() {
+        let _serial = crate::cli::render::colour_test_guard();
         set_colour_for_test(false);
         assert_eq!(rendered("cex", &Step::Planning), "cex  planning");
     }
 
     #[test]
     fn hashing_counts_with_thousands_separators() {
+        let _serial = crate::cli::render::colour_test_guard();
         set_colour_for_test(false);
         let text = rendered("cex", &Step::Hashing { files: 4_812 });
         assert_eq!(text, format!("  {:<14}  4,812 files", "hashing"));
@@ -181,6 +183,7 @@ mod tests {
 
     #[test]
     fn capturing_names_the_current_repository_until_the_last_one_lands() {
+        let _serial = crate::cli::render::colour_test_guard();
         set_colour_for_test(false);
         let mid = rendered(
             "cex",
@@ -212,6 +215,7 @@ mod tests {
 
     #[test]
     fn publishing_has_no_value_column() {
+        let _serial = crate::cli::render::colour_test_guard();
         set_colour_for_test(false);
         assert_eq!(
             rendered("cex", &Step::Publishing),
@@ -225,6 +229,7 @@ mod tests {
     /// latter would be wrong on almost every run.
     #[test]
     fn pushing_names_the_remote_and_the_store_size() {
+        let _serial = crate::cli::render::colour_test_guard();
         set_colour_for_test(false);
         let text = rendered(
             "cex",
@@ -244,6 +249,7 @@ mod tests {
     /// trail. Erase-to-end-of-line cannot undo that; only not wrapping can.
     #[test]
     fn no_line_can_be_wide_enough_to_wrap() {
+        let _serial = crate::cli::render::colour_test_guard();
         set_colour_for_test(false);
         let worst = "CoreEngineX/products/photoflick/photoflick-android/deeply/nested/thing";
         for step in [
@@ -276,6 +282,7 @@ mod tests {
 
     #[test]
     fn colour_never_changes_the_reported_width() {
+        let _serial = crate::cli::render::colour_test_guard();
         set_colour_for_test(false);
         let (plain_width, plain_text) = line(
             "cex",
@@ -304,6 +311,7 @@ mod tests {
 
     #[test]
     fn a_redraw_starts_with_a_carriage_return_and_is_flushed() {
+        let _serial = crate::cli::render::colour_test_guard();
         set_colour_for_test(false);
         let mut progress = Progress { active: true };
         let mut buf = Vec::new();
