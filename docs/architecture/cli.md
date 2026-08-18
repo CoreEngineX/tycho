@@ -86,7 +86,10 @@ explicit: without it the rule goes in the config, as before. `--local` on
 `rules explain` resolves the path against the profile's rules plus the target's
 ancestor chain of local files - containment guarantees nothing else can matter -
 and prints the winner first, then everything it beat. When more than one profile
-watches the path, `-p` picks one.
+watches the path, `-p` picks one. A relative argument - `.` and `..` included -
+resolves against the working directory, physically where the chain exists and
+lexically where it does not, with the final component kept as written so a
+symlink is asked about as itself.
 
 `watch add` of a root that overlaps another **profile's** root prints a warning
 and asks `add it anyway? [y/N]`; `N` leaves the config untouched. When stdin is

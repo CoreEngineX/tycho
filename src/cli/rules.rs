@@ -269,7 +269,50 @@ fn expand(value: &str) -> Result<AbsPath, String> {
         return Ok(path);
     }
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
-    AbsPath::from_absolute(&cwd.join(value)).map_err(|error| error.to_string())
+    // `join` keeps an already-absolute value as it is, so this also catches an
+    // absolute argument that only failed `parse` for its dots.
+    let resolved = resolve_dots(&cwd.join(value))?;
+    AbsPath::from_absolute(&resolved).map_err(|error| error.to_string())
+}
+
+/// `..` in a typed argument is resolved rather than refused - `rules explain ../`
+/// is a shell habit, not an error. The parent chain resolves physically when it
+/// exists, so `..` crosses symlinks the way the filesystem does; a path that does
+/// not exist falls back to lexical popping, so a hypothetical path can still be
+/// explained. The final component is kept as written: a symlink is asked about as
+/// itself, never as its target.
+fn resolve_dots(path: &std::path::PathBuf) -> Result<std::path::PathBuf, String> {
+    use std::path::Component;
+    if !path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir | Component::CurDir))
+    {
+        return Ok(path.clone());
+    }
+    if let (Some(parent), Some(name)) = (path.parent(), path.file_name())
+        && let Ok(real) = std::fs::canonicalize(parent)
+    {
+        return Ok(real.join(name));
+    }
+    if let Ok(real) = std::fs::canonicalize(path) {
+        return Ok(real);
+    }
+    let mut out = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                if !out.pop() {
+                    return Err(format!(
+                        "'{}' climbs above the filesystem root",
+                        path.display()
+                    ));
+                }
+            }
+            Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    Ok(out)
 }
 
 /// The profile whose watch tree holds the path - named with `-p`, or found by
@@ -414,5 +457,52 @@ fn finish(editing: &Editing, change: Change, verb: &str, value: &str) -> Exit {
         Exit::Failure
     } else {
         Exit::Warning
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_dots;
+    use std::path::PathBuf;
+
+    #[test]
+    fn dots_in_a_missing_path_resolve_lexically() {
+        let path = PathBuf::from(if cfg!(windows) {
+            r"C:\nowhere\a\b\..\.\c"
+        } else {
+            "/nowhere/a/b/.././c"
+        });
+        let resolved = resolve_dots(&path).expect("resolvable");
+        assert_eq!(
+            resolved,
+            PathBuf::from(if cfg!(windows) {
+                r"C:\nowhere\a\c"
+            } else {
+                "/nowhere/a/c"
+            })
+        );
+    }
+
+    #[test]
+    fn dots_through_a_real_parent_resolve_physically() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let real = dir.path().canonicalize().expect("canonical");
+        std::fs::create_dir(real.join("sub")).expect("mkdir");
+        let typed = real.join("sub").join("..").join("ghost.md");
+        let resolved = resolve_dots(&typed).expect("resolvable");
+        assert_eq!(resolved, real.join("ghost.md"));
+    }
+
+    /// On a real chain the filesystem clamps `..` at the root - POSIX says `/..`
+    /// is `/` - so only a missing chain can climb lexically, and that is refused.
+    #[test]
+    fn climbing_past_the_root_is_refused() {
+        let path = PathBuf::from(if cfg!(windows) {
+            r"C:\nowhere\..\..\x"
+        } else {
+            "/nowhere/../../x"
+        });
+        let error = resolve_dots(&path).expect_err("cannot climb past root");
+        assert!(error.contains("climbs"), "{error}");
     }
 }
