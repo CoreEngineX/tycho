@@ -1,18 +1,28 @@
-## v0.1.1
+## v0.2.0
 
-**Closes eight pre-release audit findings spanning checkout, config generation, and file permissions, stops backup runs from stamping wall-clock time into `REPO.txt`, and raises the pipe-buffer test's CI timeout budget.**
+**Adds a `rules explain` command and per-directory local rule files, wires `--local` writes and a cross-profile watch confirmation into rule management, and fixes dot resolution in typed path arguments plus duplicate hit counting.**
+
+### Added
+
+- **`tycho rules explain <path>`**: Names the rule that decided a path's status and every rule it beat, with the file and line each was declared at, walking the full ancestor chain.
+- **`--local` flag for `ignore`/`reinclude`**: Writes the rule into the `.tycho/rules.toml` of the deepest still-captured ancestor instead of the operator config, so a re-include under an ignored directory lands in the one place it will actually be read.
+- **Local rule files (`.tycho/rules.toml`)**: Any captured directory can carry rules scoped to its own subtree, discovered during the normal walk with no second traversal. Rules now survive the directory being renamed, moved, or cloned, since they no longer depend on an absolute path staying valid.
+  - A skipped directory's rule file is never read, even when the walk passes through it for a deeper carve-out.
+  - On a direct conflict, the operator's config still outranks a local file.
+- **Default ignore list gained `out`, `.ruff_cache`, `.kotlin`, and `xcuserdata`**: Covers Next.js/AOSP/Electron Forge build output and IDE/tool caches that were previously backed up despite being regenerable. `.swiftpm` was deliberately left off since it can carry registry/mirror config worth keeping.
+
+### Changed
+
+- **Cross-profile nested watch now warns instead of proceeding silently**: Watching a root nested inside another profile's root triggers a warning and a Y/N confirmation prompt. Watching a root nested inside the *same* profile's root remains the hard error it already was.
 
 ### Fixed
 
-- **Unclassifiable overlay files vanished from a backup with no trace**: An overlay file that couldn't be classified at hash time was filtered out of the batch before it reached the tree, the unreadable list, or the commit message. Both existing safety nets count what survives that filter, so neither one could see the file go missing. The overlay is the gitignored content the store exists to protect, so this closed the gap rather than adding a third counter.
-- **Files with unreadable modes restored world-readable**: A path whose mode couldn't be read at capture time was dropped from the manifest the same way. With no manifest record, the file restored at git's default `0644` — a `0600` file coming back world-readable on a run that reported success.
-- **Branch names starting with `-` broke checkout**: `git update-ref` can create branch names (e.g. `-x`) that `git branch` itself refuses and `check-ref-format` accepts. Checkout used `--` before the branch name, which git parsed as a pathspec separator rather than an end-of-options marker, so checking out `-x` failed and the repo reported itself as having no commits despite its history sitting in `.git`. Switched to `--end-of-options` so any valid ref name checks out.
-- **Backup interval could wrap into a schedule firing every few seconds**: An interval count was multiplied without an upper bound; in release builds the multiplication could wrap and produce a near-zero interval instead of the intended one.
-- **Control bytes in remote paths could truncate the generated git config**: A control byte in a remote's path terminated a line early in the generated global git config, corrupting entries after it.
-- **Profile names could resolve the store outside its own directory**: A profile name that was itself an absolute path resolved the store to that path instead of a subdirectory of the intended root — including on the command that offers to delete the store, making it possible to delete content outside the store's directory.
-- **Predictable temp file names were open to a symlink attack**: A temp file was created under a predictable name and then opened, leaving a window for another process to plant a symlink at that path first.
-- **`REPO.txt` timestamp caused every backup to report a false diff**: `REPO.txt` recorded `seen <now>`, so a backup that found nothing changed still rewrote the file and committed a diff for every captured repository on any run that crossed a minute boundary. The field was never read back on restore — `parse_repo_txt` matches known field names and ignores the rest — so this matches the no-mtime-churn policy `metadata.rs` already enforces elsewhere; when a capture happened is now read from the commit's own timestamp.
+- **Typed path arguments rejected valid `..` components**: `AbsPath`'s parent-component refusal exists to protect config-sourced paths, but it also blocked ordinary shell-style relative paths like `../foo`. Typed arguments now resolve dots before validation — physically where the path chain exists on disk, so `..` crosses symlinks the way the filesystem does, and lexically where it doesn't, so a hypothetical path still resolves. The final path component is never resolved, so a symlink is still asked about as itself. This applies to `--local` commands as well.
+- **Duplicate hit recording for plain files**: `record_hits` ran twice per plain file — once in the listing loop, once inside `take_file` — inflating hit counts. The duplicate call was removed.
 
 ### Internal
 
-- Raised the pipe-buffer hash-object test's CI timeout budget so a Windows runner with a virus scanner in the path of its ~10,000 file operations can finish within the ceiling; the test's guarantee (a genuine wedge still fails the gate) is unchanged.
+- Fixed flaky lock-acquisition tests (brief retry, since macOS occasionally reports a just-released lock as still held) and serialized the parallel tests that write the global colour flag, removing an intermittent CI failure.
+- Removed the unreachable `RedundantWatch` diagnostic, superseded by `NestedWatchedRoot`, and merged the duplicate `RemoteEntry`/`NewRemote` types into one.
+- Rule resolution now carries each directory's `Decision` down the walk stack instead of re-deriving it per file, and stores rule references as arena ids rather than cloned text.
+- Split the junk list into `Junk::Name` (compile-time-checked path components) and `Junk::Glob` (patterns), and switched `RuleSet::junk` to a `&'static` slice so building the rule tree no longer copies the list per profile.
