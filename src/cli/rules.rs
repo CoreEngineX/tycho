@@ -10,7 +10,7 @@ use crate::config::{local, rules};
 use crate::config_edit::{Editing, List, LocalEditing};
 use crate::primitives::path::AbsPath;
 use std::io::IsTerminal;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub fn dispatch(list: List, args: &RuleArgs) -> Exit {
     let path = match crate::cli::run::config_location(args.config.clone()) {
@@ -276,28 +276,19 @@ fn expand(value: &str) -> Result<AbsPath, String> {
 }
 
 /// `..` in a typed argument is resolved rather than refused - `rules explain ../`
-/// is a shell habit, not an error. The parent chain resolves physically when it
-/// exists, so `..` crosses symlinks the way the filesystem does; a path that does
-/// not exist falls back to lexical popping, so a hypothetical path can still be
-/// explained. The final component is kept as written: a symlink is asked about as
-/// itself, never as its target.
-fn resolve_dots(path: &std::path::PathBuf) -> Result<std::path::PathBuf, String> {
+/// is a shell habit, not an error.
+///
+/// Lexically, never through `canonicalize`. Tycho's model of a path is lexical
+/// everywhere else - the walk stops at a symlink rather than following it, so
+/// what the store holds is the literal tree beneath a watched root - and
+/// resolving here would answer about a path the rules never describe. On Windows
+/// it is also wrong twice over: the parser folds `..` away before the file is
+/// opened, so a chain through a directory that does not exist still resolves, and
+/// what comes back carries a `\\?\` verbatim prefix that no config entry has, so
+/// every watched-root comparison would miss.
+fn resolve_dots(path: &Path) -> Result<PathBuf, String> {
     use std::path::Component;
-    if !path
-        .components()
-        .any(|component| matches!(component, Component::ParentDir | Component::CurDir))
-    {
-        return Ok(path.clone());
-    }
-    if let (Some(parent), Some(name)) = (path.parent(), path.file_name())
-        && let Ok(real) = std::fs::canonicalize(parent)
-    {
-        return Ok(real.join(name));
-    }
-    if let Ok(real) = std::fs::canonicalize(path) {
-        return Ok(real);
-    }
-    let mut out = std::path::PathBuf::new();
+    let mut out = PathBuf::new();
     for component in path.components() {
         match component {
             Component::ParentDir => {
@@ -466,7 +457,7 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn dots_in_a_missing_path_resolve_lexically() {
+    fn dots_resolve_lexically() {
         let path = PathBuf::from(if cfg!(windows) {
             r"C:\nowhere\a\b\..\.\c"
         } else {
@@ -483,18 +474,21 @@ mod tests {
         );
     }
 
+    /// The answer keeps the spelling a watched root is written in. Canonicalising
+    /// would hand back a `\\?\` verbatim prefix on Windows and a symlink-resolved
+    /// path on macOS - `/var/folders` becomes `/private/var/folders` - and neither
+    /// matches what the config says, so every watched-root comparison would miss.
     #[test]
-    fn dots_through_a_real_parent_resolve_physically() {
+    fn a_real_path_is_not_canonicalised() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let real = dir.path().canonicalize().expect("canonical");
-        std::fs::create_dir(real.join("sub")).expect("mkdir");
-        let typed = real.join("sub").join("..").join("ghost.md");
+        std::fs::create_dir(dir.path().join("sub")).expect("mkdir");
+        let typed = dir.path().join("sub").join("..").join("file.md");
         let resolved = resolve_dots(&typed).expect("resolvable");
-        assert_eq!(resolved, real.join("ghost.md"));
+        assert_eq!(resolved, dir.path().join("file.md"));
     }
 
-    /// On a real chain the filesystem clamps `..` at the root - POSIX says `/..`
-    /// is `/` - so only a missing chain can climb lexically, and that is refused.
+    /// Climbing off the top is refused on every platform. Windows folds `..` away
+    /// in its own parser, so this only holds because resolution is lexical here.
     #[test]
     fn climbing_past_the_root_is_refused() {
         let path = PathBuf::from(if cfg!(windows) {
