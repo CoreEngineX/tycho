@@ -30,6 +30,26 @@ pub enum FailureReason {
     Other(String),
 }
 
+impl FailureReason {
+    /// A few words for a notification body.
+    ///
+    /// [`Display`](std::fmt::Display) carries the detail, and for a rejected push that
+    /// detail is git's whole multi-line hint block - not something a banner can hold.
+    /// Only `TooFarBehind` is a reachability failure, so it is the only one that may
+    /// say so: describing a rejected push or a failed verification as out-of-reach
+    /// sends the reader to check the network when the problem is the history.
+    #[must_use]
+    pub const fn headline(&self) -> &'static str {
+        match self {
+            Self::Unusable(_) => "is not usable",
+            Self::Rejected(_) => "rejected the push",
+            Self::Unverified(_) => "did not verify",
+            Self::TooFarBehind { .. } => "is out of reach",
+            Self::Other(_) => "failed",
+        }
+    }
+}
+
 impl std::fmt::Display for FailureReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -301,5 +321,22 @@ mod tests {
             advance(&failed, &Observation::Unreachable, OPTIONAL, NOW),
             failed
         );
+    }
+
+    /// The distinction the notification exists to make: only a remote that was
+    /// genuinely out of reach may be described that way. A rejected push reported as
+    /// unreachable sends the reader to the network when the history is the problem.
+    #[test]
+    fn only_a_reachability_failure_says_it_is_out_of_reach() {
+        let reaches = |reason: &FailureReason| reason.headline().contains("reach");
+        assert!(reaches(&FailureReason::TooFarBehind { runs: 3 }));
+        for reason in [
+            FailureReason::Rejected("non-fast-forward".to_owned()),
+            FailureReason::Unusable("not a repository".to_owned()),
+            FailureReason::Unverified("refs differ".to_owned()),
+            FailureReason::Other("something".to_owned()),
+        ] {
+            assert!(!reaches(&reason), "{reason} must not claim unreachability");
+        }
     }
 }

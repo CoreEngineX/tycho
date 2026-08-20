@@ -149,10 +149,18 @@ fn run_error(error: &RunError, profile: &Profile) -> Exit {
 fn announce(profile: &Profile, outcome: Exit, remotes: &[store::run::RemoteResult]) {
     use crate::platform::notify::{Urgency, notify};
 
-    let failed: Vec<&str> = remotes
+    // Each failure says what it was, rather than all of them claiming the one thing
+    // they usually are not. `RemoteState::Failed` already carries the reason; naming a
+    // rejected push "could not reach" sends the reader to the network when the problem
+    // is a diverged history.
+    let failed: Vec<String> = remotes
         .iter()
-        .filter(|remote| remote.state.is_red())
-        .map(|remote| remote.name.as_str())
+        .filter_map(|remote| match &remote.state {
+            RemoteState::Failed { reason, .. } => {
+                Some(format!("{} {}", remote.name, reason.headline()))
+            }
+            _ => None,
+        })
         .collect();
 
     let (urgency, body) = match outcome {
@@ -163,7 +171,7 @@ fn announce(profile: &Profile, outcome: Exit, remotes: &[store::run::RemoteResul
         ),
         Exit::Failure => (
             Urgency::Failure,
-            format!("{} could not reach {}", profile.name, failed.join(", ")),
+            format!("{}: {}", profile.name, failed.join(", ")),
         ),
         Exit::Warning => (
             Urgency::Warning,

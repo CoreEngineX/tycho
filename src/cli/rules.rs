@@ -330,7 +330,10 @@ fn owning_profile<'a>(
             .ok_or_else(|| {
                 report! {
                     error: "profile '{name}' does not watch {target}",
-                    recovery: { "tycho profile list" => "names every profile" },
+                    recovery: {
+                        "tycho watch list -p {name}" => "names the roots it does watch",
+                        "tycho profile list" => "names every profile",
+                    },
                 }
             });
     }
@@ -338,6 +341,7 @@ fn owning_profile<'a>(
         [] => Err(report! {
             error: "no watched root contains {target}",
             note: "rules only apply beneath a watched root",
+            recovery: { "tycho watch list" => "names the roots each profile watches" },
         }),
         [one] => Ok(one),
         many => {
@@ -367,7 +371,10 @@ fn load_chain(profile: &Profile, target: &AbsPath) -> Result<(RuleTree, AbsPath)
         .map(crate::config::WatchEntry::path)
         .find(|root| root.contains(target));
     let Some(root) = root else {
-        return Err(report! { error: "no watched root contains {target}" });
+        return Err(report! {
+            error: "no watched root contains {target}",
+            recovery: { "tycho watch list" => "names the roots each profile watches" },
+        });
     };
     let chain: Vec<&Path> = target
         .as_path()
