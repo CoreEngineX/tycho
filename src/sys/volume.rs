@@ -354,17 +354,14 @@ fn read_dacl(path: &Path) -> Result<String, VolumeError> {
     Ok(decode_utf16le(&bytes))
 }
 
-/// `icacls /save` writes UTF-16LE with a BOM. An odd trailing byte is dropped rather
-/// than refused: the DACL line is what matters and a truncated tail cannot be part of
-/// it.
+/// `icacls /save` writes UTF-16LE with a BOM. An odd trailing byte becomes `U+FFFD`
+/// rather than being refused or dropped: the DACL line is what matters and a truncated
+/// tail cannot be part of it, but a decoder that swallows malformed input without a
+/// mark is how bad data becomes invisible.
 #[cfg(windows)]
 fn decode_utf16le(bytes: &[u8]) -> String {
     let body = bytes.strip_prefix(&[0xff, 0xfe]).unwrap_or(bytes);
-    let units: Vec<u16> = body
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-        .collect();
-    String::from_utf16_lossy(&units)
+    String::from_utf16le_lossy(body)
 }
 
 /// The first trustee in the DACL that is neither the owner, `SYSTEM` nor

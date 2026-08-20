@@ -278,14 +278,13 @@ pub fn encode(definition: &str) -> Vec<u8> {
 
 /// Reads back what [`encode`] wrote, so `service status` can compare the installed
 /// definition against the config.
+///
+/// A malformed tail becomes `U+FFFD` rather than vanishing, so a truncated read
+/// compares unequal instead of quietly claiming the installed task matches.
 #[must_use]
 pub fn decode(bytes: &[u8]) -> String {
     let body = bytes.strip_prefix(&[0xff, 0xfe]).unwrap_or(bytes);
-    let units: Vec<u16> = body
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-        .collect();
-    String::from_utf16_lossy(&units)
+    String::from_utf16le_lossy(body)
 }
 
 /// Registers a definition, replacing any task of the same name.
@@ -425,4 +424,29 @@ fn message(out: &std::process::Output) -> String {
         return String::from_utf8_lossy(&out.stdout).trim().to_owned();
     }
     stderr
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{decode, encode};
+
+    /// The decoder round-trips what `encode` wrote, and marks what it could not
+    /// read rather than dropping it. Changed 2026-08-20 with the 1.98 toolchain:
+    /// the hand-rolled loop this replaced silently discarded an odd trailing
+    /// byte, so a truncated read could compare equal to the installed task and
+    /// report a match that was not there.
+    #[test]
+    fn a_malformed_tail_is_marked_rather_than_dropped() {
+        let good = encode("hi");
+        assert_eq!(decode(&good), "hi");
+
+        let mut truncated = good.clone();
+        truncated.pop();
+        let decoded = decode(&truncated);
+        assert!(
+            decoded.contains('\u{FFFD}'),
+            "a half-read code unit must leave a mark: {decoded:?}"
+        );
+        assert_ne!(decoded, "hi", "a truncated read must not compare equal");
+    }
 }
