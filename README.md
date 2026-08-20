@@ -238,6 +238,77 @@ Resist the urge to add `.env` to that list. Capturing exactly what git itself wi
 never track - gitignored secrets included - is the reason this exists over `git
 push`.
 
+## How I actually use it
+
+Opinionated, and not the only way - but it is the way the design assumes, so the rest of
+this is easier if you follow it.
+
+**Keep the config file machine-scoped.** Watch roots, schedule, remotes. That is all. Mine
+watches one directory and pushes to one folder. Every rule about *content* lives with the
+content, in a `.tycho/rules.toml` beside it, because a rule written as an absolute path in
+a config file stops matching the moment you rename a directory - and it stops matching
+**silently**. That failure is what local rule files exist to fix.
+
+**Do not mirror your `.gitignore`.** The two files answer different questions.
+`.gitignore` asks "should this be in version control", and it excludes two unrelated
+kinds of thing: secrets and local state (`.env`, credentials, a local database), and
+regenerable output (`target/`, build artifacts). Tycho captures gitignored content
+*because of the first kind* - that is the whole reason it exists over `git push`. So
+copying your ignore rules across would throw away exactly what you wanted, and keeping
+everything gitignored fills the store with build output.
+
+**Ignore something only when all of these hold:**
+
+1. A command regenerates it.
+2. That command is itself backed up - committed in a repo tycho captures.
+3. So are its inputs.
+4. Regenerating is affordable at restore time. Minutes of CPU, fine. Re-running a
+   three-hour job, usually not.
+5. It is not a secret, and not unique human work.
+
+Point 2 is the one people skip. A generator that exists only on the dying disk makes its
+output irreplaceable too.
+
+**Say why, in the file.** Every ignore I write names the command that rebuilds what it
+drops:
+
+```toml
+version = 1
+
+globs = [
+  # ~300 MB of fixtures, rebuilt by `cargo test generate_website_fixtures`.
+  "gen-test/*/test05-1m.spass",
+]
+```
+
+A month later that comment is the difference between a rule you can audit and a rule you
+either wrongly trust or wrongly delete.
+
+**Reach for `reinclude` before widening an ignore.** When one file inside a dropped
+directory matters, carve it out rather than keeping the parent:
+
+```toml
+ignore    = ["out"]
+reinclude = ["out/labels.sqlite"]
+```
+
+**Check the rule, don't assume it.** `tycho rules explain <path>` names the winning rule,
+its file and line, and everything it beat. This matters most for files inside a git
+repository: those are resolved when the overlay is built, not during the plan walk, so a
+rule aimed at them will **not** show up in `--dry-run`'s fired list even when it is
+working perfectly.
+
+**Before you keep something for a reason, check that keeping it achieves that reason.** I
+kept iOS release artifacts for a while on the grounds that dSYMs cannot be rebuilt - true,
+but the directory is overwritten on every release, so the backup held whichever build
+happened to be staged when the run fired. It was never an archive. A backup that
+half-solves a problem is worse than one that visibly does not, because nobody goes looking
+for the other half.
+
+**Commit the rule file.** It records a fact about the project - this output is regenerable
+- rather than a personal preference, so a fresh clone on another machine inherits the
+right policy.
+
 ## If a drive goes away
 
 A run commits to the local store *before* it attempts any push, so a drive that is
