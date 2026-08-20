@@ -34,25 +34,33 @@ pub const DEFAULT_JUNK: &[Junk] = junk! {
     names:
         // Rust, and Maven's coincidentally identical output root.
         "target",
-        // JavaScript and the frameworks that keep their own cache root.
-        "node_modules", "dist", ".next", ".nuxt", ".svelte-kit",
-        ".turbo", ".parcel-cache", ".angular",
-        // JVM: Gradle's output and cache, Kotlin's, and IntelliJ's output root.
-        "build", ".gradle", ".kotlin", "out",
+        // JavaScript: bundlers, frameworks, package managers and linter caches.
+        "node_modules", "dist", ".next", ".nuxt", ".svelte-kit", ".output",
+        ".turbo", ".parcel-cache", ".angular", ".vite", ".docusaurus",
+        ".eslintcache", ".stylelintcache", ".nyc_output",
+        ".npm", ".pnpm-store", ".yarn-integrity", ".serverless", ".firebase",
+        // JVM: Gradle's output and caches, Kotlin's, and IntelliJ's output root.
+        "build", ".gradle", ".gradletasknamecache", ".kotlin", "out",
         // C and C++. `CMakeFiles` sits at the project root for an in-source
         // build, not only inside the build directory, so naming it is not
-        // redundant with `cmake-build-*` below.
-        "CMakeFiles",
+        // redundant with `cmake-build-*` below. `_deps` is FetchContent's
+        // download tree.
+        "CMakeFiles", "_deps", ".tmp_versions",
         // Python: interpreter caches, virtualenvs, and per-tool caches.
-        "__pycache__", ".venv", "venv", ".tox", ".nox", ".eggs",
+        // `.pypirc` is deliberately absent - it holds PyPI upload tokens.
+        "__pycache__", ".venv", "venv", ".tox", ".nox", ".eggs", "__pypackages__",
         ".ruff_cache", ".pytest_cache", ".mypy_cache", ".ipynb_checkpoints",
+        ".hypothesis", ".pytype", ".pyre", ".dmypy.json", ".pdm-build",
+        ".webassets-cache", ".scrapy", ".coverage",
         // Apple: Xcode, SwiftPM, CocoaPods. `.swiftpm` is deliberately absent -
         // see the note below.
         "DerivedData", ".build", "Pods", "xcuserdata",
-        // Android's NDK build tree.
-        ".cxx",
-        // Editors and the operating system.
-        ".idea", ".cache", ".DS_Store", "Thumbs.db";
+        // Android's NDK build trees. Signing material - *.jks, *.keystore - is
+        // deliberately absent: losing it means never shipping an update again.
+        ".cxx", ".externalNativeBuild",
+        // Editors and the operating system. `__MACOSX` is what unzipping on a
+        // Mac leaves behind.
+        ".idea", ".cache", ".DS_Store", "Thumbs.db", "__MACOSX";
     globs:
         // Object code and libraries. `*.d` is deliberately absent: it is make's
         // dependency file *and* D's source extension, and a list that eats source
@@ -67,6 +75,9 @@ pub const DEFAULT_JUNK: &[Junk] = junk! {
         "*.egg-info",
         // Xcode per-user window and scheme state.
         "*.xcuserstate",
+        // macOS resource forks, written beside every file on a volume that
+        // cannot hold an extended attribute.
+        "._*",
 };
 
 const _: () = names_are_not_patterns(DEFAULT_JUNK);
@@ -819,6 +830,14 @@ mod tests {
             "A/web/.turbo/turbo.log",
             "A/web/.parcel-cache/data.mdb",
             "A/web/.angular/cache/x",
+            "A/web/.vite/deps/x.js",
+            "A/web/.eslintcache",
+            "A/c/build/_deps/fmt-src/x.cc",
+            "A/android/app/.externalNativeBuild/cmake/x.json",
+            "A/py/.hypothesis/examples/x",
+            "A/py/__pypackages__/3.14/lib/x.py",
+            "A/zip/__MACOSX/._notes.txt",
+            "A/media/._photo.heic",
         ] {
             assert!(!captured(&tree, junk), "{junk} should be junk");
         }
@@ -843,6 +862,12 @@ mod tests {
             "A/notes/targets.md",
             "A/ideas/roadmap.md",
             "A/src/cache.rs",
+            // Signing material and upload tokens: the list must never carry
+            // these, whatever an upstream gitignore template says.
+            "A/android/release.keystore",
+            "A/android/upload.jks",
+            "A/py/.pypirc",
+            "A/svc/.env",
         ] {
             assert!(captured(&tree, wanted), "{wanted} is the user's own file");
         }

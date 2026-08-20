@@ -369,23 +369,48 @@ an extension needs and the only thing patterns are here for.
 
 ```text
 names   rust/maven   target
-        javascript   node_modules  dist  .next  .nuxt  .svelte-kit
-                     .turbo  .parcel-cache  .angular
-        jvm          build  .gradle  .kotlin  out
-        c/c++        CMakeFiles
+        javascript   node_modules  dist  .next  .nuxt  .svelte-kit  .output
+                     .turbo  .parcel-cache  .angular  .vite  .docusaurus
+                     .eslintcache  .stylelintcache  .nyc_output
+                     .npm  .pnpm-store  .yarn-integrity  .serverless  .firebase
+        jvm          build  .gradle  .gradletasknamecache  .kotlin  out
+        c/c++        CMakeFiles  _deps  .tmp_versions
         python       __pycache__  .venv  venv  .tox  .nox  .eggs
-                     .ruff_cache  .pytest_cache  .mypy_cache
-                     .ipynb_checkpoints
+                     __pypackages__  .ruff_cache  .pytest_cache  .mypy_cache
+                     .ipynb_checkpoints  .hypothesis  .pytype  .pyre
+                     .dmypy.json  .pdm-build  .webassets-cache  .scrapy
+                     .coverage
         apple        DerivedData  .build  Pods  xcuserdata
-        android      .cxx
-        editor/os    .idea  .cache  .DS_Store  Thumbs.db
+        android      .cxx  .externalNativeBuild
+        editor/os    .idea  .cache  .DS_Store  Thumbs.db  __MACOSX
 
 globs   object code  *.o  *.obj  *.a  *.so  *.dylib  *.gch  *.pch
         bytecode     *.pyc  *.pyo  *.class
         c/c++        cmake-build-*
         python       *.egg-info
-        apple        *.xcuserstate
+        apple        *.xcuserstate  ._*
 ```
+
+### What the list must never carry
+
+Four absences are load-bearing, and `scripts/junk-audit.sh` flags each of them
+`REJECT` when an upstream template proposes it:
+
+- **`*.jks` and `*.keystore`** - Android signing material. It is in the Android
+  gitignore template, and losing it means never shipping an update to that app
+  again. Nothing in this list is worth that.
+- **`.env`, `.pypirc`, `.npmrc`** - secrets and upload tokens. These are the
+  files tycho exists to capture; a gitignore template excludes them for the
+  opposite reason a backup must keep them.
+- **`*.d`** - make's dependency file *and* D's source extension. A list that
+  eats source is the one mistake it cannot make.
+- **`.swiftpm`** - can carry registry and mirror configuration worth keeping,
+  which is why `xcuserdata` is named instead and covers the per-user state
+  inside it.
+
+The general rule this expresses: a `.gitignore` and this list answer different
+questions. Gitignore excludes both build output *and* secrets; this list may only
+ever exclude the first kind.
 
 Two absences are deliberate and load-bearing. **`*.d` is not here**: it is make's
 dependency file and also D's source extension, and a list that eats source is the one
