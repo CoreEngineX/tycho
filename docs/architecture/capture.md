@@ -139,6 +139,25 @@ enum Entry {
 }
 ```
 
+### Growth is reported, shrinking is refused
+
+The two directions get opposite treatment, and the asymmetry is the point.
+
+A root that **loses** more than half its entries fails the run, because losing
+entries can mean a bad backup about to overwrite a good one - a revoked TCC grant,
+a drive half-mounted, a directory renamed. `--allow-shrink` is the override.
+
+A run that **adds** more than `GROWTH_FLOOR` (100 MB) is reported and completes.
+The summary names the largest paths added, and a notification carries the total.
+There is deliberately no predicate a caller could turn into a refusal: withholding
+a backup to save disk gets the two costs backwards, since an unwanted copy is
+reclaimable next run and a missing one is not. `sys::lock` makes the same argument
+about blocking locks - a check that can silence backups is worse than the thing it
+checks for.
+
+Attribution is best-effort. It diffs the new commit against the previous run's and
+sizes what changed; any git failure there costs the explanation, never the run.
+
 ### The sanity gate
 
 **A configured root that resolves to zero capturable entries, or whose own directory

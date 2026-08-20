@@ -148,6 +148,55 @@ impl Repo {
             .collect()
     }
 
+    /// Every blob in a commit with its size, for attributing a jump in store size
+    /// to the paths that caused it.
+    ///
+    /// One `ls-tree` rather than a `cat-file` per path: the caller wants the few
+    /// largest of many, so fetching all the sizes once and sorting beats asking
+    /// about each one.
+    ///
+    /// # Errors
+    ///
+    /// If git fails.
+    pub fn ls_tree_sized(&self, commit: Oid) -> Result<Vec<(TreePath, u64)>, RepoError> {
+        let out = self.git().run(
+            &[
+                "ls-tree",
+                "-r",
+                "-z",
+                "-l",
+                "--full-tree",
+                &commit.to_string(),
+            ],
+            Timeout::WORK,
+        )?;
+        if !out.status.success() {
+            return Ok(Vec::new());
+        }
+        let mut sized = Vec::new();
+        for field in out.stdout.split(|&byte| byte == 0) {
+            if field.is_empty() {
+                continue;
+            }
+            // `<mode> <type> <oid> <size>\t<path>`, and a path may hold any byte
+            // but a tab, so split on the first tab rather than on whitespace.
+            let Some(tab) = field.iter().position(|&byte| byte == b'\t') else {
+                continue;
+            };
+            let (meta, rest) = field.split_at(tab);
+            let size = core::str::from_utf8(meta)
+                .ok()
+                .and_then(|meta| meta.split_whitespace().nth(3))
+                .and_then(|size| size.parse::<u64>().ok())
+                .unwrap_or(0);
+            let path = path_from_git(&rest[1..]).ok_or_else(|| unreadable_path(&rest[1..]))?;
+            let path =
+                TreePath::parse(path).map_err(|error| RepoError::Unparsable(error.to_string()))?;
+            sized.push((path, size));
+        }
+        Ok(sized)
+    }
+
     /// One file's bytes out of a commit, by path rather than by object id.
     ///
     /// # Errors

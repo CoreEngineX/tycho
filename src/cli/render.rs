@@ -445,6 +445,24 @@ pub fn run_result(profile: &str, done: &crate::store::run::Completed) -> String 
         format!("in {}s", summary.seconds),
         size(summary.written_bytes)
     );
+    if let Some(growth) = &done.growth {
+        let _ = writeln!(
+            out,
+            "  {:<13}{:<40}{:>19}",
+            "grew",
+            "since the last run",
+            size(growth.bytes)
+        );
+        for (path, bytes) in &growth.largest {
+            let _ = writeln!(
+                out,
+                "  {:<13}{:<40}{:>19}",
+                "",
+                fit(&abbreviate(&path.to_string()), 39),
+                size(*bytes)
+            );
+        }
+    }
     if !done.rule_files.is_empty() {
         let count: usize = done.rule_files.iter().map(|(_, rules)| rules).sum();
         let files = done.rule_files.len();
@@ -1368,6 +1386,7 @@ mod tests {
             },
             remotes: Vec::new(),
             rule_files: Vec::new(),
+            growth: None,
         };
 
         set_colour(false);

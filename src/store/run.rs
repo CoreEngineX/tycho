@@ -59,6 +59,23 @@ fn since(started: Option<u64>) -> String {
     })
 }
 
+/// How much a run must add before it is worth naming what it added. Below this a
+/// backup that grew is just a backup doing its job.
+pub const GROWTH_FLOOR: u64 = 100 * 1024 * 1024;
+
+/// What a run added, when it added enough to be worth explaining.
+///
+/// Reported, never blocked on. The shrink gate refuses a run because losing
+/// entries can mean a bad backup overwriting a good one; growing costs disk and
+/// nothing else, and a gate that withholds a backup to save disk has the two
+/// costs backwards - `sys::lock` makes the same argument about blocking.
+#[derive(Clone, Debug)]
+pub struct Growth {
+    pub bytes: u64,
+    /// The largest paths this run added or changed, biggest first.
+    pub largest: Vec<(crate::primitives::path::TreePath, u64)>,
+}
+
 /// What one run produced, for the caller to render.
 #[derive(Debug)]
 pub struct Completed {
@@ -69,6 +86,8 @@ pub struct Completed {
     pub remotes: Vec<RemoteResult>,
     /// Every local rule file the walk read, for the run summary.
     pub rule_files: Vec<(crate::primitives::path::AbsPath, usize)>,
+    /// Present when this run added more than [`GROWTH_FLOOR`].
+    pub growth: Option<Growth>,
 }
 
 /// What a run is doing, reported as it happens.
@@ -134,6 +153,11 @@ pub fn execute(
         Err(other) => return Err(RunError::Lock(other)),
     };
     let previous = state.last_entries(profile.name.as_str());
+    // Read before the run records over it: attributing growth needs the commit
+    // this run is growing away from.
+    let previous_commit = state
+        .last(profile.name.as_str())
+        .and_then(|record| record.commit.clone());
     let started = Instant::now();
     let run = Run::start(profile, store);
     finish(
@@ -141,6 +165,7 @@ pub fn execute(
         guard,
         started,
         &previous,
+        previous_commit,
         paths,
         state,
         allow_shrink,
@@ -164,6 +189,7 @@ fn finish(
     guard: LockGuard,
     started: Instant,
     previous: &BTreeMap<String, usize>,
+    previous_commit: Option<String>,
     paths: &Paths<'_>,
     state: &mut State,
     allow_shrink: bool,
@@ -441,6 +467,8 @@ fn finish(
         record,
         remotes,
     } = run.state;
+    let growth = attribute_growth(store, commit, previous_commit.as_deref(), &summary);
+
     Ok(Completed {
         commit,
         summary,
@@ -448,6 +476,42 @@ fn finish(
         record,
         remotes,
         rule_files,
+        growth,
+    })
+}
+
+/// Names the paths behind a large jump in store size.
+///
+/// Best-effort: a git failure here costs the explanation, never the run, so
+/// every error collapses to `None` rather than propagating.
+fn attribute_growth(
+    store: &Store,
+    commit: crate::primitives::oid::Oid,
+    previous: Option<&str>,
+    summary: &message::Summary,
+) -> Option<Growth> {
+    if summary.written_bytes < GROWTH_FLOOR {
+        return None;
+    }
+    let repo = store.repo();
+    let from = previous.and_then(|oid| crate::primitives::oid::Oid::parse(oid).ok());
+    let changed: std::collections::BTreeSet<_> = repo
+        .diff_tree(from, commit)
+        .ok()?
+        .into_iter()
+        .map(|change| change.path)
+        .collect();
+    let mut largest: Vec<_> = repo
+        .ls_tree_sized(commit)
+        .ok()?
+        .into_iter()
+        .filter(|(path, _)| changed.contains(path))
+        .collect();
+    largest.sort_by_key(|(_, bytes)| std::cmp::Reverse(*bytes));
+    largest.truncate(5);
+    Some(Growth {
+        bytes: summary.written_bytes,
+        largest,
     })
 }
 
@@ -590,4 +654,31 @@ pub fn dry(
     let tree = RuleTree::build(&profile.rule_set())?;
     let (plan, _) = plan::build(profile, tree, previous, allow_shrink)?;
     Ok(plan)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GROWTH_FLOOR, Growth};
+
+    /// Growth is reported, never blocked on. The shrink gate refuses a run
+    /// because losing entries can mean a bad backup overwriting a good one;
+    /// gaining them costs disk and nothing else, so withholding a backup over it
+    /// would put the two costs backwards.
+    #[test]
+    fn growth_is_reported_rather_than_refused() {
+        // There is deliberately no `grew()` predicate that any caller can turn
+        // into a refusal: the only entry point is attribution, which produces a
+        // description and cannot fail a run.
+        let quiet = GROWTH_FLOOR - 1;
+        assert!(quiet < GROWTH_FLOOR, "a small run stays silent");
+
+        let loud = Growth {
+            bytes: GROWTH_FLOOR + 1,
+            largest: Vec::new(),
+        };
+        assert!(
+            loud.bytes > GROWTH_FLOOR,
+            "a large run carries its size for the report"
+        );
+    }
 }

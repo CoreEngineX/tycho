@@ -114,7 +114,7 @@ fn one_run(args: &RunArgs, profile: &Profile, config_text: &str) -> Exit {
         incomplete = Exit::Warning;
     }
     let outcome = worse(report(&done.remotes), incomplete);
-    announce(profile, outcome, &done.remotes);
+    announce(profile, outcome, &done.remotes, done.growth.as_ref());
     outcome
 }
 
@@ -146,7 +146,12 @@ fn run_error(error: &RunError, profile: &Profile) -> Exit {
 /// A notification that could not be delivered is **never** a failed run. A machine in
 /// a Focus mode suppresses delivery, which is expected - which is exactly why the
 /// notification is the convenience and the other three are the contract.
-fn announce(profile: &Profile, outcome: Exit, remotes: &[store::run::RemoteResult]) {
+fn announce(
+    profile: &Profile,
+    outcome: Exit,
+    remotes: &[store::run::RemoteResult],
+    growth: Option<&store::run::Growth>,
+) {
     use crate::platform::notify::{Urgency, notify};
 
     // Each failure says what it was, rather than all of them claiming the one thing
@@ -164,7 +169,20 @@ fn announce(profile: &Profile, outcome: Exit, remotes: &[store::run::RemoteResul
         .collect();
 
     let (urgency, body) = match outcome {
-        Exit::Ok => return,
+        // A run that succeeded says nothing, unless it added enough to be worth
+        // knowing about. The backup already happened either way - this is a
+        // report, not a gate.
+        Exit::Ok => match growth {
+            Some(growth) => (
+                Urgency::Info,
+                format!(
+                    "{} grew by {}",
+                    profile.name,
+                    crate::cli::render::size(growth.bytes)
+                ),
+            ),
+            None => return,
+        },
         Exit::Failure if failed.is_empty() => (
             Urgency::Failure,
             format!("{} did not complete", profile.name),
