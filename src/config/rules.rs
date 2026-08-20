@@ -32,13 +32,41 @@ macro_rules! junk {
 /// it once puts it in history permanently.
 pub const DEFAULT_JUNK: &[Junk] = junk! {
     names:
-        "node_modules", "target", "build", ".build", "dist", "out",
-        ".next", ".nuxt", ".svelte-kit", "DerivedData", ".gradle", ".kotlin",
-        "Pods", "__pycache__", ".venv", "venv", ".cache",
+        // Rust, and Maven's coincidentally identical output root.
+        "target",
+        // JavaScript and the frameworks that keep their own cache root.
+        "node_modules", "dist", ".next", ".nuxt", ".svelte-kit",
+        ".turbo", ".parcel-cache", ".angular",
+        // JVM: Gradle's output and cache, Kotlin's, and IntelliJ's output root.
+        "build", ".gradle", ".kotlin", "out",
+        // C and C++. `CMakeFiles` sits at the project root for an in-source
+        // build, not only inside the build directory, so naming it is not
+        // redundant with `cmake-build-*` below.
+        "CMakeFiles",
+        // Python: interpreter caches, virtualenvs, and per-tool caches.
+        "__pycache__", ".venv", "venv", ".tox", ".nox", ".eggs",
         ".ruff_cache", ".pytest_cache", ".mypy_cache", ".ipynb_checkpoints",
-        ".DS_Store", "Thumbs.db", "xcuserdata";
+        // Apple: Xcode, SwiftPM, CocoaPods. `.swiftpm` is deliberately absent -
+        // see the note below.
+        "DerivedData", ".build", "Pods", "xcuserdata",
+        // Android's NDK build tree.
+        ".cxx",
+        // Editors and the operating system.
+        ".idea", ".cache", ".DS_Store", "Thumbs.db";
     globs:
-        "*.o", "*.pyc", "*.class", "*.xcuserstate",
+        // Object code and libraries. `*.d` is deliberately absent: it is make's
+        // dependency file *and* D's source extension, and a list that eats source
+        // is the one mistake this list cannot make.
+        "*.o", "*.obj", "*.a", "*.so", "*.dylib", "*.gch", "*.pch",
+        // Bytecode.
+        "*.pyc", "*.pyo", "*.class",
+        // CLion names the build directory after the CMake profile, so the suffix
+        // varies: cmake-build-debug, cmake-build-release, cmake-build-debug-mingw.
+        "cmake-build-*",
+        // Python packaging metadata, a directory rather than a file.
+        "*.egg-info",
+        // Xcode per-user window and scheme state.
+        "*.xcuserstate",
 };
 
 const _: () = names_are_not_patterns(DEFAULT_JUNK);
@@ -777,6 +805,20 @@ mod tests {
             "A/lib/.swiftpm/xcode/xcuserdata/me.xcuserdatad/x.plist",
             "A/web/out/_next/static/build/main.js",
             "A/jvm/out/production/app/Main.class",
+            "A/c/cmake-build-debug/CMakeFiles/proj.dir/main.c.o",
+            "A/c/cmake-build-release-mingw/proj",
+            "A/c/CMakeFiles/TargetDirectories.txt",
+            "A/native/libfoo.a",
+            "A/native/libfoo.so",
+            "A/native/libfoo.dylib",
+            "A/py/.tox/py314/lib/x.py",
+            "A/py/.nox/tests/x.py",
+            "A/py/mypkg.egg-info/PKG-INFO",
+            "A/android/app/.cxx/Debug/x/abi.json",
+            "A/proj/.idea/workspace.xml",
+            "A/web/.turbo/turbo.log",
+            "A/web/.parcel-cache/data.mdb",
+            "A/web/.angular/cache/x",
         ] {
             assert!(!captured(&tree, junk), "{junk} should be junk");
         }
@@ -791,6 +833,16 @@ mod tests {
             "A/output/report.md",
             "A/checkout/receipt.pdf",
             "A/notes/out.md",
+            // `*.d` is make's dependency file and D's source extension. The list
+            // does not carry it, and this is the reason.
+            "A/dlang/lexer.d",
+            "A/dlang/app.di",
+            // Near-misses on the new entries.
+            "A/docs/build-notes.md",
+            "A/tools/cmake-helpers/setup.sh",
+            "A/notes/targets.md",
+            "A/ideas/roadmap.md",
+            "A/src/cache.rs",
         ] {
             assert!(captured(&tree, wanted), "{wanted} is the user's own file");
         }

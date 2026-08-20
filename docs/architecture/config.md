@@ -368,14 +368,39 @@ that starts with it. A glob is a pattern matched against one component, which is
 an extension needs and the only thing patterns are here for.
 
 ```text
-names   node_modules  target  build  .build  dist  out
-        .next  .nuxt  .svelte-kit  DerivedData  .gradle  .kotlin
-        Pods  __pycache__  .venv  venv  .cache
-        .ruff_cache  .pytest_cache  .mypy_cache  .ipynb_checkpoints
-        .DS_Store  Thumbs.db  xcuserdata
+names   rust/maven   target
+        javascript   node_modules  dist  .next  .nuxt  .svelte-kit
+                     .turbo  .parcel-cache  .angular
+        jvm          build  .gradle  .kotlin  out
+        c/c++        CMakeFiles
+        python       __pycache__  .venv  venv  .tox  .nox  .eggs
+                     .ruff_cache  .pytest_cache  .mypy_cache
+                     .ipynb_checkpoints
+        apple        DerivedData  .build  Pods  xcuserdata
+        android      .cxx
+        editor/os    .idea  .cache  .DS_Store  Thumbs.db
 
-globs   *.o  *.pyc  *.class  *.xcuserstate
+globs   object code  *.o  *.obj  *.a  *.so  *.dylib  *.gch  *.pch
+        bytecode     *.pyc  *.pyo  *.class
+        c/c++        cmake-build-*
+        python       *.egg-info
+        apple        *.xcuserstate
 ```
+
+Two absences are deliberate and load-bearing. **`*.d` is not here**: it is make's
+dependency file and also D's source extension, and a list that eats source is the one
+mistake it cannot make. **`.swiftpm` is not here** either - the directory can carry
+registry and mirror configuration worth keeping, which is why `xcuserdata` is named
+instead and covers the per-user state inside it.
+
+`cmake-build-*` is a glob rather than two names because CLion names the directory after
+the CMake profile, so `cmake-build-debug-mingw` and any custom profile are covered too.
+
+**The junk list filters the walk and the overlay, never history.** A file that is
+committed reaches the store through its repository's refs, which no rule inspects - so a
+vendored `libfoo.a` that is checked in stays backed up, and only an untracked or
+gitignored one is dropped. That asymmetry is what makes the object-code globs safe
+enough to carry.
 
 A name containing a glob metacharacter or a separator is a compile error, not a test
 failure: it would read as strict at the definition site and match like a pattern at
