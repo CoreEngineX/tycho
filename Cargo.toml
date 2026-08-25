@@ -1,6 +1,6 @@
 [package]
 name = "tycho"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.98"
 description = "A backup daemon that treats git as the storage format"
