@@ -9,7 +9,7 @@ produced them. The architecture docs are the contract; this is the order of work
 
 ## Ground rules
 
-- **Rust 1.97.1, edition 2024.** Single binary crate, no workspace.
+- **Rust 1.98, edition 2024.** Single binary crate, no workspace.
 - **`bash scripts/ci-check.sh` green before every commit.** fmt, the gated pedantic
   clippy set, tests, doc, audit. It currently fails with "could not find Cargo.toml",
   which is correct until layer 0 lands.

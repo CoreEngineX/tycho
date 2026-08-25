@@ -207,10 +207,19 @@ tycho reinclude add ~/Documents/.audit/keep -p me   # an exception back out of o
 ```
 
 Precedence is deepest-match-wins, ties broken by tier: an explicit path beats a
-glob beats the built-in list of junk (`node_modules`, `.DS_Store`, `target`, and
-seventeen more - `use_default_ignores = false` turns it off). `tycho run
---dry-run` reports every rule that matched nothing, which is how a typo surfaces
-before it costs gigabytes rather than after:
+glob beats the built-in junk list - about seventy names and patterns a build tool
+owns (`node_modules`, `target`, `cmake-build-*`, `DerivedData`, `__pycache__`,
+`.gradle`, and the rest), which `use_default_ignores = false` turns off wholesale.
+
+That list never carries a secret. Signing material, `.env`, `.pypirc` and the like
+are deliberately absent, because a `.gitignore` excludes build output *and*
+secrets while this list may only ever exclude the first kind - and capturing the
+second kind is the reason this tool exists. `scripts/junk-audit.sh` diffs the list
+against upstream gitignore templates and flags any candidate that crosses that
+line.
+
+`tycho run --dry-run` reports every rule that matched nothing, which is how a typo
+surfaces before it costs gigabytes rather than after:
 
 ```text
 $ tycho run --dry-run
@@ -233,6 +242,32 @@ reinclude = ["out/labels.sqlite"]
 Entries may only name things at or below the declaring directory, the global
 config always wins a direct conflict, and a rule file inside an ignored
 directory is never read. Every file read is listed in the run summary.
+
+`tycho ignore add <path> --local` writes into the nearest such file rather than
+the config, and `tycho rules explain <path>` says which rule decided a path and
+what it beat, naming the file and line each came from:
+
+```text
+$ tycho rules explain ~/code/mllab/out/labels.sqlite
+capture  out/labels.sqlite
+         mllab/.tycho/rules.toml:5
+         depth 11, tier explicit-path, origin local
+beaten   skip    out
+         mllab/.tycho/rules.toml:4
+```
+
+A run that adds more than 100 MB says so, and names the paths responsible:
+
+```text
+  grew         since the last run                           380 MB
+               mllab/datasets/train-000.tar                 201 MB
+               spass-ios/SpassFFI.xcframework               125 MB
+```
+
+It reports and completes; it never withholds a backup to make the point. The
+opposite direction is the one that blocks - a watched root that *loses* more than
+half its entries fails the run, because that can mean a bad backup about to
+overwrite a good one.
 
 Resist the urge to add `.env` to that list. Capturing exactly what git itself will
 never track - gitignored secrets included - is the reason this exists over `git
