@@ -86,7 +86,7 @@ A volume with no ownership is also refused as a `store_path`, for a second and
 unrelated reason - see the store-permissions note at the top of `store.md`. `trust_ownership`
 does not affect that and is not meant to.
 
-### macOS sidecars are swept after every push
+### macOS sidecars are swept after every successful push
 
 On a volume that cannot hold an extended attribute - every exFAT and FAT32 drive -
 macOS writes a `._name` file beside each real one. They are not litter: git globs
@@ -96,6 +96,21 @@ freshly formatted exFAT volume produced 185 of them.
 
 So `dot_clean -m` runs over the remote folder after the push and before verification.
 Measured on a real drive: 186 sidecars before, 0 after, `git fsck` silent.
+
+**The sweep does not make a first push to exFAT work.** It runs only after git
+accepted the push, and on a remote git is writing for the first time the sidecars
+appear during that push, inside git's own `tmp_objdir-incoming`, so the push fails and
+the sweep never gets a turn. Measured on a freshly formatted 8 GB exFAT stick holding
+nothing but 9.4 MB of macOS metadata, three attempts failed three different ways from
+the same cause: `non-monotonic index` on a `._pack-<hex>.idx`; then `SHA1 COLLISION
+FOUND`, git's corruption detector reading the half-written pack the first failure left
+behind; then a push git did accept, swept, and `verify` rejected with every ref
+`0000000` on the remote. That single push wrote 170 sidecars. Sweeping by hand between
+attempts changed nothing, because the next push writes its own.
+
+So the sweep is cleanup after a push that worked, not a way to make one work.
+Reformatting the volume to APFS is the fix - it holds extended attributes natively, so
+no sidecar is written at all - and the Spotlight section below is the second reason to.
 
 `doctor`'s artifact scan still reports them under their own kind, because a sidecar
 that survives the sweep means something else is wrong. Reporting alone was not
