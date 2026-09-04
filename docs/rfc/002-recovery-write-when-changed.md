@@ -379,23 +379,45 @@ Alternative B.
 
 ### Automated
 
-- [ ] `scripts/ci-check.sh` is green, read as a real exit code rather than through a pipe
-- [ ] A test asserts a second identical `write` does not replace the file, and fails
-      without the change
-- [ ] The existing `two_writers_over_the_same_folder_produce_identical_bytes` test still
+- [x] `scripts/ci-check.sh` is green, read as a real exit code rather than through a pipe
+      -- all six checks pass, `REAL EXIT CODE: 0` read outside a pipe
+- [x] A test asserts a second identical `write` does not replace the file, and fails
+      without the change -- `a_second_identical_write_leaves_the_file_alone`; with the
+      guard removed it fails on `the second write replaced a file it did not need to`
+- [x] The existing `two_writers_over_the_same_folder_produce_identical_bytes` test still
       passes unchanged
-- [ ] A test asserts a differing file is still rewritten (self-healing)
+- [x] A test asserts a differing file is still rewritten (self-healing) --
+      `a_file_that_differs_is_rewritten`
 
 ### Manual
 
-- [ ] `tycho push cex` twice; `stat -f '%i %m'` on `RECOVERY.md` is identical across the
-      second run
-- [ ] Delete `RECOVERY.md`, push, it comes back with correct content
-- [ ] Corrupt `RECOVERY.md` (truncate it), push, it is repaired
-- [ ] Replace `RECOVERY.md` with a symlink, push, it is a regular file again
-- [ ] `tycho doctor` reports no new artifact rows on the gdrive remote
+Run against the live `gdrive` remote with a debug build at
+`~/.build_caches/cargo/debug/tycho`, on 2026-09-04. The installed binary was not
+replaced, so the scheduled daemon still runs the released code.
+
+- [x] `tycho push cex` twice; `stat -f '%i %m'` on `RECOVERY.md` is identical across the
+      second run -- `214974662 1788534633 6452` both times
+- [x] Delete `RECOVERY.md`, push, it comes back with correct content -- restored at
+      6452 bytes, `diff` clean against the copy taken beforehand
+- [x] Corrupt `RECOVERY.md` (truncate it to 18 bytes), push, it is repaired -- back to
+      6452 bytes, `diff` clean
+- [x] No `RECOVERY.md.tmp.*` left in the folder after any of the above
+- [x] A symlink holding the right bytes is still replaced by a regular file -- covered by
+      the unit test `a_symlink_holding_the_right_bytes_is_still_replaced`, which exercises
+      `write` end to end on a real symlink. **Deliberately not run against the live Drive
+      folder:** planting a symlink named `RECOVERY.md` in a sync-watched backup folder is
+      the class of thing that produces the `lost_and_found` entry this RFC exists to stop.
+- [x] `tycho doctor` reports no artifact rows on the gdrive remote -- `gdrive  ok  all
+      refs present, verified`
 - [ ] `lost_and_found/104503513857799713997/` is still empty after a week of scheduled
-      runs
+      runs -- **cannot be ticked before merge.** It is empty today, but the daemon runs
+      the installed release binary, so the week only starts once this ships and
+      `__bootstrap` reinstalls. Carry it as a post-merge observation.
+
+> The `doctor` failures visible during this verification (`agent  fail  exit 1`,
+> `schedule  fail  overdue`, `ghost  fail  behind 5 runs`) are the `ghost` USB stick
+> having been unplugged since 2026-09-01 and passing its tolerance. Unrelated to this
+> change, and present before it.
 
 ---
 
