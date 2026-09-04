@@ -477,7 +477,8 @@ is in a backup never depends on when you plugged something in.
 
 | Situation | Behaviour |
 |---|---|
-| Optional remote unreachable | `Behind`, run exits 0, status shows the lag in yellow |
+| Optional remote unreachable, within tolerance | `Behind`, run exits 0, status shows the lag in yellow |
+| Optional remote unreachable, past tolerance | `Failed` at T6, once the lag exceeds `behind_tolerance` (4 by default). The run's outcome is `Failed` and it exits non-zero, exactly as for a required remote |
 | Required remote unreachable | `Behind` then `Failed` at tolerance 1, run exits non-zero, notification fires |
 | Path holds foreign content | `Failed`. Never initialises over it |
 | Path is a partially synced repository | `Failed`, distinguished from foreign content in the message |
