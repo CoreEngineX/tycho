@@ -2,12 +2,12 @@
 
 | Field             | Value                                            |
 |-------------------|--------------------------------------------------|
-| **Status**        | `Draft`                                          |
-| **Ticket**        | `(none)` -- see Q1                               |
+| **Status**        | `Locked`                                         |
+| **Ticket**        | `(none)` -- see D4                               |
 | **Branch**        | `rfc/recovery-write-when-changed`                |
 | **Contract docs** | `docs/architecture/remotes.md`                   |
 | **Start date**    | `2026-09-01`                                     |
-| **Updated**       | `2026-09-01`                                     |
+| **Updated**       | `2026-09-04`                                     |
 
 ---
 
@@ -351,18 +351,16 @@ unchanged, so the symlink replacement the rename gives us today is preserved.
 whole benefit; the changed runs keep the atomicity and the symlink hardening. Rejected:
 Alternative B.
 
+### D4. Does this get a tracked ticket?
+
+**Chosen:** no ticket (user). Tycho is not tracked in Linear, so the Ticket row reads
+`(none)` deliberately rather than by omission. Was Q1.
+
 ---
 
 ## Open questions
 
-### Q1. Does this get a tracked ticket?
-
-RFC 001 carries `ENG-279`, which is not the `COR` team the current Linear convention
-names. Either this RFC gets a `COR` issue filed against it, or Tycho RFCs are tracked
-somewhere else and the Ticket row should say so.
-
-- File a `COR` issue and fill the row.
-- Record `(none)` deliberately, if Tycho is not tracked in Linear.
+`(none)` -- Q1 resolved, see D4.
 
 ---
 

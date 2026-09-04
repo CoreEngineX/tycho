@@ -332,6 +332,33 @@ concurrent writers writing the same file and renaming each other's half-written
 bytes into place, which is precisely the convergence the timestamp-free content was
 chosen to guarantee.
 
+**The write is skipped when the content already matches.** The bytes are a pure
+function of the folder, so an unchanged folder renders an unchanged file and the
+rename would be replacing a file with itself. That is not free where a sync client is
+watching. Google Drive tracks a file by its own identifier rather than by its path, so
+a rename over the target unlinks the file it was tracking, and Drive responds to a
+tracked object losing its parent by moving it to `lost_and_found` and notifying the
+user. Observed here once across 13 runs: a byte-identical `RECOVERY.md` parked in
+`lost_and_found`, no git object involved and nothing lost. Google documents only that
+files which fail to sync are moved there, never what causes it, so the mechanism is
+inferred from the observation rather than promised - but a false alarm about a backup
+folder is the same cost this document already weighs when it sweeps sidecars instead
+of reporting them.
+
+So `write` compares the rendered bytes against what is on disk and returns without
+touching the file when they match. **Anything that is not a regular file whose bytes
+match is written** - missing, differing, unreadable, a directory, or a symlink. The
+last of those matters: the rename replaces a planted link with a real file, and
+skipping would leave the link in place. Comparing against freshly rendered bytes is
+also what keeps the file self-healing, since a truncated or hand-edited one differs
+and is rewritten.
+
+**The guard is here rather than in `write_atomic`**, which has nine other call sites.
+They write to local paths where replacing a file costs nothing and no sync client is
+watching, and one of them is the run lock, where skipping a write because the bytes
+already match would change the behaviour of a concurrency primitive as a side effect
+of fixing a recovery note.
+
 The commands it writes out are the ones in `disaster-recovery.md`, with the folder's
 real paths and keys filled in - including that document's hardest-won correction,
 that the branch-and-tag fetch must contain **globs only**. A refspec naming one exact
