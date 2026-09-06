@@ -286,10 +286,16 @@ enum RunOutcome {
 ```
 
 `OkPartial` is the case where the commit landed and at least one **optional** remote
-was unreachable - an external drive that is not plugged in. It exits 0. A required
-remote failing is `Failed`, which exits non-zero and fires a desktop notification
-even though the local commit landed, because a backup that has not left the machine
-is the condition this project treats as not yet a backup.
+is behind but still inside its `behind_tolerance` - an external drive that is not
+plugged in. It exits 0.
+
+`Failed` covers two situations, not one. A required remote failing, which exits
+non-zero and fires a desktop notification even though the local commit landed,
+because a backup that has not left the machine is the condition this project treats
+as not yet a backup. And an **optional** remote whose lag has passed its tolerance:
+`is_red` does not ask whether a remote was optional, so one red remote makes the
+whole run `Failed` however many others were pushed and verified. `optional` buys a
+longer grace period, not an exemption from failing.
 
 ## 7. Interruption
 
