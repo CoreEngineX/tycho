@@ -2,7 +2,7 @@
 
 | Field             | Value                                            |
 |-------------------|--------------------------------------------------|
-| **Status**        | `Locked`                                         |
+| **Status**        | `Implemented`                                    |
 | **Ticket**        | `(none)` -- see D4                               |
 | **Branch**        | `rfc/recovery-write-when-changed`                |
 | **Contract docs** | `docs/architecture/remotes.md`                   |
