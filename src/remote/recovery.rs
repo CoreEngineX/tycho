@@ -9,7 +9,7 @@
 //! two writers converge by construction. And the scan happens immediately before the
 //! write, so a sibling repository created earlier in the same run is seen.
 
-use crate::sys::fs::write_atomic;
+use crate::sys::fs::{FileKind, write_atomic};
 use crate::sys::process::{Git, Timeout};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -91,12 +91,33 @@ fn keys_in(repo: &Path) -> Vec<String> {
 
 /// Writes the file, scanning immediately beforehand.
 ///
+/// Returns without touching the file when the rendered bytes already match it. A
+/// rename replaces a file's identity, and a sync client that tracks identity rather
+/// than path treats that as the tracked file disappearing.
+///
 /// # Errors
 ///
 /// If the file cannot be written.
 pub fn write(folder: &Path) -> std::io::Result<()> {
     let sources = scan(folder);
-    write_atomic(&folder.join(FILE_NAME), render(folder, &sources).as_bytes())
+    let path = folder.join(FILE_NAME);
+    let text = render(folder, &sources);
+    if unchanged(&path, text.as_bytes()) {
+        return Ok(());
+    }
+    write_atomic(&path, text.as_bytes())
+}
+
+/// True only for a regular file whose bytes already match.
+///
+/// Every other answer means write, including the ones that look like nothing to do:
+/// the skip is an optimisation and must never be why the file is missing, stale, or
+/// left as a symlink that the rename would have replaced with a real file.
+fn unchanged(path: &Path, bytes: &[u8]) -> bool {
+    matches!(
+        crate::sys::fs::classify_path(path),
+        Ok(FileKind::Regular { .. })
+    ) && std::fs::read(path).is_ok_and(|found| found == bytes)
 }
 
 /// The file's whole content, as a pure function of what the scan found.
@@ -274,7 +295,7 @@ pub fn render(folder: &Path, sources: &[Source]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Source, render, scan, write};
+    use super::{FILE_NAME, Source, render, scan, write};
     use std::path::Path;
 
     fn sources() -> Vec<Source> {
@@ -368,6 +389,70 @@ mod tests {
         assert!(
             leftovers.is_empty(),
             "temp files left behind: {leftovers:?}"
+        );
+    }
+
+    /// Backdating the file is what makes the skip observable: `write_atomic` renames a
+    /// freshly created file into place, so a write that happened would carry today's
+    /// timestamp instead.
+    #[test]
+    fn a_second_identical_write_leaves_the_file_alone() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir(dir.path().join("one.git")).expect("repo dir");
+        let path = dir.path().join(FILE_NAME);
+
+        write(dir.path()).expect("first write");
+        let backdated = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .expect("open")
+            .set_times(std::fs::FileTimes::new().set_modified(backdated))
+            .expect("backdate");
+
+        write(dir.path()).expect("second write");
+
+        let after = std::fs::metadata(&path).expect("metadata");
+        assert_eq!(
+            after.modified().expect("mtime"),
+            backdated,
+            "the second write replaced a file it did not need to"
+        );
+    }
+
+    #[test]
+    fn a_file_that_differs_is_rewritten() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir(dir.path().join("one.git")).expect("repo dir");
+        let path = dir.path().join(FILE_NAME);
+        std::fs::write(&path, "truncated by hand").expect("stale file");
+
+        write(dir.path()).expect("write");
+
+        let found = std::fs::read_to_string(&path).expect("read");
+        assert_eq!(found, render(dir.path(), &scan(dir.path())));
+    }
+
+    /// Matching bytes behind a symlink are still not a reason to skip - the rename is
+    /// what replaces a planted link with a real file.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_holding_the_right_bytes_is_still_replaced() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir(dir.path().join("one.git")).expect("repo dir");
+        let path = dir.path().join(FILE_NAME);
+
+        let target = dir.path().join("elsewhere");
+        std::fs::write(&target, render(dir.path(), &scan(dir.path()))).expect("target");
+        std::os::unix::fs::symlink(&target, &path).expect("symlink");
+
+        write(dir.path()).expect("write");
+
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .expect("metadata")
+                .is_file(),
+            "the symlink survived the write"
         );
     }
 }
