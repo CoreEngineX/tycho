@@ -71,6 +71,9 @@ pub const DEFAULT_JUNK: &[Junk] = junk! {
         // CLion names the build directory after the CMake profile, so the suffix
         // varies: cmake-build-debug, cmake-build-release, cmake-build-debug-mingw.
         "cmake-build-*",
+        // uv and virtualenv name a second environment by suffix: .venv-litert,
+        // venv-py312. The bare names are in the Python group above.
+        ".venv-*", "venv-*",
         // Python packaging metadata, a directory rather than a file.
         "*.egg-info",
         // Xcode per-user window and scheme state.
@@ -679,6 +682,51 @@ mod tests {
         assert_eq!(
             tree.rule_text(decision.rule.expect("a junk rule fired")),
             "target"
+        );
+    }
+
+    /// The exact names catch `.venv`; only the glob catches a second environment
+    /// named by suffix, which is how uv makes one per requirements file.
+    #[test]
+    fn a_suffixed_virtualenv_is_junk_and_the_bare_name_still_is() {
+        let tree = tree(&RuleSet {
+            watch: paths(&["A"]),
+            junk: DEFAULT_JUNK,
+            ..RuleSet::default()
+        });
+
+        for env in [".venv-litert", "venv-py312"] {
+            let decision = tree.resolve(home(&format!("A/lab/{env}/lib/torch/x.py")).as_path());
+            assert_eq!(decision.verdict, Verdict::Skip, "{env} was captured");
+            assert_eq!(decision.tier, Tier::Junk);
+        }
+        for env in [".venv", "venv"] {
+            let decision = tree.resolve(home(&format!("A/lab/{env}/lib/torch/x.py")).as_path());
+            assert_eq!(decision.verdict, Verdict::Skip, "{env} was captured");
+        }
+    }
+
+    /// Shared with every junk glob, `cmake-build-*` included: `compile` anchors a
+    /// bare pattern as `**/<pattern>` and globset's `*` spans `/`, so the glob
+    /// re-matches at every depth below the directory it named. It therefore
+    /// out-deepens a reinclude above it, and the escape hatch is per file.
+    #[test]
+    fn a_junk_glob_is_escaped_per_file_rather_than_per_directory() {
+        let tree = tree(&RuleSet {
+            watch: paths(&["A"]),
+            reinclude: paths(&["A/lab/venv-tools", "A/lab/venv-tools/main.py"]),
+            junk: DEFAULT_JUNK,
+            ..RuleSet::default()
+        });
+
+        assert!(captured(&tree, "A/lab/venv-tools"), "the named directory");
+        assert!(
+            captured(&tree, "A/lab/venv-tools/main.py"),
+            "the named file"
+        );
+        assert!(
+            !captured(&tree, "A/lab/venv-tools/other.py"),
+            "a sibling the reinclude did not name is still junk"
         );
     }
 
