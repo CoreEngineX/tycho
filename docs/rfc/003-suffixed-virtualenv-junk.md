@@ -324,16 +324,22 @@ more to work around than first written. Recorded in Drawbacks rather than assume
 
 ### Automated
 
-- [ ] `scripts/ci-check.sh` green, real exit code read outside a pipe
-- [ ] A test asserts `.venv-litert` and `venv-py312` resolve to skip at `Tier::Junk`,
+- [x] `scripts/ci-check.sh` green, `REAL EXIT CODE: 0` read outside a pipe
+- [x] A test asserts `.venv-litert` and `venv-py312` resolve to skip at `Tier::Junk`,
       failing without the change, and that the bare names still do
-- [ ] A test pins the per-file escape hatch, so the asymmetry is documented in code
-- [ ] `scripts/junk-audit.sh` run and its answer read, per the standing rule
+- [x] A test pins the per-file escape hatch, so the asymmetry is documented in code --
+      `a_junk_glob_is_escaped_per_file_rather_than_per_directory`
+- [x] `scripts/junk-audit.sh` run and its answer read -- 74 entries carried, and
+      upstream proposes no suffixed-venv pattern at all (it ships literal names only),
+      so this entry is derived from the incident on this machine rather than from
+      upstream. Nothing new accepted from the audit in this sitting.
 
 ### Manual
 
-- [ ] `tycho rules explain -p cex <mllab>/.venv-litert` reports skip by `.venv-*`
-- [ ] `tycho rules explain -p cex <mllab>/.venv` still reports skip, by the exact name
+- [x] `tycho rules explain -p cex <mllab>/.venv-litert` reports `skip .venv-*`, depth 9,
+      tier junk
+- [x] `tycho rules explain -p cex <mllab>/.venv` still reports `skip .venv`, and
+      `mllab/src` still reports capture
 - [ ] After the rebuild, the store holds zero `site-packages` paths
 - [ ] After the rebuild, the store is back near its pre-incident size
 - [ ] `tycho doctor` clean for `cex` apart from known-red `ghost`
