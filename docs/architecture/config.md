@@ -387,7 +387,7 @@ names   rust/maven   target
 globs   object code  *.o  *.obj  *.a  *.so  *.dylib  *.gch  *.pch
         bytecode     *.pyc  *.pyo  *.class
         c/c++        cmake-build-*
-        python       *.egg-info
+        python       *.egg-info  .venv-*  venv-*
         apple        *.xcuserstate  ._*
 ```
 
@@ -420,6 +420,21 @@ instead and covers the per-user state inside it.
 
 `cmake-build-*` is a glob rather than two names because CLion names the directory after
 the CMake profile, so `cmake-build-debug-mingw` and any custom profile are covered too.
+
+`.venv-*` and `venv-*` are there for the same reason: `uv venv <name>` and `virtualenv`
+take the directory name as an argument, so a project with two environments names the
+second by suffix. The bare `.venv` and `venv` above are the default, and the glob is the
+variant. Measured cost of not having it: a `.venv-litert` beside a `.venv` put 25,186
+`site-packages` files and 260 MB into the store in one run.
+
+**A glob's decision lands deeper than a name's, which changes what can override it.**
+`compile` anchors a bare pattern as `**/<pattern>`, and globset's `*` spans `/`, so
+`**/venv-*` matches `.../venv-tools/main.py` as well as `.../venv-tools`. Rule 3 above
+says only a *deeper* explicit path defeats a glob, and the glob is already as deep as
+the file - so a `reinclude` naming the directory rescues the directory entry alone, and
+rescuing content means naming each file. The same is true of every glob in this list,
+`cmake-build-*` included. A `Junk::Name` has no such asymmetry, which is what row 5 of
+the truth table pins.
 
 **The junk list filters the walk and the overlay, never history.** A file that is
 committed reaches the store through its repository's refs, which no rule inspects - so a
