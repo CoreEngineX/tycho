@@ -182,7 +182,12 @@ impl Schedule {
     /// `man launchd.plist` promises catch-up across *sleep* and says nothing about
     /// power-off, so a Mac shut down over a weekend would silently skip its weekly
     /// backup and nothing would ever notice - the exact shape of the failure this
-    /// project exists to correct. Every invocation of every agent runs this.
+    /// project exists to correct. The hourly catch-up agent is what asks, because a
+    /// wedged agent cannot notice its own silence.
+    ///
+    /// Reads the last **success**, so a profile whose runs all fail stays overdue.
+    /// That is right for `status` and wrong on its own as a trigger - see
+    /// `cli::run::attempted_within`.
     ///
     /// A profile that has never run successfully is overdue from the moment it is
     /// configured, which is right: "no backup has ever worked" is the loudest thing
