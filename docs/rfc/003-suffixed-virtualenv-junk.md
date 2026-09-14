@@ -2,7 +2,7 @@
 
 | Field             | Value                                            |
 |-------------------|--------------------------------------------------|
-| **Status**        | `Locked`                                         |
+| **Status**        | `Implemented`                                    |
 | **Ticket**        | `(none)` -- Tycho is not tracked in Linear, see RFC 002 D4 |
 | **Branch**        | `rfc/venv-suffix-junk`                           |
 | **Contract docs** | `docs/architecture/config.md`                    |
@@ -340,9 +340,14 @@ more to work around than first written. Recorded in Drawbacks rather than assume
       tier junk
 - [x] `tycho rules explain -p cex <mllab>/.venv` still reports `skip .venv`, and
       `mllab/src` still reports capture
-- [ ] After the rebuild, the store holds zero `site-packages` paths
-- [ ] After the rebuild, the store is back near its pre-incident size
-- [ ] `tycho doctor` clean for `cex` apart from known-red `ghost`
+- [x] After the rebuild, the store holds zero `site-packages` paths, and zero paths
+      matching `.venv` or `venv-` of any kind
+- [x] After the rebuild the store is 283 MB for one backup, against 460 MB carrying the
+      environment. The tree on `refs/heads/main` is 4.7 MB; the rest is captured repo
+      history under `refs/tycho/*`, which is the design rather than a regression
+- [x] `tycho doctor` clean for `cex`: agent ok last exit 0, store ok, 202 refs,
+      connectivity clean, gdrive verified. Remaining red is `ghost` and the `schedule`
+      row that `ghost` keeps red
 
 ---
 
