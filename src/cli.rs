@@ -82,7 +82,7 @@ pub struct Cli {
     pub no_color: bool,
 }
 
-#[derive(Clone, Debug, Args)]
+#[derive(Clone, Debug, Default, Args)]
 pub struct RunArgs {
     /// Which profile to back up
     pub profile: Option<String>,

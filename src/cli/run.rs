@@ -199,11 +199,12 @@ fn announce(
     let _ = notify(urgency, &body);
 }
 
-/// The check that makes the no-daemon design safe rather than merely cheap.
+/// How stale the last *successful* backup is, or `None` if it is current.
 ///
 /// `man launchd.plist` promises catch-up across sleep and says nothing about
-/// power-off, so a Mac shut down over a weekend would silently skip its weekly backup
-/// and nothing would ever notice. Every invocation of every agent runs this.
+/// power-off, so a wedged or never-fired agent is a case launchd will not recover.
+/// `status` turns red on this, and the catch-up agent acts on it - but only together
+/// with [`attempted_within`], because this deliberately ignores failed runs.
 fn overdue(profile: &Profile, state: &State) -> Option<std::time::Duration> {
     let schedule = profile.schedule?;
     let last = state
@@ -216,6 +217,45 @@ fn overdue(profile: &Profile, state: &State) -> Option<std::time::Duration> {
         .map(|stamp| stamp.to_zoned(jiff::tz::TimeZone::system()));
     let now = jiff::Timestamp::now().to_zoned(jiff::tz::TimeZone::system());
     schedule.overdue_by(last.as_ref(), &now)
+}
+
+/// Whether anything attempted a run inside `window`, successful or not.
+///
+/// The question [`overdue`] cannot answer. It reads the last *success*, so a profile
+/// whose runs all fail is overdue forever - and "overdue, therefore run one" on an
+/// hourly agent is then an hourly full backup, indefinitely. Counting attempts bounds
+/// the catch-up to one per schedule interval.
+fn attempted_within(profile: &Profile, state: &State, window: std::time::Duration) -> bool {
+    let Some(last) = state
+        .profiles
+        .get(profile.name.as_str())
+        .and_then(|runs| runs.first())
+        .and_then(|run| run.when.parse::<jiff::Timestamp>().ok())
+    else {
+        return false;
+    };
+    let elapsed = jiff::Timestamp::now().as_second() - last.as_second();
+    u64::try_from(elapsed).is_ok_and(|elapsed| std::time::Duration::from_secs(elapsed) < window)
+}
+
+/// The catch-up agent's half of the promise in `scheduling.md` section 1: a backup
+/// that never ran is noticed by a *different* job, because a wedged agent cannot
+/// notice itself.
+fn catch_up_if_stale(profile: &Profile, state: &State, config_text: &str) -> Option<Exit> {
+    let schedule = profile.schedule?;
+    let over = overdue(profile, state)?;
+    if attempted_within(profile, state, schedule.interval()) {
+        return None;
+    }
+    let name = profile.name.as_str();
+    let over = i64::try_from(over.as_secs()).unwrap_or(i64::MAX);
+    let lag = render::until(over);
+    let _ = crate::platform::notify::notify(
+        crate::platform::notify::Urgency::Warning,
+        &format!("{name} is overdue by {lag}, starting a backup"),
+    );
+    println!("{name}  overdue by {lag}, nothing attempted this interval - starting one");
+    Some(one_run(&RunArgs::default(), profile, config_text))
 }
 
 /// Where a profile's three files live.
@@ -376,7 +416,7 @@ fn one_push(profile: &Profile, config_text: &str) -> Exit {
         progress.report(name, &step)
     });
     progress.clear();
-    match outcome {
+    let pushed = match outcome {
         // A run in progress is about to push anyway, so this is a success, not a
         // contention error to retry.
         Ok(None) => Exit::Ok,
@@ -389,6 +429,10 @@ fn one_push(profile: &Profile, config_text: &str) -> Exit {
             report(&results)
         }
         Err(error) => run_error(&error, profile),
+    };
+    match catch_up_if_stale(profile, &state, config_text) {
+        Some(caught_up) => worse(pushed, caught_up),
+        None => pushed,
     }
 }
 
@@ -988,5 +1032,89 @@ pub fn log(args: &crate::cli::LogArgs) -> Exit {
             }
         }
         Err(error) => report! { error: "{error}" },
+    }
+}
+
+#[cfg(test)]
+mod overdue_tests {
+    use super::{attempted_within, overdue};
+    use crate::config::{Profile, Schedule, TimeOfDay};
+    use crate::state::{Outcome, RunRecord, State};
+    use std::time::Duration;
+
+    fn profile() -> Profile {
+        Profile {
+            name: crate::primitives::names::ProfileName::parse("cex").expect("a valid name"),
+            watch: Vec::new(),
+            ignore_paths: Vec::new(),
+            ignore_globs: Vec::new(),
+            reinclude: Vec::new(),
+            remotes: Vec::new(),
+            schedule: Some(Schedule::Daily {
+                at: TimeOfDay::parse("03:00").expect("a valid time"),
+            }),
+            use_default_ignores: true,
+            store_path: None,
+            local_only: false,
+        }
+    }
+
+    fn state_with(runs: &[(i64, Outcome)]) -> State {
+        let now = jiff::Timestamp::now();
+        let mut state = State::default();
+        state.profiles.insert(
+            "cex".to_owned(),
+            runs.iter()
+                .map(|(ago, outcome)| RunRecord {
+                    when: (now - jiff::SignedDuration::from_secs(*ago)).to_string(),
+                    outcome: *outcome,
+                    commit: None,
+                    entries: std::collections::BTreeMap::new(),
+                    files: 0,
+                    bytes: 0,
+                    store_bytes: 0,
+                    warnings: Vec::new(),
+                })
+                .collect(),
+        );
+        state
+    }
+
+    /// The incident: the agent stopped spawning, so nothing attempted anything.
+    #[test]
+    fn a_profile_nothing_has_attempted_is_overdue_and_unattempted() {
+        let state = state_with(&[(8 * 86_400, Outcome::Ok)]);
+        assert!(overdue(&profile(), &state).is_some());
+        assert!(!attempted_within(
+            &profile(),
+            &state,
+            Duration::from_secs(86_400)
+        ));
+    }
+
+    /// The guard. Runs are happening and failing, so the profile is overdue forever -
+    /// acting on that alone would start a full backup every hour.
+    #[test]
+    fn a_profile_whose_runs_all_fail_is_overdue_but_has_been_attempted() {
+        let state = state_with(&[(3_600, Outcome::Failed), (90_000, Outcome::Failed)]);
+        assert!(
+            overdue(&profile(), &state).is_some(),
+            "no success in the window, so it is stale"
+        );
+        assert!(
+            attempted_within(&profile(), &state, Duration::from_secs(86_400)),
+            "but something tried an hour ago, so the catch-up must stay out of the way"
+        );
+    }
+
+    #[test]
+    fn a_healthy_profile_is_neither() {
+        let state = state_with(&[(3_600, Outcome::Ok)]);
+        assert!(overdue(&profile(), &state).is_none());
+        assert!(attempted_within(
+            &profile(),
+            &state,
+            Duration::from_secs(86_400)
+        ));
     }
 }

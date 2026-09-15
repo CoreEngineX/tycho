@@ -30,6 +30,21 @@ That check is what makes the no-daemon design safe rather than merely cheap. Wit
 it, a Mac shut down over a weekend silently skips its weekly backup and nothing ever
 notices - which is the exact shape of the failure this project exists to correct.
 
+**The check has to live in a different job from the one it guards**, which is why the
+catch-up agent carries it. A wedged agent cannot notice its own silence: on 2026-09-06
+this profile's agent stopped spawning, launchd reported `EX_CONFIG`, and eight days
+passed with no capture and no notification. The hourly catch-up agent ran correctly
+throughout.
+
+**Overdue alone does not trigger a run. Two conditions must hold.** The profile is
+overdue, *and* nothing has attempted a run within one schedule interval - success or
+failure. The second is not redundant, and the reason is measurable: the overdue check
+reads the last **successful** run, so a profile with one failing remote is overdue
+permanently, and "overdue, therefore run one" on an hourly agent is an hourly full
+backup forever. Counting attempts bounds the catch-up to one per interval. When runs
+are happening and failing, each one already notifies on its own, so the catch-up
+staying quiet loses nothing.
+
 What a resident daemon would have added: an internal timer, an IPC protocol, an
 async runtime, a second lifecycle to install and debug, and a new failure mode where
 the daemon is dead and backups stop silently. Windows Task Scheduler is the weaker
