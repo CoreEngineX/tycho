@@ -77,6 +77,9 @@ impl Timeout {
     /// notifications that were about to work. Nothing waits on the result: the caller
     /// discards it, because a banner is a convenience and a backup is not.
     pub const INTERPRETER: Self = Self(Duration::from_secs(120));
+    /// A user's interactive zsh startup, run by `__bootstrap` to see whether it
+    /// loads completions. A hang here is a broken rc file, not slow work.
+    pub const SHELL_STARTUP: Self = Self(Duration::from_secs(15));
 
     #[must_use]
     pub const fn from_millis(millis: u64) -> Self {
@@ -280,6 +283,30 @@ pub fn stream_to_terminal(program: &str, args: &[&str]) -> Result<i32, RunError>
 pub fn command(program: &str, args: &[&str], limit: Timeout) -> Result<Output, RunError> {
     let mut child = Command::new(program);
     child.args(args);
+    drive(child, &label(program, args), std::iter::empty(), limit)
+}
+
+/// [`command`] with the child's environment adjusted: `set` pairs added, `unset`
+/// names removed.
+///
+/// # Errors
+///
+/// If the program cannot be spawned, times out, or a pipe fails.
+pub fn command_in_env(
+    program: &str,
+    args: &[&str],
+    set: &[(&str, &std::ffi::OsStr)],
+    unset: &[&str],
+    limit: Timeout,
+) -> Result<Output, RunError> {
+    let mut child = Command::new(program);
+    child.args(args);
+    for (key, value) in set {
+        child.env(key, value);
+    }
+    for key in unset {
+        child.env_remove(key);
+    }
     drive(child, &label(program, args), std::iter::empty(), limit)
 }
 
