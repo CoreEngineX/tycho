@@ -329,18 +329,16 @@ fall on the loud side or the quietness is unbounded.
 **Chosen:** yes (author). It is correct for git's question; only the privacy reader was wrong.
 Rejected for now: Alternative E.
 
+### D5. On an encrypted volume, a green row rather than silence
+
+**Chosen:** the green row (user, 2026-10-10). A check nobody can see having run is indistinguishable
+from a check that never ran, which is the same problem the warning exists to solve. Was Q1.
+
 ---
 
 ## Open questions
 
-### Q1. On an encrypted volume, a green row or no row at all?
-
-A green `ownership ignored, volume encrypted` row proves the check ran and states the residual risk,
-at the cost of a line on every `doctor`. No row is quieter but indistinguishable from "not checked".
-
-- Green row with the residual-risk wording (the author's lean, since a check nobody can see having run
-  is the same problem in a different coat).
-- No row when encrypted, matching how the sidecar sweep stays silent when it has nothing to say.
+`(none)` -- Q1 resolved, see D5.
 
 ---
 
