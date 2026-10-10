@@ -290,3 +290,25 @@ allocation. `Decision` becoming `Copy` is what lets the walk carry each
 directory's decision down its stack and resolve children in one step instead of
 re-deriving every ancestor per path; `resolve` stays the fold of that step, so
 the overlay's context-free callers kept their contract untouched.
+
+## D19. Completion wiring asks zsh, not the rc file
+
+**Rejected:** appending `fpath=(~/.zsh/completions $fpath)` plus
+`autoload -U compinit && compinit` to `.zshrc`, guarded by a
+`# tycho completions` marker. cex and diskscout did the same, so a machine with
+all three ran three extra `compinit`s after its own; each re-added the directory,
+the completion-file count changed, and zsh rebuilt its dump every time - about
+500 ms of a 790 ms startup, measured 2026-09-24. The marker also made the guard
+about text rather than effect: deleting the block brought it back on the next
+install. Printing instructions only (rustup's approach) was rejected too, since a
+bare-zsh machine that used to get working completions would get homework instead.
+
+**Chosen:** a fresh `zsh -i` reports `${+functions[compdef]}` and
+`${+_comps[tycho]}`. Completions already loading means no edit. `compinit`
+running before the directory is on `fpath` means the `fpath` line goes into
+`~/.zshenv`, the one file read before anything that could run `compinit`, so it
+works behind oh-my-zsh or a distribution's global `compinit` without editing
+around them. No `compinit` at all means one tool-neutral block in `.zshrc`. A
+second probe confirms the edit took. The old block is removed only as an exact
+match and only after a probe has succeeded, so a machine where zsh cannot be run
+is never left worse than it was.

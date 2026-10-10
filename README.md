@@ -86,8 +86,13 @@ tycho __bootstrap            # installs, then writes shell completions
 
 `__bootstrap` finds the checkout (from `TYCHO_SRC`, a bounded scan of the usual
 roots, or the current directory), runs `cargo install`, writes completions for zsh,
-bash, fish or PowerShell, patches the rc file once, and leaves a starter config so
-the first command finds one. `--only-completions` refreshes completions without
+bash, fish or PowerShell, and leaves a starter config so the first command finds
+one. On zsh it runs your startup files in a fresh `zsh -i` first and changes them
+only if `~/.zsh/completions` does not already load: the `fpath` line goes into
+`~/.zshenv`, and a `compinit` is added to `.zshrc` only when nothing runs one, so
+installing never adds a second `compinit` (each costs a full completion-cache
+rebuild on every shell start). If zsh cannot be run, nothing is edited and the line
+to add is printed. `--only-completions` refreshes completions without
 rebuilding; `-d`/`--debug` builds from cargo's debug profile instead of release, for
 faster iteration while working on Tycho itself.
 
