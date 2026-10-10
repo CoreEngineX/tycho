@@ -194,7 +194,7 @@ pub(crate) fn check_ownership(
         Ok(false) => {
             let shown = path.display();
             Err(report! {
-                error: "'{name}' is on a volume that records no ownership",
+                error: "'{name}' is on a volume whose ownership git cannot verify",
                 at: at_remote(name),
                 note: "git refuses a repository there unless it is told to trust it, and \
                        {shown} is exactly that kind of volume - exFAT, FAT32, or a drive \

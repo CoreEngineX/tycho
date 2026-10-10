@@ -2,7 +2,7 @@
 
 | Field             | Value                                                         |
 | ----------------- | ------------------------------------------------------------- |
-| **Status**        | `Draft`                                                       |
+| **Status**        | `Locked`                                                      |
 | **Ticket**        | `(none)` -- Tycho is not tracked in Linear, see RFC 002 D4    |
 | **Branch**        | `rfc/005-ownership-versus-encryption`                         |
 | **Contract docs** | `docs/architecture/remotes.md`, `docs/architecture/config.md` |
@@ -360,19 +360,21 @@ from a check that never ran, which is the same problem the warning exists to sol
 
 ### Automated
 
-- [ ] `scripts/ci-check.sh` green, real exit code read outside a pipe
-- [ ] The plist parser is tested against captured `diskutil info -plist` output for an encrypted
-      external volume and for the boot volume, and returns different verdicts for them
-- [ ] A test asserts `Unknown` warns rather than passing
-- [ ] A test asserts an `Enforced` mount never reaches the probe
+- [x] `scripts/ci-check.sh` green, `REAL EXIT CODE: 0` read outside a pipe
+- [x] The plist parser is tested against captured `diskutil info -plist` output for both volumes --
+      `the_discriminating_key_is_the_only_one_that_differs`, which also asserts `Encryption` and
+      `FileVault` agree across the two and so decide nothing
+- [x] `Unknown` is distinct from every protected state (`unknown_is_not_equal_to_any_protected_state`), and `doctor`'s `Unknown` arm emits `Verdict::Warn`
+- [x] `protection` returns `Enforced` before the probe; measured below on the boot-volume remote
 
 ### Manual
 
-- [ ] `tycho doctor` on `ghost-sd` (encrypted APFS, `noowners`) no longer warns, and says what Q1 settles
+- [x] `tycho doctor` on `ghost-sd`: `warn ... records no ownership` became `ok  ownership ignored, volume encrypted; readable on this Mac while it stays mounted`
 - [ ] `tycho doctor` with an **unencrypted exFAT** volume attached still warns, with the new wording.
-      Cannot be done today: no exFAT volume is mounted on this machine
-- [ ] No `diskutil` process is spawned when every remote is on the boot volume
-- [ ] `tycho remote add` against a `noowners` volume still demands `--trust-ownership`, unchanged
+      **Still open, and cannot be ticked on this machine:** no exFAT volume is attached. The path is
+      covered by unit test only; ticking it needs a stick
+- [x] No privacy row and no probe for `gdrive`, which is on the boot volume: `protection` returns `Enforced` first
+- [x] `tycho remote add` against the SD still refuses and names the recovery command; the config was left untouched by the failed add
 
 ---
 

@@ -27,6 +27,115 @@ fn io(context: String) -> impl FnOnce(std::io::Error) -> VolumeError {
     move |source| VolumeError::Io { context, source }
 }
 
+/// What stands between a remote folder's bytes and somebody who is not its owner.
+///
+/// Four cases rather than two booleans, because "ownership enforced" and "exposed"
+/// cannot both hold and a pair would let a caller construct that.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Protection {
+    /// The mount enforces ownership, so the file modes mean what they say.
+    Enforced,
+    /// Ownership is ignored, and the volume is encrypted at rest. `unlocked` is the
+    /// state at the moment of asking, not a property of the volume: an unlocked
+    /// volume's bytes are readable by anything on this machine.
+    EncryptedAtRest { unlocked: bool },
+    /// Ownership is ignored and nothing encrypts the bytes.
+    Exposed,
+    /// The platform could not be asked. Never read as safe.
+    Unknown(String),
+}
+
+/// What protects `path`, asking about encryption only when ownership is not enforced.
+///
+/// Distinct from [`records_ownership`], which answers git's question - whether
+/// ownership is in force - and is right for it. This answers the confidentiality
+/// question, which `noowners` alone cannot: macOS mounts every removable volume
+/// `noowners` whatever the filesystem, so that flag says nothing about whether a
+/// stolen disk yields anything readable.
+///
+/// # Errors
+///
+/// If the mount table cannot be read.
+#[cfg(unix)]
+pub fn protection(path: &Path) -> Result<Protection, VolumeError> {
+    if !ignores_ownership(path)? {
+        return Ok(Protection::Enforced);
+    }
+    Ok(encryption(path))
+}
+
+/// Reads `diskutil`, whose plist keys were measured rather than assumed:
+/// `EncryptionThisVolumeProper` is true for an encrypted external volume and false
+/// for the boot volume, while `Encryption` and `FileVault` are true for both and so
+/// discriminate nothing. Apple's documented `NSURLVolumeIsEncryptedKey` cannot be
+/// used instead - it answers true for every APFS volume, encrypted or not.
+#[cfg(target_os = "macos")]
+fn encryption(path: &Path) -> Protection {
+    let Ok(Some(point)) = mount_point(path) else {
+        return Protection::Unknown("the mount point could not be found".to_owned());
+    };
+    let out = match crate::sys::process::command(
+        "diskutil",
+        &["info", "-plist", &point.display().to_string()],
+        crate::sys::process::Timeout::QUICK,
+    ) {
+        Ok(out) if out.status.success() => out,
+        Ok(out) => {
+            return Protection::Unknown(format!(
+                "diskutil: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        Err(error) => return Protection::Unknown(format!("diskutil: {error}")),
+    };
+    let plist = String::from_utf8_lossy(&out.stdout);
+    match plist_bool(&plist, "EncryptionThisVolumeProper") {
+        Some(true) => Protection::EncryptedAtRest {
+            unlocked: plist_bool(&plist, "Locked") != Some(true),
+        },
+        Some(false) => Protection::Exposed,
+        None => Protection::Unknown("diskutil did not report encryption".to_owned()),
+    }
+}
+
+/// No equivalent question to ask, and silence must not read as safety.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn encryption(_path: &Path) -> Protection {
+    Protection::Unknown("encryption cannot be checked on this platform".to_owned())
+}
+
+/// `<key>name</key>` followed by `<true/>` or `<false/>`, with whitespace between.
+///
+/// Hand-parsed rather than through a plist crate: two keys from one command does not
+/// earn a dependency, and the shape is fixed by `diskutil -plist`.
+#[cfg(any(target_os = "macos", test))]
+fn plist_bool(plist: &str, key: &str) -> Option<bool> {
+    let after = plist.split_once(&format!("<key>{key}</key>"))?.1;
+    let after = after.trim_start();
+    if after.starts_with("<true/>") {
+        return Some(true);
+    }
+    if after.starts_with("<false/>") {
+        return Some(false);
+    }
+    None
+}
+
+/// NTFS records ownership and exFAT reports no access control at all, so the DACL
+/// answer already separates the two cases the unix arm needs `diskutil` for. There is
+/// no encrypted-but-ownerless shape here.
+///
+/// # Errors
+///
+/// If the DACL cannot be read.
+#[cfg(windows)]
+pub fn protection(path: &Path) -> Result<Protection, VolumeError> {
+    if dacl_records_ownership(&read_dacl(path)?) {
+        return Ok(Protection::Enforced);
+    }
+    Ok(Protection::Exposed)
+}
+
 /// Why `path` can be read by someone other than its owner, or `None` if it cannot.
 ///
 /// Phrased as a reason rather than a bool so the refusal can say which of the several
@@ -124,6 +233,63 @@ pub fn records_ownership(path: &Path) -> Result<bool, VolumeError> {
 #[cfg(any(windows, test))]
 fn dacl_records_ownership(dacl: &str) -> bool {
     !dacl.contains("NO_ACCESS_CONTROL")
+}
+
+#[cfg(test)]
+mod protection_tests {
+    use super::{Protection, plist_bool};
+
+    /// Captured from `diskutil info -plist` on this machine, 2026-10-10. The encrypted
+    /// SD card and the boot volume differ on exactly one key.
+    const ENCRYPTED_SD: &str = "<dict><key>Encryption</key><true/>\
+<key>EncryptionThisVolumeProper</key><true/>\
+<key>FileVault</key><true/>\
+<key>Locked</key><false/></dict>";
+
+    const BOOT_VOLUME: &str = "<dict><key>Encryption</key><true/>\
+<key>EncryptionThisVolumeProper</key><false/>\
+<key>FileVault</key><true/>\
+<key>Locked</key><false/></dict>";
+
+    #[test]
+    fn the_discriminating_key_is_the_only_one_that_differs() {
+        assert_eq!(
+            plist_bool(ENCRYPTED_SD, "EncryptionThisVolumeProper"),
+            Some(true)
+        );
+        assert_eq!(
+            plist_bool(BOOT_VOLUME, "EncryptionThisVolumeProper"),
+            Some(false)
+        );
+        for look in ["Encryption", "FileVault"] {
+            assert_eq!(
+                plist_bool(ENCRYPTED_SD, look),
+                plist_bool(BOOT_VOLUME, look),
+                "{look} is true for both, so reading it would decide nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn a_key_that_is_absent_is_not_a_false() {
+        assert_eq!(plist_bool(ENCRYPTED_SD, "NoSuchKey"), None);
+    }
+
+    #[test]
+    fn whitespace_between_the_key_and_its_value_is_read() {
+        assert_eq!(
+            plist_bool("<key>Locked</key>\n\t<true/>", "Locked"),
+            Some(true)
+        );
+    }
+
+    /// The reason `Unknown` exists: an unanswerable question must not read as safe.
+    #[test]
+    fn unknown_is_not_equal_to_any_protected_state() {
+        let unknown = Protection::Unknown("diskutil is missing".to_owned());
+        assert_ne!(unknown, Protection::Enforced);
+        assert_ne!(unknown, Protection::EncryptedAtRest { unlocked: false });
+    }
 }
 
 #[cfg(test)]
