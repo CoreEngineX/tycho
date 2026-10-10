@@ -86,6 +86,33 @@ A volume with no ownership is also refused as a `store_path`, for a second and
 unrelated reason - see the store-permissions note at the top of `store.md`. `trust_ownership`
 does not affect that and is not meant to.
 
+### `doctor`'s privacy row asks a different question
+
+`trust_ownership` answers git's question: is ownership in force here. The privacy row answers
+a second one that the same flag cannot - would a stolen disk yield anything readable - and the
+two were once the same check, which made it wrong.
+
+**`noowners` is not evidence of exposure.** macOS mounts every removable volume `noowners`
+whatever its filesystem, which is what Finder's "Ignore ownership on this volume" sets and the
+default unless `/var/db/volinfo.database` carries that volume. So reading that flag alone
+reported an encrypted APFS card as "readable by anyone with the disk", which is false: a thief
+gets ciphertext. Measured on an encrypted card and on the boot volume, `diskutil info -plist`
+answers `EncryptionThisVolumeProper` true and false respectively, while `Encryption` and
+`FileVault` are true for both and so discriminate nothing.
+
+The row therefore reports one of four states, and silence is never one of them when the answer
+is unknown:
+
+| State | Row |
+|---|---|
+| Ownership enforced | nothing; the modes mean what they say |
+| Ignored, volume encrypted | `ok`, naming the residual risk: readable on this Mac while mounted |
+| Ignored, not encrypted | `warn`; this is the case the row exists for |
+| Ignored, encryption unanswerable | `warn`, naming why. An unanswerable question is not a safe answer |
+
+Apple's documented `NSURLVolumeIsEncryptedKey` is not usable for this: it answers true for
+every APFS volume whether or not it is encrypted, which is why the check reads `diskutil`.
+
 ### macOS sidecars are swept after every successful push
 
 On a volume that cannot hold an extended attribute - every exFAT and FAT32 drive -

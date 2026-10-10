@@ -519,16 +519,54 @@ fn profile_section(profile: &Profile, state: &State, scope: &Scope) -> Section {
             // because exFAT is the only filesystem macOS and Windows can both write and
             // it records no ownership - and no offsite copy is worse than an exposed
             // one. The choice is the user's; saying nothing would take it from them.
-            if crate::sys::volume::records_ownership(&folder).is_ok_and(|records| !records) {
-                checks.push(Check::new(
-                    &format!("{name} privacy"),
-                    Verdict::Warn,
-                    format!(
-                        "{} records no ownership, so this backup is readable by anyone \
-                         with the disk; encrypt the volume or accept it",
-                        folder.display()
-                    ),
-                ));
+            //
+            // `noowners` alone cannot answer this: macOS sets it on every removable
+            // volume whatever the filesystem, so an encrypted card reaches it too.
+            match crate::sys::volume::protection(&folder) {
+                Ok(crate::sys::volume::Protection::Enforced) => {}
+                Ok(crate::sys::volume::Protection::EncryptedAtRest { unlocked }) => {
+                    checks.push(Check::new(
+                        &format!("{name} privacy"),
+                        Verdict::Ok,
+                        if unlocked {
+                            "ownership ignored, volume encrypted; readable on this Mac \
+                             while it stays mounted"
+                                .to_owned()
+                        } else {
+                            "ownership ignored, volume encrypted and locked".to_owned()
+                        },
+                    ));
+                }
+                Ok(crate::sys::volume::Protection::Exposed) => {
+                    checks.push(Check::new(
+                        &format!("{name} privacy"),
+                        Verdict::Warn,
+                        format!(
+                            "{} ignores ownership and is not encrypted, so this backup is \
+                             readable by anyone who has the disk; encrypt the volume or \
+                             accept it",
+                            folder.display()
+                        ),
+                    ));
+                }
+                // Loud, because a question nobody could answer is not a safe answer.
+                Ok(crate::sys::volume::Protection::Unknown(why)) => {
+                    checks.push(Check::new(
+                        &format!("{name} privacy"),
+                        Verdict::Warn,
+                        format!(
+                            "{} ignores ownership and encryption could not be checked: {why}",
+                            folder.display()
+                        ),
+                    ));
+                }
+                Err(error) => {
+                    checks.push(Check::new(
+                        &format!("{name} privacy"),
+                        Verdict::Warn,
+                        format!("{} could not be checked: {error}", folder.display()),
+                    ));
+                }
             }
 
             if let Some(check) = spotlight(&folder, &name) {
