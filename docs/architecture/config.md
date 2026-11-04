@@ -346,6 +346,7 @@ These are the test vectors, and `capture.md`'s test matrix implements them.
 | 8 | watch `~/A`, ignore `~/A/s`, glob `*.log` | `~/A/s/keep/a.log` with reinclude `~/A/s/keep` (d3) | glob matches at d4, deeper than the reinclude | no |
 | 9 | ignore `~/A/p/data` (global); `~/A/p/.tycho` re-includes `data` | `~/A/p/data/m.bin` | same path, depth and tier - global wins by origin | no |
 | 10 | ignore `~/A/box` (global); `~/A/box/.tycho` re-includes `evil.bin` | `~/A/box/evil.bin` | the local file is never read: `box` itself is skipped | no |
+| 11 | glob `tmp` in the global `ignore`; `~/A/p/.tycho` re-includes `tmp` | `~/A/p/tmp` | same depth, so tier decides: the local explicit path beats the global glob | yes |
 
 Case 8 is the one people get wrong. A glob matching the filename matches at the
 file's own depth, which is deeper than any directory rule above it. To keep
@@ -388,6 +389,7 @@ globs   object code  *.o  *.obj  *.a  *.so  *.dylib  *.gch  *.pch
         bytecode     *.pyc  *.pyo  *.class
         c/c++        cmake-build-*
         python       *.egg-info  .venv-*  venv-*
+        typescript   *.tsbuildinfo
         apple        *.xcuserstate  ._*
 ```
 
@@ -417,6 +419,12 @@ dependency file and also D's source extension, and a list that eats source is th
 mistake it cannot make. **`.swiftpm` is not here** either - the directory can carry
 registry and mirror configuration worth keeping, which is why `xcuserdata` is named
 instead and covers the per-user state inside it.
+
+`*.tsbuildinfo` is `tsc`'s incremental-build cache. It is rewritten on every type-check,
+so a project that type-checks between runs stores a new copy each time, and nothing in
+it is not derived from sources that are already captured. Generated source is a
+different thing and is never in this list: a `Generated/` directory of Swift or Kotlin
+bindings, or a `next-env.d.ts`, is code a person reads.
 
 `cmake-build-*` is a glob rather than two names because CLion names the directory after
 the CMake profile, so `cmake-build-debug-mingw` and any custom profile are covered too.

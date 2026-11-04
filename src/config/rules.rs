@@ -74,6 +74,8 @@ pub const DEFAULT_JUNK: &[Junk] = junk! {
         // uv and virtualenv name a second environment by suffix: .venv-litert,
         // venv-py312. The bare names are in the Python group above.
         ".venv-*", "venv-*",
+        // tsc's incremental-build cache, rewritten on every type-check.
+        "*.tsbuildinfo",
         // Python packaging metadata, a directory rather than a file.
         "*.egg-info",
         // Xcode per-user window and scheme state.
@@ -706,6 +708,30 @@ mod tests {
         }
     }
 
+    /// Generated source is code a person reads and a build consumes, so it is never
+    /// junk; only the compiler's cache is.
+    #[test]
+    fn a_tsbuildinfo_is_junk_and_generated_source_is_not() {
+        let tree = tree(&RuleSet {
+            watch: paths(&["A"]),
+            junk: DEFAULT_JUNK,
+            ..RuleSet::default()
+        });
+
+        for cache in ["web/tsconfig.tsbuildinfo", "web/tsconfig.app.tsbuildinfo"] {
+            let decision = tree.resolve(home(&format!("A/{cache}")).as_path());
+            assert_eq!(decision.verdict, Verdict::Skip, "{cache} was captured");
+            assert_eq!(decision.tier, Tier::Junk);
+        }
+        for source in [
+            "core/Sources/ImgCoreFFI/Generated/photoflick_img_core_ffi.swift",
+            "web/next-env.d.ts",
+        ] {
+            let decision = tree.resolve(home(&format!("A/{source}")).as_path());
+            assert_eq!(decision.verdict, Verdict::Capture, "{source} was skipped");
+        }
+    }
+
     /// Shared with every junk glob, `cmake-build-*` included: `compile` anchors a
     /// bare pattern as `**/<pattern>` and globset's `*` spans `/`, so the glob
     /// re-matches at every depth below the directory it named. It therefore
@@ -1028,6 +1054,31 @@ mod tests {
         assert!(
             captured(&keeping, "A/proj/data/model.bin"),
             "the reinclude holds"
+        );
+    }
+
+    /// Row 11: a glob in the operator's `ignore` is tier 2, so a project's explicit
+    /// reinclude at the same depth beats it. Only an explicit global path is firm.
+    #[test]
+    fn row_11_a_local_reinclude_beats_a_global_glob_at_the_same_depth() {
+        let mut tree = tree(&RuleSet {
+            watch: paths(&["A"]),
+            ignore_globs: vec!["tmp".to_owned()],
+            ..RuleSet::default()
+        });
+        assert!(!captured(&tree, "A/proj/tmp/n.md"), "the glob holds");
+        add_local(
+            &mut tree,
+            "A/proj",
+            Local {
+                reinclude: &["tmp"],
+                ..Local::default()
+            },
+        );
+        assert!(captured(&tree, "A/proj/tmp/n.md"));
+        assert!(
+            !captured(&tree, "A/other/tmp/n.md"),
+            "other projects stay ignored"
         );
     }
 
