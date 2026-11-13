@@ -962,3 +962,47 @@ fn a_directorys_mode_comes_back_too() {
         "a directory holding a key must not come back listable: {back:04o}"
     );
 }
+
+/// The tar `git archive` writes lands *inside* the restore destination, so a failure
+/// part way through hands the user tar debris in the directory they asked their files
+/// to appear in. `git archive --output` creates the file before it can know it will
+/// fail, so there is always something to clean up.
+#[cfg(unix)]
+#[test]
+fn a_failed_extraction_takes_its_tar_with_it() {
+    let mut fixture = fixture();
+    write(&fixture.root().join("notes.md"), b"keep me\n");
+    fixture.run();
+
+    // One blob out of reach, so `git archive` fails after opening its output.
+    let store = fixture.store_path();
+    let blob = checked(&store, &["rev-parse", "main:A/notes.md"])
+        .trim()
+        .to_owned();
+    let object = store.join("objects").join(&blob[..2]).join(&blob[2..]);
+    let aside = fixture.dest("aside");
+    fs::create_dir_all(&aside).expect("mkdir");
+    fs::rename(&object, aside.join(&blob)).expect("the blob is loose in a fresh store");
+
+    let into = fixture.dest("recovered-failed");
+    let out = Command::new(env!("CARGO_BIN_EXE_tycho"))
+        .args(["restore", "--store"])
+        .arg(&store)
+        .arg("--into")
+        .arg(&into)
+        .output()
+        .expect("tycho runs");
+
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "an unreadable object must not pass for success: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !into.join(".tycho-restore.tar").exists(),
+        "tar debris was left in {}",
+        into.display()
+    );
+}

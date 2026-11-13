@@ -372,14 +372,13 @@ fn extract_all(
     done: &mut Done,
 ) -> Result<(), RestoreError> {
     let tar = into.join(".tycho-restore.tar");
-    store.repo().archive(backup.commit(), &[], &tar)?;
-
-    let archive = tar.display().to_string();
-    let destination = into.display().to_string();
-    let mut args = charset_options();
-    args.extend(["-xf", &archive, "-C", &destination]);
-    let out = crate::sys::process::command("tar", &args, Timeout::WORK)?;
-    std::fs::remove_file(&tar).map_err(io(format!("removing {}", tar.display())))?;
+    let extracted = archive_into(store, into, backup, &tar);
+    // Runs whether or not the extraction did, and before `tree_bytes` below weighs
+    // the destination: the tar holds the whole backup and sits inside the directory
+    // the user asked to restore into.
+    let removed = std::fs::remove_file(&tar);
+    let out = extracted?;
+    removed.map_err(io(format!("removing {}", tar.display())))?;
 
     // `command` hands back the output whatever the status, so a non-zero exit here
     // was previously discarded entirely. It is not fatal - `tar` extracts what it can
@@ -400,6 +399,22 @@ fn extract_all(
         });
     }
     Ok(())
+}
+
+/// `git archive` to `tar`, then extracted into `into`. The caller owns `tar`'s
+/// removal, so a failure here still leaves it to clean up.
+fn archive_into(
+    store: &Store,
+    into: &Path,
+    backup: &Backup,
+    tar: &Path,
+) -> Result<std::process::Output, RestoreError> {
+    store.repo().archive(backup.commit(), &[], tar)?;
+    let archive = tar.display().to_string();
+    let destination = into.display().to_string();
+    let mut args = charset_options();
+    args.extend(["-xf", &archive, "-C", &destination]);
+    Ok(crate::sys::process::command("tar", &args, Timeout::WORK)?)
 }
 
 /// Named paths only, each through the three-way resolver.
