@@ -112,7 +112,18 @@ pub fn classify(metadata: &Metadata) -> FileKind {
 ///
 /// If the entry's metadata cannot be read.
 pub fn classify_path(path: &Path) -> io::Result<FileKind> {
-    fs::symlink_metadata(path).map(|metadata| classify(&metadata))
+    classify_path_sized(path).map(|(kind, _)| kind)
+}
+
+/// The kind and the size from a single `stat`, for a caller that needs both.
+///
+/// The size is the link's own length for a `Symlink`, never its target's.
+///
+/// # Errors
+///
+/// If the entry's metadata cannot be read.
+pub fn classify_path_sized(path: &Path) -> io::Result<(FileKind, u64)> {
+    fs::symlink_metadata(path).map(|metadata| (classify(&metadata), metadata.len()))
 }
 
 /// Writes to a sibling temporary file, flushes it to disk, then renames over the

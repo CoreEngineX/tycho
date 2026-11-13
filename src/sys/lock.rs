@@ -89,8 +89,7 @@ pub fn try_lock(path: &Path) -> Result<LockGuard, LockError> {
     // stamp exists to carry.
     let since = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs())
-        .unwrap_or_default();
+        .map_or_default(|elapsed| elapsed.as_secs());
     crate::sys::fs::write_atomic(
         &stamp,
         format!("{since} {}\n", std::process::id()).as_bytes(),

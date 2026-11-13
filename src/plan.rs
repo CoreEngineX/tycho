@@ -8,7 +8,7 @@ use crate::primitives::encode::{FileMode, percent_component};
 use crate::primitives::names::{AliasError, BranchName, RootAlias};
 use crate::primitives::oid::Oid;
 use crate::primitives::path::{AbsPath, TreePath, TreePathError};
-use crate::sys::fs::{FileKind, SkipReason, classify_path};
+use crate::sys::fs::{FileKind, SkipReason, classify_path, classify_path_sized};
 use crate::sys::process::{Git, Timeout};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -344,16 +344,24 @@ fn walk_root(
 
     // A watch entry may name a file rather than a directory - the escape hatch for
     // re-including one file a glob would otherwise exclude.
-    let kind = classify_path(root.as_path()).map_err(|error| PlanError::RootUnreadable {
-        root: root.to_string(),
-        reason: error.to_string(),
-    })?;
+    let (kind, size) =
+        classify_path_sized(root.as_path()).map_err(|error| PlanError::RootUnreadable {
+            root: root.to_string(),
+            reason: error.to_string(),
+        })?;
     // The root's whole prefix chain, recorded and resolved once. Every deeper
     // entry records and resolves only itself, on top of what its parent carried.
     walk.tree.record_hits(root.as_path(), walk.hits);
     let root_decision = walk.tree.resolve(root.as_path());
     if kind != FileKind::Directory {
-        take_file(&mut walk, &mut plan, root.as_path(), kind, root_decision);
+        take_file(
+            &mut walk,
+            &mut plan,
+            root.as_path(),
+            kind,
+            size,
+            root_decision,
+        );
         return Ok(plan);
     }
 
@@ -408,8 +416,8 @@ fn walk_root(
             }
             walk.tree.record_hit(&path, walk.hits);
 
-            let kind = match classify_path(&path) {
-                Ok(kind) => kind,
+            let (kind, size) = match classify_path_sized(&path) {
+                Ok(classified) => classified,
                 Err(error) => {
                     plan.warnings.push(Warning::Unreadable {
                         path: path.display().to_string(),
@@ -454,7 +462,7 @@ fn walk_root(
                 continue;
             }
             let decision = walk.tree.descend(dir_decision, &path, dir_depth + 1);
-            take_file(&mut walk, &mut plan, &path, kind, decision);
+            take_file(&mut walk, &mut plan, &path, kind, size, decision);
         }
     }
 
@@ -534,6 +542,7 @@ fn take_file(
     plan: &mut RootPlan,
     path: &Path,
     kind: FileKind,
+    size: u64,
     decision: Decision,
 ) {
     let (root, alias) = (walk.root, walk.alias);
@@ -570,7 +579,6 @@ fn take_file(
             return;
         }
     };
-    let size = fs::symlink_metadata(path).map_or(0, |metadata| metadata.len());
     plan.files += 1;
     plan.bytes += size;
     plan.entries.push(Entry::Plain(PlainFile {
