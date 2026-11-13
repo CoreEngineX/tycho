@@ -156,8 +156,7 @@ impl State {
             .into_iter()
             .flatten()
             .find(|run| run.outcome != Outcome::Failed)
-            .map(|run| run.entries.clone())
-            .unwrap_or_default()
+            .map_or_default(|run| run.entries.clone())
     }
 }
 

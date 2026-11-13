@@ -527,8 +527,7 @@ fn write_bundle(
     let asked = wanted
         .paths
         .first()
-        .map(|path| path.display().to_string())
-        .unwrap_or_default();
+        .map_or_default(|path| path.display().to_string());
     let key = backup
         .keys()
         .iter()

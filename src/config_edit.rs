@@ -111,13 +111,12 @@ impl Editing {
         self.document
             .get("profile")
             .and_then(Item::as_array_of_tables)
-            .map(|tables| {
+            .map_or_default(|tables| {
                 tables
                     .iter()
                     .filter_map(|table| Some(table.get("name")?.as_str()?.to_owned()))
                     .collect()
             })
-            .unwrap_or_default()
     }
 
     /// Every entry currently in one of a profile's lists.
@@ -129,13 +128,12 @@ impl Editing {
             .and_then(|tables| tables.get(profile))
             .and_then(|table| table.get(list.key()))
             .and_then(Item::as_array)
-            .map(|array| {
+            .map_or_default(|array| {
                 array
                     .iter()
                     .filter_map(|item| item.as_str().map(str::to_owned))
                     .collect()
             })
-            .unwrap_or_default()
     }
 
     /// Resolves which profile a command means: the one named, or the only one there.
@@ -275,8 +273,7 @@ impl Editing {
             .and_then(|tables| tables.get(profile))
             .and_then(|table| table.get("remotes"))
             .and_then(Item::as_array)
-            .map(|array| array.iter().filter_map(remote_entry).collect())
-            .unwrap_or_default()
+            .map_or_default(|array| array.iter().filter_map(remote_entry).collect())
     }
 
     /// Appends a remote to a profile's `remotes` array, creating it if this is the

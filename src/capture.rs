@@ -436,8 +436,7 @@ fn repo_txt(git: &Git<'_>, inspection: &Inspection, source: &Path) -> String {
         git.run(args, Timeout::QUICK)
             .ok()
             .filter(|out| out.status.success())
-            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
-            .unwrap_or_default()
+            .map_or_default(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
     };
     let list = |args: &[&str]| {
         let text = field(args);

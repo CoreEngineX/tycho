@@ -95,9 +95,8 @@ pub fn install(
     // machine whose config lives anywhere else means the agent fails on every firing
     // with a file-not-found - loudly in its own log, and completely invisibly to
     // anyone not reading it. Found by letting launchd actually fire an agent.
-    let config: Vec<String> = config
-        .map(|path| vec!["--config".to_owned(), path.display().to_string()])
-        .unwrap_or_default();
+    let config: Vec<String> =
+        config.map_or_default(|path| vec!["--config".to_owned(), path.display().to_string()]);
 
     let logs = log_dir()?;
     std::fs::create_dir_all(logs.as_path())
